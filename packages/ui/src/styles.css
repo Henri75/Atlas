@@ -1,0 +1,59 @@
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-sans-condensed/600.css';
+@import '@fontsource/ibm-plex-sans-condensed/700.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import 'tailwindcss';
+
+/* KDBScope token system — color is data: each source type owns a hue. */
+@theme {
+  --color-bg: #0e1116;
+  --color-panel: #161b22;
+  --color-panel-2: #1c232c;
+  --color-line: #262d37;
+  --color-ink: #e6edf3;
+  --color-muted: #8b949e;
+  --color-faint: #58626d;
+
+  --color-kdb: #e3b341;
+  --color-claude: #539bf5;
+  --color-git: #57ab5a;
+  --color-doc: #a371f7;
+  --color-report: #e0823d;
+
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-display: 'IBM Plex Sans Condensed', 'IBM Plex Sans', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+html {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-kdb) 35%, transparent);
+}
+
+/* Entrance: one restrained motion, disabled for reduced-motion users. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.rise { animation: rise 120ms ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .rise { animation: none; }
+}
+
+/* Visible keyboard focus everywhere. */
+:focus-visible {
+  outline: 2px solid var(--color-kdb);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+/* Thin scrollbars fitting the instrument look. */
+* { scrollbar-width: thin; scrollbar-color: var(--color-line) transparent; }

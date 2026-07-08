@@ -17,7 +17,7 @@
     "build:ui": "npm run build -w packages/ui",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit -p tsconfig.lint.json"
+    "lint": "tsc --noEmit -p tsconfig.lint.json && tsc --noEmit -p packages/ui/tsconfig.json"
   },
   "devDependencies": {
     "@types/node": "26.1.1",
