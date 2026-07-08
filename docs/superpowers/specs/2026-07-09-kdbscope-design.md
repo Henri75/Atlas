@@ -59,11 +59,11 @@ Postgres tables:
 - `projects(id, slug, name, root_path, has_kdb, discovered_at)`
 - `scan_state(id, project_id, source_type, path, mtime, size, byte_offset, content_hash, last_scanned_at)` — byte_offset enables tail-only parsing of append-only files (kdb `.log`, session `.jsonl`)
 - `entries(id, project_id, source_type[kdb_changelog|kdb_session|kdb_component|kdb_backlog|claude_session|git_commit|doc], component, session_id, title, body, occurred_at, source_path, source_ref, meta jsonb)`
-- `chunks(id, entry_id, seq, text, embedded_at, embed_model)` — mirror of what's in Qdrant, for rebuild/audit
 - `index_errors(id, project_id, path, stage, message, created_at)`
 - `index_runs(id, kind[scheduled|manual|full], started_at, finished_at, stats jsonb)`
 
-Qdrant: one collection per embedding config (`kdbscope_<provider>_<model>_<dim>`), named
+Chunks live only in Qdrant (payload carries entry_id); they are rebuilt by re-scanning,
+so no relational mirror is kept. Qdrant: one collection per embedding config (`kdbscope_<provider>_<model>_<dim>`), named
 vectors `dense` + `sparse` (IDF modifier), payload `{project, source_type, component,
 session_id, occurred_at, entry_id}`, deterministic point IDs = UUIDv5(source_path + seq +
 content hash) for idempotent re-upserts.

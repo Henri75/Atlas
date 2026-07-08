@@ -1,0 +1,17 @@
+{
+  "name": "@kdbscope/indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@kdbscope/core": "*",
+    "bullmq": "5.79.3",
+    "ioredis": "5.11.1",
+    "node-cron": "4.6.0"
+  }
+}

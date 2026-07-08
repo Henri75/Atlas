@@ -323,6 +323,11 @@ export class Catalog {
     return r.rows;
   }
 
+  async getSessionRow(sessionId: string) {
+    const r = await this.pool.query('SELECT * FROM sessions WHERE id = $1', [sessionId]);
+    return r.rows[0] ?? null;
+  }
+
   async sessionDetail(sessionId: string) {
     const s = await this.pool.query('SELECT * FROM sessions WHERE id = $1', [sessionId]);
     if (!s.rows[0]) return null;

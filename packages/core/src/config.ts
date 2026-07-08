@@ -15,6 +15,7 @@ const schema = z.object({
   redisUrl: z.string().default('redis://redis:6379'),
   qdrantUrl: z.string().default('http://qdrant:6333'),
   scanIntervalMin: z.coerce.number().int().min(1).default(5),
+  workerConcurrency: z.coerce.number().int().min(1).max(16).default(4),
   embeddings: z.object({
     provider: EmbeddingsProvider.default('auto'),
     model: z.string().default('nomic-embed-text'),
@@ -45,6 +46,7 @@ function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
     redisUrl: opt(env.REDIS_URL),
     qdrantUrl: opt(env.QDRANT_URL),
     scanIntervalMin: opt(env.SCAN_INTERVAL_MIN),
+    workerConcurrency: opt(env.WORKER_CONCURRENCY),
     embeddings: {
       provider: opt(env.EMBEDDINGS_PROVIDER),
       model: opt(env.EMBEDDINGS_MODEL),
