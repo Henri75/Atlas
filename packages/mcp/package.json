@@ -1,5 +1,5 @@
 {
-  "name": "@kdbscope/api",
+  "name": "@kdbscope/mcp",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,10 +9,8 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
-    "@hono/node-server": "2.0.8",
     "@kdbscope/core": "*",
-    "bullmq": "5.79.3",
-    "hono": "4.12.28",
-    "ioredis": "5.10.1"
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "4.4.3"
   }
 }

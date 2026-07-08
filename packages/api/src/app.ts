@@ -112,8 +112,9 @@ export function buildApp(deps: ApiDeps): Hono {
   );
 
   app.onError((err, c) => {
+    // Details go to the service log only — clients get a generic error.
     console.error('[api] error:', err);
-    return c.json({ error: err.message }, 500);
+    return c.json({ error: 'internal error' }, 500);
   });
 
   return app;

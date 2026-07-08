@@ -1,0 +1,15 @@
+{
+  "name": "@kdbscope/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "kdbs": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "commander": "15.0.0"
+  }
+}

@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import type Redis from 'ioredis';
+import type { Redis } from 'ioredis';
 import { Catalog, encodeClaudePath, matchClaudeDirToProject, claudeDirFallbackSlug } from '@kdbscope/core';
 import type { AppConfig, DiscoveredProject } from '@kdbscope/core';
 import { readdirSync } from 'node:fs';
