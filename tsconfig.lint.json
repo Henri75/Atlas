@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "paths": {
+      "@kdbscope/core": ["./packages/core/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/core/src/**/*.ts",
+    "packages/indexer/src/**/*.ts",
+    "packages/api/src/**/*.ts",
+    "packages/mcp/src/**/*.ts",
+    "packages/cli/src/**/*.ts",
+    "test/**/*.ts"
+  ]
+}

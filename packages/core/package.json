@@ -1,0 +1,23 @@
+{
+  "name": "@kdbscope/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.2.0",
+    "@qdrant/js-client-rest": "1.18.0",
+    "pg": "8.22.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/pg": "8.20.0"
+  }
+}

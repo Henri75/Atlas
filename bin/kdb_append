@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Append one entry to an authoritative KDB log with locking and verification."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import os
+from pathlib import Path
+import sys
+from datetime import datetime, timezone
+
+
+MAX_LOG_BYTES = 5 * 1024 * 1024
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Atomically append text to a KDB *.log file."
+    )
+    parser.add_argument("target", help="KDB log path, for example kdb/session.log")
+    parser.add_argument(
+        "entry",
+        nargs="?",
+        help="Entry text. If omitted, the entry is read from stdin.",
+    )
+    return parser.parse_args()
+
+
+def resolve_target(path_text: str) -> Path:
+    target = Path(path_text)
+    if target.suffix != ".log":
+        raise ValueError("KDB append target must be a *.log file")
+
+    parts = target.parts
+    if "kdb" not in parts:
+        raise ValueError("KDB append target must be under the kdb directory")
+
+    return target
+
+
+def rotate_if_needed(target: Path) -> None:
+    if not target.exists() or target.stat().st_size <= MAX_LOG_BYTES:
+        return
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    rotated = target.with_name(f"{target.name}.{stamp}")
+    os.replace(target, rotated)
+    target.touch(mode=0o644, exist_ok=True)
+
+
+def append_with_lock(target: Path, entry: str) -> None:
+    if not entry.endswith("\n"):
+        entry += "\n"
+    data = entry.encode("utf-8")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.with_suffix(target.suffix + ".lock")
+
+    with open(lock_path, "a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        pre_size = target.stat().st_size if target.exists() else 0
+        rotate_if_needed(target)
+        pre_size = target.stat().st_size if target.exists() else 0
+
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+        post_size = target.stat().st_size
+        if pre_size > 0 and post_size < pre_size:
+            raise RuntimeError(
+                f"no-loss guard failed: {target} shrank from {pre_size} to {post_size}"
+            )
+
+        with open(target, "rb") as verify_file:
+            verify_file.seek(max(0, post_size - len(data)))
+            tail = verify_file.read()
+        if tail != data:
+            raise RuntimeError(f"durability check failed for {target}")
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        target = resolve_target(args.target)
+        entry = args.entry if args.entry is not None else sys.stdin.read()
+        append_with_lock(target, entry)
+    except Exception as exc:
+        print(f"kdb_append: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
