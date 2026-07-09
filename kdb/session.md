@@ -8,3 +8,11 @@
 
 **AI Response Summary:**
 > Brainstormed requirements (microservices, all 4 sources, all embedding providers, G2P/OpenAI LLM, docker-only, periodic+on-demand freshness), wrote spec+plan, then built KDBScope v0.1.0: core engine w/ real-format parsers, incremental indexer (byte-offset jsonl tails), hybrid RRF search + Ask mode, Hono REST, MCP (9 tools), kdbs CLI, React UI with source-coded spine design. Deployed the 7-container stack live: smoke 6/6, 90 projects discovered, indexing running. Fixed pg18 volume convention, migration race (advisory lock), fractional mtimeMs vs BIGINT. 63 tests + tsc green. Docs + ADR + version table written.
+---
+### [2026-07-09 01:55 UTC]
+
+**User Prompt Summary:**
+> Implement streaming Ask answers and Ollama-by-default (the two v0.2 items I'd flagged), then implement everything in the backlog, then continue improving.
+
+**AI Response Summary:**
+> Logged the 10 backlog items first (none existed yet), then shipped all of them: streaming Ask over SSE end-to-end (core -> api -> ui + cli, verified live at 1.1s to first token through nginx), Ollama-by-default with auto-pull and loud fallback logging, sessions indexed newest-first, an entry drawer with full bodies and line-accurate vscode:// deep links, and index progress + a recent-error metric. Running it for real then exposed a stalled re-embed: root-caused it through the layers to an Ollama 0.12.6 segfault inside /api/embed (796 x HTTP 500 + a Go stack trace) — upgraded to 0.31.1 as a launchd service — and fixed seven of our own bugs it uncovered (wait:true upserts blowing Qdrant's 5s timeout, 52-minute unbounded jobs, in-memory chunk blowup, ':' in BullMQ job ids crash-looping the indexer, a stale active_collection silently degrading every search to Postgres FTS, a backfill trigger that only fired on an empty collection, and transient errors misclassified because the status was stringified into the message). Also learned Qdrant's points_count lags wait:false writes and is useless as a progress metric. 63 -> 129 tests, lint clean, smoke 6/6, zero index errors since the fix.

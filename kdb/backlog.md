@@ -1,0 +1,16 @@
+<!-- GENERATED VIEW — do not edit. Rebuilt from backlog.log by bin/kdb_rebuild.mjs -->
+
+- [2026-07-09] [kdbscope] Ask mode: stream the LLM answer token-by-token (SSE) instead of waiting for the full completion
+- [2026-07-09] [kdbscope] Embeddings: prefer Ollama by default; auto-pull nomic-embed-text; document the speedup
+- [2026-07-09] [kdbscope] Qdrant upserts use wait:true and blow the 5s REST client_request_timeout under load -> 'fetch failed' on big sessions
+- [2026-07-09] [kdbscope] Big transcripts make a single scan job run ~52min -> BullMQ 'job stalled more than allowable limit'; jobs must be bounded
+- [2026-07-09] [kdbscope] indexEntries materializes every chunk of a file in memory before embedding; stream in bounded batches
+- [2026-07-09] [kdbscope] Sessions should be indexed newest-first so recent history is searchable early (spec risk mitigation)
+- [2026-07-09] [kdbscope] Index progress is invisible: no per-source queue depth or ETA in UI/status
+- [2026-07-09] [kdbscope] Retry embed/upsert on transient failures instead of failing the whole file
+- [2026-07-09] [kdbscope] No 'open in editor' / deep link from a search hit to the exact source location
+- [2026-07-09] [kdbscope] Entry bodies are capped at 8KB in the distiller; UI has no way to view the full source
+- [2026-07-09] [kdbscope] Backfill restarts from entry 1 on indexer restart; persist a resume cursor so an interrupted re-embed doesn't redo finished pages
+- [2026-07-09] [kdbscope] Qdrant points_count lags wait:false writes — /api/stats 'chunks' is an estimate; consider counting from the catalog instead
+- [2026-07-09] [kdbscope] Old-format job ids (with ':') linger in redis from before the id fix; add a one-time queue drain on version change
+- [2026-07-09] [kdbscope] Pin/check the Ollama version at boot: 0.12.x segfaults on /api/embed; warn when below a known-good floor
