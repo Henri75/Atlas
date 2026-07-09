@@ -37,18 +37,26 @@ function makeDeps(totalEntries: number) {
   }));
   const upserted: any[] = [];
   const errors: any[] = [];
+  const settings = new Map<string, string>();
   return {
     rows,
     upserted,
     errors,
+    settings,
     deps: {
       catalog: {
         countEntries: async () => totalEntries,
+        countEntriesUpTo: async (id: number) => rows.filter((r) => r.id <= id).length,
         entriesAfter: async (cursor: number, limit: number) =>
           rows.filter((r) => r.id > cursor).slice(0, limit),
         logError: vi.fn(async (...a: any[]) => void errors.push(a)),
+        getSetting: async (k: string) => settings.get(k) ?? null,
+        setSetting: async (k: string, v: string) => void settings.set(k, v),
       } as any,
-      vectors: { upsert: vi.fn(async (p: any[]) => void upserted.push(...p)) } as any,
+      vectors: {
+        collection: 'kdbscope_ollama_nomic_768',
+        upsert: vi.fn(async (p: any[]) => void upserted.push(...p)),
+      } as any,
       embedder: {
         name: 'ollama',
         model: 'nomic',
@@ -58,6 +66,8 @@ function makeDeps(totalEntries: number) {
     },
   };
 }
+
+const CURSOR_KEY = 'backfill_cursor:kdbscope_ollama_nomic_768';
 
 describe('backfillVectors', () => {
   it('pages through every entry and upserts each one exactly once', async () => {
@@ -88,6 +98,53 @@ describe('backfillVectors', () => {
     const { deps, upserted } = makeDeps(0);
     expect(await backfillVectors(deps)).toBe(0);
     expect(upserted).toHaveLength(0);
+  });
+
+  /**
+   * Regression: an indexer restart used to re-embed from entry 1, throwing
+   * away hours of GPU time. The cursor is persisted per collection, so a
+   * different embedding model still rebuilds from scratch.
+   */
+  it('persists a cursor as it goes and clears it when finished', async () => {
+    const { deps, settings } = makeDeps(30);
+    await backfillVectors(deps, { pageSize: 10 });
+    // Cleared on completion so a later rebuild starts clean.
+    expect(settings.get(CURSOR_KEY)).toBe('');
+  });
+
+  it('resumes from the stored cursor instead of restarting', async () => {
+    const { deps, settings, upserted } = makeDeps(30);
+    settings.set(CURSOR_KEY, '20'); // entries 1..20 already embedded
+
+    const embedded = await backfillVectors(deps, { pageSize: 10 });
+
+    expect(embedded).toBe(10); // only 21..30 re-embedded
+    expect(upserted.map((p) => p.payload.entry_id)).toEqual(
+      Array.from({ length: 10 }, (_, i) => 21 + i),
+    );
+  });
+
+  it('reports absolute progress but this-run throughput when resuming', async () => {
+    const { deps, settings } = makeDeps(30);
+    settings.set(CURSOR_KEY, '20');
+    const seen: [number, number, number][] = [];
+
+    await backfillVectors(deps, { pageSize: 10, onPage: (d, t, e) => void seen.push([d, t, e]) });
+
+    // done counts the resumed prefix; embedded counts only this run.
+    expect(seen).toEqual([[30, 30, 10]]);
+  });
+
+  it('ignores the cursor when resume is disabled', async () => {
+    const { deps, settings } = makeDeps(30);
+    settings.set(CURSOR_KEY, '20');
+    expect(await backfillVectors(deps, { pageSize: 10, resume: false })).toBe(30);
+  });
+
+  it('keys the cursor by collection so a model switch starts fresh', async () => {
+    const { deps, settings } = makeDeps(30);
+    settings.set('backfill_cursor:some_other_collection', '20');
+    expect(await backfillVectors(deps, { pageSize: 10 })).toBe(30);
   });
 
   /**

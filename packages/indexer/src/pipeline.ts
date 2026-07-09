@@ -335,17 +335,36 @@ export function needsBackfill(vectorPoints: number, entryCount: number): boolean
  */
 export async function backfillVectors(
   deps: PipelineDeps,
-  opts: { pageSize?: number; onPage?: (done: number, total: number) => void | Promise<void> } = {},
+  opts: {
+    pageSize?: number;
+    /**
+     * `done` is the absolute number of entries covered (including any prefix a
+     * previous run finished); `embedded` counts only this run. Progress bars
+     * want `done`; throughput and ETA must be computed from `embedded`.
+     */
+    onPage?: (done: number, total: number, embedded: number) => void | Promise<void>;
+    /** Resume from a stored cursor rather than restarting from entry 1. */
+    resume?: boolean;
+  } = {},
 ): Promise<number> {
   const pageSize = opts.pageSize ?? 200;
   const total = await deps.catalog.countEntries();
+  // Keyed by collection: a different model's rebuild must start from scratch.
+  const cursorKey = `backfill_cursor:${deps.vectors.collection}`;
+
   let cursor = 0;
-  let done = 0;
+  if (opts.resume !== false) {
+    const stored = await deps.catalog.getSetting(cursorKey).catch(() => null);
+    cursor = stored ? Number(stored) || 0 : 0;
+  }
+  // Entries at or below the cursor were embedded by an earlier run.
+  const alreadyDone = cursor > 0 ? await deps.catalog.countEntriesUpTo(cursor) : 0;
+  let embedded = 0;
 
   for (;;) {
     const rows = await deps.catalog.entriesAfter(cursor, pageSize);
     if (!rows.length) break;
-    cursor = rows[rows.length - 1]!.id;
+    const pageEnd = rows[rows.length - 1]!.id;
 
     const inserted: InsertedEntry[] = rows.map((r) => ({ id: r.id, entry: r }));
     try {
@@ -355,10 +374,16 @@ export async function backfillVectors(
       // record it and keep going. The next full backfill picks it up.
       await deps.catalog.logError(null, `entries>${cursor}`, 'backfill', (e as Error).message);
     }
-    done += rows.length;
-    await opts.onPage?.(done, total);
+    cursor = pageEnd;
+    embedded += rows.length;
+    // Persist after the page lands, so a restart resumes here rather than at 1.
+    await deps.catalog.setSetting(cursorKey, String(cursor)).catch(() => {});
+    await opts.onPage?.(alreadyDone + embedded, total, embedded);
   }
-  return done;
+
+  // Finished: drop the cursor so a later rebuild of this collection starts clean.
+  await deps.catalog.setSetting(cursorKey, '').catch(() => {});
+  return embedded;
 }
 
 export async function processScanJob(

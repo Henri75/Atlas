@@ -66,8 +66,10 @@ async function main() {
     );
     const t0 = Date.now();
     const n = await backfillVectors(deps, {
-      onPage: async (done, total) => {
-        const rate = done / Math.max(1, (Date.now() - t0) / 1000);
+      // Throughput comes from `embedded` (this run); the bar uses `done`
+      // (absolute), or a resumed run would report an absurd rate.
+      onPage: async (done, total, embedded) => {
+        const rate = embedded / Math.max(1, (Date.now() - t0) / 1000);
         const etaSec = Math.round((total - done) / Math.max(rate, 0.01));
         // Surfaced by /api/stats so a stalled rebuild is visible in the UI
         // rather than only in `docker logs`.

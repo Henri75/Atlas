@@ -389,6 +389,12 @@ export class Catalog {
     return r.rows[0].c;
   }
 
+  /** Entries at or below an id — how much of a resumed backfill is already done. */
+  async countEntriesUpTo(id: number): Promise<number> {
+    const r = await this.pool.query('SELECT count(*)::int AS c FROM entries WHERE id <= $1', [id]);
+    return r.rows[0].c;
+  }
+
   async getEntries(ids: number[]): Promise<Map<number, any>> {
     if (!ids.length) return new Map();
     const r = await this.pool.query(
