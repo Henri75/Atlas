@@ -31,6 +31,28 @@ export function collectionNameFor(provider: string, model: string, dim: number):
   return `kdbscope_${safe(provider)}_${safe(model)}_${dim}`;
 }
 
+/**
+ * Translate search filters into a Qdrant payload filter. An over-broad filter
+ * silently returns the wrong rows and an over-narrow one silently returns
+ * none, so this is worth testing on its own.
+ */
+export function buildQdrantFilter(filters: SearchFilters): { must: object[] } | undefined {
+  const must: object[] = [];
+  if (filters.project) must.push({ key: 'project', match: { value: filters.project } });
+  if (filters.sourceType) must.push({ key: 'source_type', match: { value: filters.sourceType } });
+  if (filters.component) must.push({ key: 'component', match: { value: filters.component } });
+  if (filters.since || filters.until) {
+    must.push({
+      key: 'occurred_at',
+      range: {
+        ...(filters.since ? { gte: filters.since } : {}),
+        ...(filters.until ? { lte: filters.until } : {}),
+      },
+    });
+  }
+  return must.length ? { must } : undefined;
+}
+
 export class VectorStore {
   private client: QdrantClient;
   /** Mutable: the indexer can switch collections when the embedder changes. */
@@ -81,6 +103,15 @@ export class VectorStore {
    * millisecond, which no caller requires. Retried because point ids are
    * deterministic, so a replayed batch is a no-op.
    */
+  /** Drop the collection if it exists. Vectors are always rebuildable. */
+  async drop(): Promise<void> {
+    try {
+      await this.client.deleteCollection(this.collection);
+    } catch {
+      // Nothing to drop.
+    }
+  }
+
   async upsert(points: VectorPoint[]): Promise<void> {
     if (!points.length) return;
     for (let i = 0; i < points.length; i += UPSERT_BATCH) {
@@ -111,20 +142,7 @@ export class VectorStore {
   }
 
   private buildFilter(filters: SearchFilters) {
-    const must: object[] = [];
-    if (filters.project) must.push({ key: 'project', match: { value: filters.project } });
-    if (filters.sourceType) must.push({ key: 'source_type', match: { value: filters.sourceType } });
-    if (filters.component) must.push({ key: 'component', match: { value: filters.component } });
-    if (filters.since || filters.until) {
-      must.push({
-        key: 'occurred_at',
-        range: {
-          ...(filters.since ? { gte: filters.since } : {}),
-          ...(filters.until ? { lte: filters.until } : {}),
-        },
-      });
-    }
-    return must.length ? { must } : undefined;
+    return buildQdrantFilter(filters);
   }
 
   /**

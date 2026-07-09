@@ -92,8 +92,12 @@ export async function scheduleScans(
 
     for (const { data, key } of jobs) {
       await queue.add(`${data.projectSlug}/${key}`, data, {
+        // The id is deterministic so an identical *pending* job is not queued
+        // twice. It must be released the moment the job finishes: BullMQ
+        // treats an add() for a retained completed id as a silent no-op, which
+        // would stop every later scan of that source from ever running.
         jobId: scanJobId(data.projectSlug, key, opts.full),
-        removeOnComplete: 1000,
+        removeOnComplete: true,
         removeOnFail: 500,
         attempts: 3,
         backoff: { type: 'exponential', delay: 5000 },

@@ -15,3 +15,5 @@
 - [2026-07-09] [kdbscope] DONE: backfill resume cursor (persisted per collection in settings)
 - [2026-07-09] [kdbscope] DONE: warn at boot when Ollama is below the 0.13 known-good floor
 - [2026-07-09] [kdbscope] DONE: degraded-search banner in UI + CLI (was an 11px grey footnote nobody reads)
+- [2026-07-09] [kdbscope] DONE: id scheme v2 (space-joined ids could collide); boot migration wipes the derived index + queue
+- [2026-07-09] [kdbscope] DONE: removeOnComplete:true — retained completed job ids silently blocked every later scan of a source

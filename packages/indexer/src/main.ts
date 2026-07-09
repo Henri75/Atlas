@@ -3,6 +3,7 @@ import { Redis } from 'ioredis';
 import cron from 'node-cron';
 import {
   Catalog,
+  ID_SCHEME,
   VectorStore,
   collectionNameFor,
   createEmbedder,
@@ -27,6 +28,24 @@ async function main() {
   await catalog.migrate();
   console.log('[indexer] catalog migrated');
 
+  // Changing how ids are derived changes every dedup_key, so old rows can no
+  // longer match new ones: a plain rescan would duplicate the entire catalog
+  // rather than update it. Everything here is derived from read-only source
+  // files, so dropping and re-parsing is the safe, complete migration.
+  // An unset key on a populated catalog means it predates the marker: those
+  // rows carry v1 ids. An empty catalog needs nothing.
+  const storedScheme = (await catalog.getSetting('id_scheme')) ||
+    ((await catalog.countEntries()) > 0 ? 'v1' : ID_SCHEME);
+  const schemeChanged = storedScheme !== ID_SCHEME;
+  if (schemeChanged) {
+    console.log(
+      `[indexer] id scheme ${storedScheme} -> ${ID_SCHEME}: clearing the derived index ` +
+        '(sources are untouched; everything is re-parsed)',
+    );
+    await catalog.resetDerivedData();
+  }
+  await catalog.setSetting('id_scheme', ID_SCHEME);
+
   const embedder = await createEmbedder(cfg.embeddings);
   console.log(`[indexer] embedder: ${embedder.name}/${embedder.model} dim=${embedder.dim}`);
 
@@ -34,6 +53,10 @@ async function main() {
     cfg.qdrantUrl,
     collectionNameFor(embedder.name, embedder.model, embedder.dim),
   );
+  if (schemeChanged) {
+    // Old points are keyed by the old scheme; they would never be overwritten.
+    await vectors.drop();
+  }
   await vectors.ensure(embedder.dim);
   await catalog.setSetting('active_embedder', `${embedder.name}/${embedder.model}/${embedder.dim}`);
   console.log(`[indexer] qdrant collection ready: ${vectors.collection}`);
@@ -41,6 +64,15 @@ async function main() {
   const deps: PipelineDeps = { catalog, vectors, embedder };
   const connection = new Redis(cfg.redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue<ScanJobData>(SCAN_QUEUE, { connection });
+
+  // Scan jobs carry deterministic ids and BullMQ retains completed jobs, so
+  // re-adding an id it has already run is a silent no-op. Once the catalog is
+  // wiped, the queue's memory of "already scanned this" is a lie and every new
+  // job is swallowed. The two must be reset together.
+  if (schemeChanged) {
+    await queue.obliterate({ force: true });
+    console.log('[indexer] scan queue cleared so every source is rescanned');
+  }
 
   /**
    * A collection holding fewer vectors than the catalog has entries means the
