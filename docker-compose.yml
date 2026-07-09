@@ -8,9 +8,15 @@ x-node-common: &node-common
     CODE_ROOT: /data/code
     CLAUDE_PROJECTS_DIR: /data/claude/projects
     # Passed through so the API can turn container paths back into host paths
-    # for editor deep links.
+    # for editor deep links, and so the indexer can match Claude transcript
+    # directories (which encode host paths) to the projects it discovers.
     CODE_ROOT_HOST: ${CODE_ROOT_HOST:-}
     CLAUDE_PROJECTS_HOST: ${CLAUDE_PROJECTS_HOST:-}
+    # Extra project trees. A slot is active only when its _HOST var is set.
+    CODE_ROOT_HOST_2: ${CODE_ROOT_HOST_2:-}
+    CODE_ROOT_HOST_3: ${CODE_ROOT_HOST_3:-}
+    CODE_ROOT_HOST_4: ${CODE_ROOT_HOST_4:-}
+    CODE_ROOT_HOST_5: ${CODE_ROOT_HOST_5:-}
     DATABASE_URL: postgres://kdbscope:kdbscope@postgres:5432/kdbscope
     REDIS_URL: redis://redis:6379
     QDRANT_URL: http://qdrant:6333
@@ -30,6 +36,13 @@ services:
     <<: *node-common
     volumes:
       - '${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}:/data/code:ro'
+      # Extra project trees. Each defaults to re-mounting root 1, which is inert:
+      # the indexer only scans a slot when its CODE_ROOT_HOST_n is set. Compose
+      # cannot express an optional mount, and an empty value is a syntax error.
+      - '${CODE_ROOT_HOST_2:-${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}}:/data/code2:ro'
+      - '${CODE_ROOT_HOST_3:-${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}}:/data/code3:ro'
+      - '${CODE_ROOT_HOST_4:-${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}}:/data/code4:ro'
+      - '${CODE_ROOT_HOST_5:-${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}}:/data/code5:ro'
       - '${CLAUDE_PROJECTS_HOST:-/Users/nasta/.claude/projects}:/data/claude/projects:ro'
       - hf_cache:/app/.cache
     depends_on:

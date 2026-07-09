@@ -1,10 +1,18 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import type { ComponentRow } from '../types';
-import { Badge, Empty, Eyebrow, SpineRow, Spinner, Stamp } from '../components/ui';
+import type { ComponentRow, ProjectRow } from '../types';
+import { Badge, Empty, Eyebrow, PickProject, SpineRow, Spinner, Stamp } from '../components/ui';
 
 /** Component explorer: list on the left, selected component's history on the right. */
-export function ComponentsView({ project }: { project: string }) {
+export function ComponentsView({
+  project,
+  projects,
+  onProject,
+}: {
+  project: string;
+  projects: ProjectRow[];
+  onProject: (slug: string) => void;
+}) {
   const [components, setComponents] = useState<ComponentRow[]>([]);
   const [selected, setSelected] = useState('');
   const [entries, setEntries] = useState<any[]>([]);
@@ -27,7 +35,7 @@ export function ComponentsView({ project }: { project: string }) {
       .finally(() => setLoading(false));
   }, [project, selected]);
 
-  if (!project) return <Empty title="Pick a project to browse its components." />;
+  if (!project) return <PickProject what="components" projects={projects} onProject={onProject} />;
   if (!components.length)
     return <Empty title="No components recorded." hint="Component logs live in kdb/components/." />;
 

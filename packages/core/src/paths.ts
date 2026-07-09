@@ -17,8 +17,8 @@ export function mappingsFromConfig(cfg: AppConfig): PathMapping[] {
   if (cfg.claudeProjectsHost) {
     m.push({ containerRoot: cfg.claudeProjectsDir, hostRoot: cfg.claudeProjectsHost });
   }
-  if (cfg.codeRootHost) {
-    m.push({ containerRoot: cfg.codeRoot, hostRoot: cfg.codeRootHost });
+  for (const root of cfg.codeRoots) {
+    if (root.host) m.push({ containerRoot: root.container, hostRoot: root.host });
   }
   return m.sort((a, b) => b.containerRoot.length - a.containerRoot.length);
 }

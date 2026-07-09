@@ -136,7 +136,16 @@ export function buildApp(deps: ApiDeps): Hono {
     });
   });
 
-  app.get('/api/projects', async (c) => c.json(await deps.catalog.listProjects()));
+  app.get('/api/projects', async (c) => {
+    const projects = await deps.catalog.listProjects();
+    // rootPath is a container path; nobody outside the stack has that folder.
+    return c.json(
+      projects.map((p) => ({
+        ...p,
+        rootPath: p.rootPath ? toHostPath(p.rootPath, deps.pathMappings) : p.rootPath,
+      })),
+    );
+  });
 
   app.get('/api/projects/:slug/timeline', async (c) => {
     const sources = c.req.query('sources')?.split(',').filter(Boolean) as SourceType[] | undefined;

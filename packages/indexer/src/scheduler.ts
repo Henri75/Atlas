@@ -30,12 +30,14 @@ export async function scheduleScans(
   queue: Queue<ScanJobData>,
   opts: { full?: boolean; project?: string } = {},
 ): Promise<number> {
-  const projects = discoverProjects(cfg.codeRoot);
+  const projects = discoverProjects(cfg.codeRoots);
 
   // Map every Claude project dir to its owning project (deepest match wins);
   // unmatched dirs become standalone "projects" so no history is invisible.
   const claudeDirsByProject = new Map<string, string[]>();
-  const codeRootEnc = encodeClaudePath(cfg.codeRoot);
+  // Claude dir names encode host paths, so the roots we strip must be host
+  // roots too. Fall back to the container path when no host path is set.
+  const codeRootEnc = cfg.codeRoots.map((r) => encodeClaudePath(r.host ?? r.container));
   let claudeDirNames: string[] = [];
   try {
     claudeDirNames = readdirSync(cfg.claudeProjectsDir).filter((n) => !n.startsWith('.'));

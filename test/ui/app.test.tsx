@@ -40,4 +40,15 @@ describe('App shell', () => {
       expect(screen.getByText('Ask your codebases what happened.')).toBeTruthy(),
     );
   });
+
+  /**
+   * A dead backend used to be swallowed into an empty project list, so "no
+   * projects indexed" and "cannot reach the API" looked identical — which is
+   * what made a 502 look like a broken sidebar.
+   */
+  it('says the API is unreachable instead of rendering an empty index', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('Failed to fetch'); }));
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/Cannot reach the API/));
+  });
 });

@@ -33,12 +33,38 @@ writeFileSync(join(root, 'DeepCast/node_modules/pkg/README.md'), 'ignore me');
 
 describe('discoverProjects', () => {
   it('finds kdb and git projects, including nested kdb projects', () => {
-    const projects = discoverProjects(root);
+    const projects = discoverProjects([{ container: root }]);
     const slugs = projects.map((p) => p.slug).sort();
     expect(slugs).toEqual(['deepcast', 'deepcast-lycos', 'gitonly']);
     const dc = projects.find((p) => p.slug === 'deepcast')!;
     expect(dc.hasKdb).toBe(true);
     expect(projects.find((p) => p.slug === 'gitonly')!.hasKdb).toBe(false);
+  });
+
+  /**
+   * Claude Code encodes a session's *host* cwd into its directory name, so
+   * every project must carry the host path alongside its container path.
+   */
+  it('maps each project to its host path', () => {
+    const projects = discoverProjects([{ container: root, host: '/Users/x/Code' }]);
+    expect(projects.find((p) => p.slug === 'deepcast')!.hostPath).toBe('/Users/x/Code/DeepCast');
+    expect(projects.find((p) => p.slug === 'deepcast-lycos')!.hostPath).toBe(
+      '/Users/x/Code/DeepCast/Lycos',
+    );
+  });
+
+  it('leaves hostPath undefined when a root has no host mapping', () => {
+    expect(discoverProjects([{ container: root }])[0]!.hostPath).toBeUndefined();
+  });
+
+  it('scans several roots and does not duplicate a repeated project name', () => {
+    const projects = discoverProjects([{ container: root }, { container: root }]);
+    expect(projects.filter((p) => p.slug === 'deepcast')).toHaveLength(1);
+  });
+
+  it('tolerates a root that does not exist', () => {
+    const projects = discoverProjects([{ container: root }, { container: '/no/such/root' }]);
+    expect(projects.length).toBeGreaterThan(0);
   });
 });
 

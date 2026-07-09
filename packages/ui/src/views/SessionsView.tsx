@@ -1,15 +1,19 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import type { SessionRow } from '../types';
-import { Empty, Eyebrow, Spinner, Stamp } from '../components/ui';
+import type { ProjectRow, SessionRow } from '../types';
+import { Empty, Eyebrow, PickProject, Spinner, Stamp } from '../components/ui';
 
 /** Session browser + replay: prompts (you) and substantial responses (ai). */
 export function SessionsView({
   project,
+  projects,
+  onProject,
   openSessionId,
   onOpenSession,
 }: {
   project: string;
+  projects: ProjectRow[];
+  onProject: (slug: string) => void;
   openSessionId: string;
   onOpenSession: (id: string) => void;
 }) {
@@ -89,7 +93,9 @@ export function SessionsView({
     );
   }
 
-  if (!project) return <Empty title="Pick a project to browse its Claude Code sessions." />;
+  if (!project) {
+    return <PickProject what="Claude Code sessions" projects={projects} onProject={onProject} />;
+  }
 
   return (
     <div className="max-w-4xl mx-auto">

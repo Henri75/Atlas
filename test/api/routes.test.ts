@@ -8,7 +8,10 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
       stats: async () => ({
         projects: 2, entries: 10, chunks: 0, errors: 841, recentErrors: 0, bySource: {},
       }),
-      listProjects: async () => [{ slug: 'deepcast', name: 'DeepCast', entryCount: 10 }],
+      listProjects: async () => [
+        { slug: 'deepcast', name: 'DeepCast', rootPath: '/data/code/DeepCast', entryCount: 10 },
+        { slug: 'from-transcripts', name: 'x', rootPath: '', entryCount: 3 },
+      ],
       timeline: async () => [{ entryId: 1, title: 't', occurredAt: '2026-07-08T00:00:00Z' }],
       components: async () => [{ component: 'video-import', count: 3 }],
       componentHistory: async () => [{ id: 1, title: 'x' }],
@@ -178,6 +181,13 @@ describe('api routes', () => {
     expect(body.editorUrl).toContain('vscode://file/Users/nasta/__CODING%20NEW');
     expect(body.editorUrl).toMatch(/:12$/);
     expect(body.body).toBe('full body');
+  });
+
+  /** rootPath is a container path; nobody outside the stack has that folder. */
+  it('GET /api/projects reports host paths, leaving transcript-only projects blank', async () => {
+    const body = await (await buildApp(makeDeps()).request('/api/projects')).json();
+    expect(body[0].rootPath).toBe('/Users/nasta/__CODING NEW/DeepCast');
+    expect(body[1].rootPath).toBe('');
   });
 
   it('GET /api/search decorates every hit with a host path', async () => {

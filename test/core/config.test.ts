@@ -4,7 +4,7 @@ import { parseConfig } from '@kdbscope/core';
 describe('parseConfig', () => {
   it('applies defaults for an empty env', () => {
     const c = parseConfig({});
-    expect(c.codeRoot).toBe('/data/code');
+    expect(c.codeRoots).toEqual([{ container: '/data/code', host: undefined }]);
     expect(c.scanIntervalMin).toBe(5);
     expect(c.embeddings.provider).toBe('auto');
     expect(c.llm.provider).toBe('g2p');
@@ -34,5 +34,42 @@ describe('parseConfig', () => {
 
   it('rejects invalid providers', () => {
     expect(() => parseConfig({ EMBEDDINGS_PROVIDER: 'bogus' })).toThrow();
+  });
+});
+
+describe('multiple project roots', () => {
+  it('pairs each container root with its host root', () => {
+    const c = parseConfig({
+      CODE_ROOT_HOST: '/Users/nasta/__CODING NEW',
+      CODE_ROOT_HOST_2: '/Users/nasta/Work',
+    });
+    expect(c.codeRoots).toEqual([
+      { container: '/data/code', host: '/Users/nasta/__CODING NEW' },
+      { container: '/data/code2', host: '/Users/nasta/Work' },
+    ]);
+  });
+
+  it('ignores an extra slot whose host path is unset (nothing is mounted there)', () => {
+    const c = parseConfig({ CODE_ROOT_HOST: '/a', CODE_ROOT_3: '/data/code3' });
+    expect(c.codeRoots).toHaveLength(1);
+  });
+
+  it('collects up to four extra roots, skipping gaps', () => {
+    const c = parseConfig({
+      CODE_ROOT_HOST: '/a',
+      CODE_ROOT_HOST_2: '/b',
+      CODE_ROOT_HOST_4: '/d',
+    });
+    expect(c.codeRoots.map((r) => r.host)).toEqual(['/a', '/b', '/d']);
+    expect(c.codeRoots.map((r) => r.container)).toEqual([
+      '/data/code',
+      '/data/code2',
+      '/data/code4',
+    ]);
+  });
+
+  it('allows overriding a container mount point', () => {
+    const c = parseConfig({ CODE_ROOT_HOST_2: '/b', CODE_ROOT_2: '/mnt/other' });
+    expect(c.codeRoots[1]).toEqual({ container: '/mnt/other', host: '/b' });
   });
 });

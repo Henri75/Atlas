@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import type { TimelineItem } from '../types';
-import { Badge, Empty, Eyebrow, SpineRow, Spinner, Stamp } from '../components/ui';
+import type { ProjectRow, TimelineItem } from '../types';
+import { Badge, Empty, Eyebrow, PickProject, SpineRow, Spinner, Stamp } from '../components/ui';
 
 /**
  * The core-sample rail: a project's merged history, newest first, grouped by
@@ -9,9 +9,13 @@ import { Badge, Empty, Eyebrow, SpineRow, Spinner, Stamp } from '../components/u
  */
 export function TimelineView({
   project,
+  projects,
+  onProject,
   onOpenSession,
 }: {
   project: string;
+  projects: ProjectRow[];
+  onProject: (slug: string) => void;
   onOpenSession: (id: string) => void;
 }) {
   const [items, setItems] = useState<TimelineItem[]>([]);
@@ -37,7 +41,7 @@ export function TimelineView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
 
-  if (!project) return <Empty title="Pick a project to see its timeline." />;
+  if (!project) return <PickProject what="timeline" projects={projects} onProject={onProject} />;
 
   let lastDay = '';
   return (

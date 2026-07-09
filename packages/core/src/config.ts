@@ -9,13 +9,17 @@ const EmbeddingsProvider = z.enum(['auto', 'ollama', 'bundled', 'openai', 'g2p']
 const LlmProvider = z.enum(['openai', 'g2p']);
 
 const schema = z.object({
-  codeRoot: z.string().default('/data/code'),
-  claudeProjectsDir: z.string().default('/data/claude/projects'),
   /**
-   * The same trees as seen from the host. Indexed paths are container paths;
-   * an editor deep link needs the host path. Only the services know both.
+   * Every project tree to index. `container` is where it is mounted (slot 1 is
+   * `/data/code`, extras are `/data/code2` … `/data/code5`); `host` is the
+   * same tree as the user sees it, used to build editor deep links. Paired at
+   * parse time so the two can never fall out of alignment.
    */
-  codeRootHost: z.string().optional(),
+  codeRoots: z
+    .array(z.object({ container: z.string(), host: z.string().optional() }))
+    .min(1)
+    .default([{ container: '/data/code' }]),
+  claudeProjectsDir: z.string().default('/data/claude/projects'),
   claudeProjectsHost: z.string().optional(),
   databaseUrl: z.string().default('postgres://kdbscope:kdbscope@postgres:5432/kdbscope'),
   redisUrl: z.string().default('redis://redis:6379'),
@@ -48,12 +52,35 @@ const schema = z.object({
 
 export type AppConfig = z.infer<typeof schema>;
 
+/** How many extra project trees compose can mount (`/data/code2` … `code5`). */
+export const MAX_EXTRA_CODE_ROOTS = 4;
+
+/**
+ * Collect the project trees to index. Slot 1 is always present. An extra slot
+ * counts only when its *host* path is configured, because that is what decides
+ * whether compose actually mounted anything there.
+ */
+function readCodeRoots(env: NodeJS.ProcessEnv): {
+  codeRoots: { container: string; host?: string }[];
+} {
+  const val = (v: string | undefined) => (v === undefined || v === '' ? undefined : v);
+
+  const codeRoots = [
+    { container: val(env.CODE_ROOT) ?? '/data/code', host: val(env.CODE_ROOT_HOST) },
+  ];
+  for (let i = 2; i <= MAX_EXTRA_CODE_ROOTS + 1; i++) {
+    const host = val(env[`CODE_ROOT_HOST_${i}`]);
+    if (!host) continue; // no host path means compose mounted nothing there
+    codeRoots.push({ container: val(env[`CODE_ROOT_${i}`]) ?? `/data/code${i}`, host });
+  }
+  return { codeRoots };
+}
+
 function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
   const opt = (v: string | undefined) => (v === undefined || v === '' ? undefined : v);
   return schema.parse({
-    codeRoot: opt(env.CODE_ROOT),
+    ...readCodeRoots(env),
     claudeProjectsDir: opt(env.CLAUDE_PROJECTS_DIR),
-    codeRootHost: opt(env.CODE_ROOT_HOST),
     claudeProjectsHost: opt(env.CLAUDE_PROJECTS_HOST),
     databaseUrl: opt(env.DATABASE_URL),
     redisUrl: opt(env.REDIS_URL),

@@ -29,29 +29,57 @@ function isDir(p: string): boolean {
   }
 }
 
-/** Projects = depth-1 dirs with kdb/ or .git, plus depth-2 dirs with kdb/. */
-export function discoverProjects(codeRoot: string): DiscoveredProject[] {
+/** A tree to scan: where it is mounted, and where the user sees it. */
+export interface CodeRoot {
+  container: string;
+  host?: string;
+}
+
+/**
+ * Projects = depth-1 dirs with kdb/ or .git, plus depth-2 dirs with kdb/,
+ * across every configured root.
+ *
+ * `hostPath` matters: Claude Code encodes a session's *host* cwd into its
+ * directory name, so attributing sessions to projects has to compare host
+ * paths. Comparing container paths silently matches nothing and every project
+ * ends up duplicated — once from its files, once from its transcripts.
+ */
+export function discoverProjects(codeRoots: CodeRoot[]): DiscoveredProject[] {
   const projects: DiscoveredProject[] = [];
-  for (const name of safeReaddir(codeRoot)) {
-    if (name.startsWith('.') || IGNORED_DIRS.has(name)) continue;
-    const root = join(codeRoot, name);
-    if (!isDir(root)) continue;
-    const hasKdb = isDir(join(root, 'kdb'));
-    const hasGit = isDir(join(root, '.git'));
-    if (hasKdb || hasGit) {
-      projects.push({ slug: slugify(name), name, rootPath: root, hasKdb });
-    }
-    // Nested projects one level down (e.g. DeepCast/Lycos, Fun/populous).
-    for (const sub of safeReaddir(root)) {
-      if (sub.startsWith('.') || IGNORED_DIRS.has(sub)) continue;
-      const subRoot = join(root, sub);
-      if (!isDir(subRoot) || !isDir(join(subRoot, 'kdb'))) continue;
-      projects.push({
-        slug: slugify(`${name}-${sub}`),
-        name: `${name}/${sub}`,
-        rootPath: subRoot,
-        hasKdb: true,
-      });
+  const seen = new Set<string>();
+
+  const add = (p: DiscoveredProject) => {
+    // Two roots could expose the same project name; keep the first.
+    if (seen.has(p.slug)) return;
+    seen.add(p.slug);
+    projects.push(p);
+  };
+
+  for (const { container, host } of codeRoots) {
+    const toHost = (p: string) => (host ? join(host, p.slice(container.length + 1)) : undefined);
+
+    for (const name of safeReaddir(container)) {
+      if (name.startsWith('.') || IGNORED_DIRS.has(name)) continue;
+      const root = join(container, name);
+      if (!isDir(root)) continue;
+      const hasKdb = isDir(join(root, 'kdb'));
+      const hasGit = isDir(join(root, '.git'));
+      if (hasKdb || hasGit) {
+        add({ slug: slugify(name), name, rootPath: root, hostPath: toHost(root), hasKdb });
+      }
+      // Nested projects one level down (e.g. DeepCast/Lycos, Fun/populous).
+      for (const sub of safeReaddir(root)) {
+        if (sub.startsWith('.') || IGNORED_DIRS.has(sub)) continue;
+        const subRoot = join(root, sub);
+        if (!isDir(subRoot) || !isDir(join(subRoot, 'kdb'))) continue;
+        add({
+          slug: slugify(`${name}-${sub}`),
+          name: `${name}/${sub}`,
+          rootPath: subRoot,
+          hostPath: toHost(subRoot),
+          hasKdb: true,
+        });
+      }
     }
   }
   return projects;

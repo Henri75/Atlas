@@ -66,6 +66,47 @@ export function Empty({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
+/**
+ * Empty state for the views that need a project. Telling someone to "pick a
+ * project" without offering the choice right here is a dead end — the sidebar
+ * is easy to miss, and it scrolls.
+ */
+export function PickProject({
+  what,
+  projects,
+  onProject,
+}: {
+  what: string;
+  projects: { slug: string; entryCount: number }[];
+  onProject: (slug: string) => void;
+}) {
+  if (!projects.length) {
+    return (
+      <Empty
+        title="No projects indexed yet."
+        hint="The first scan may still be running — check the footer, or run `kdbs status`."
+      />
+    );
+  }
+  return (
+    <div className="max-w-3xl mx-auto py-12">
+      <p className="text-muted text-center">Choose a project to see its {what}.</p>
+      <div className="mt-6 flex flex-wrap gap-2 justify-center">
+        {projects.slice(0, 24).map((p) => (
+          <button
+            key={p.slug}
+            onClick={() => onProject(p.slug)}
+            className="rounded-md border border-line bg-panel px-3 py-1.5 text-[13px] text-muted hover:text-ink hover:border-faint"
+          >
+            {p.slug}
+            <span className="ml-2 font-mono text-[10px] text-faint">{p.entryCount}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function Spinner() {
   return <div className="text-faint font-mono text-sm py-8 text-center">querying…</div>;
 }

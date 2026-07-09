@@ -3,6 +3,7 @@
 # Configuration
 
 ## Revision History
+- 2026-07-09 16:00 UTC — Multiple project roots; why host paths are passed into the containers.
 - 2026-07-09 01:50 UTC — Ollama-preferred `auto` + version floor, WORKER_CONCURRENCY default 2, host-path passthrough, model-switch rebuild.
 - 2026-07-09 01:20 UTC — Initial version.
 
@@ -14,11 +15,22 @@ Compose reads `.env` (create with `make env`).
 
 | Var | Default | Meaning |
 |---|---|---|
-| `CODE_ROOT_HOST` | `/Users/nasta/__CODING NEW` | projects root, mounted **read-only** at `/data/code` |
+| `CODE_ROOT_HOST` | `/Users/nasta/__CODING NEW` | main projects root, mounted **read-only** at `/data/code` |
+| `CODE_ROOT_HOST_2` … `_5` | unset | up to four more project roots, mounted at `/data/code2` … `/data/code5` |
 | `CLAUDE_PROJECTS_HOST` | `/Users/nasta/.claude/projects` | transcripts, mounted **read-only** at `/data/claude/projects` |
 
-Both are passed into the containers so the API can map an indexed container
-path back to a host path for editor deep links.
+A `CODE_ROOT_HOST_n` slot is active only when it is set; compose cannot express
+an optional mount, so unset slots re-mount root 1 harmlessly and the indexer
+ignores them.
+
+These host paths are passed into the containers for two reasons: the API maps an
+indexed container path back to a host path for editor deep links, and the indexer
+needs them to attribute Claude Code transcripts to projects — Claude names each
+transcript directory after the session's **host** working directory, so matching
+on container paths finds nothing and splits every project in two.
+
+The container-side mount points (`CODE_ROOT`, `CODE_ROOT_2` …) can be overridden
+but rarely need to be.
 
 ## Indexing
 

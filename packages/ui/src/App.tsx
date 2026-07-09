@@ -17,12 +17,20 @@ export default function App() {
   const [project, setProject] = useState('');
   const [view, setView] = useState<View>('search');
   const [openSessionId, setOpenSessionId] = useState('');
+  const [offline, setOffline] = useState(false);
   const [toast, setToast] = useState('');
   const searchRef = useRef<HTMLInputElement | null>(null);
 
   const refresh = useCallback(() => {
-    void api.projects().then(setProjects).catch(() => setProjects([]));
-    void api.stats().then(setStats).catch(() => setStats(null));
+    // "no projects" and "cannot reach the API" must not look the same — that
+    // ambiguity made a dead backend look like an empty index.
+    void Promise.all([api.projects(), api.stats()])
+      .then(([p, s]) => {
+        setProjects(p);
+        setStats(s);
+        setOffline(false);
+      })
+      .catch(() => setOffline(true));
   }, []);
 
   useEffect(() => {
@@ -81,13 +89,44 @@ export default function App() {
         onReindex={() => void reindex()}
       />
       <main className="flex-1 px-6 py-6 min-w-0">
+        {offline && (
+          <div
+            role="alert"
+            className="mb-5 rounded-md border px-4 py-3 text-[13px]"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--color-report) 45%, transparent)',
+              background: 'color-mix(in srgb, var(--color-report) 8%, transparent)',
+            }}
+          >
+            <span style={{ color: 'var(--color-report)' }}>Cannot reach the API.</span>{' '}
+            <span className="text-muted">
+              The stack may still be starting. Check <code className="font-mono">make ps</code> and{' '}
+              <code className="font-mono">make logs</code>.
+            </span>
+          </div>
+        )}
         {view === 'search' && (
           <SearchView project={project} inputRef={searchRef} onOpenSession={openSession} />
         )}
-        {view === 'timeline' && <TimelineView project={project} onOpenSession={openSession} />}
-        {view === 'components' && <ComponentsView project={project} />}
+        {view === 'timeline' && (
+          <TimelineView
+            project={project}
+            projects={projects}
+            onProject={setProject}
+            onOpenSession={openSession}
+          />
+        )}
+        {view === 'components' && (
+          <ComponentsView project={project} projects={projects} onProject={setProject} />
+        )}
         {view === 'sessions' && (
-          <SessionsView project={project} openSessionId={openSessionId} onOpenSession={openSession} />
+          <SessionsView
+            project={project}
+            projects={projects}
+            onProject={setProject}
+            openSessionId={openSessionId}
+            onOpenSession={openSession}
+          />
         )}
       </main>
       {toast && (

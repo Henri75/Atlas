@@ -3,6 +3,7 @@
 # Getting Started
 
 ## Revision History
+- 2026-07-09 16:00 UTC — Multiple project roots; clarified that `make cli-link` is global and run once.
 - 2026-07-09 12:20 UTC — Initial version.
 
 Everything you need to start KDBScope, keep its index current, and actually use
@@ -63,9 +64,14 @@ is searchable almost immediately.
 Watch progress in the UI footer, or:
 
 ```bash
-make cli-link      # once, to install the `kdbs` command
+make cli-link      # run once, from this repo
 kdbs status
 ```
+
+`make cli-link` installs `kdbs` **globally** on your machine (an `npm link`), so
+you only run it once, from this directory. After that `kdbs` works from any
+folder — it is a thin client for the API and always searches everything the
+*server* indexes, regardless of where you happen to be standing.
 
 ---
 
@@ -159,7 +165,50 @@ roughly 40 minutes.
 
 ---
 
-## 5. Settings worth knowing
+## 5. Indexing more than one project folder
+
+By default KDBScope indexes one tree: whatever `CODE_ROOT_HOST` points at
+(`__CODING NEW`). You can add up to **four more**. Uncomment a slot in `.env`:
+
+```bash
+CODE_ROOT_HOST=/Users/nasta/__CODING NEW      # slot 1 (always used)
+CODE_ROOT_HOST_2=/Users/nasta/Documents/CODING
+CODE_ROOT_HOST_3=/Volumes/CloudBox/Projects
+```
+
+Then apply it — no reindex flag needed:
+
+```bash
+docker compose up -d
+```
+
+Each tree is mounted **read-only** at `/data/code`, `/data/code2`, … and
+scanned the same way: a directory is a project if it contains `kdb/` or `.git`,
+and one nesting level down is scanned too (so `DeepCast/Lycos` is its own
+project).
+
+**Why this matters for Claude Code sessions.** Claude Code names each
+transcript folder after the *host* path of the session's working directory. If
+that path isn't under one of your roots, KDBScope cannot tell which project the
+session belongs to, so it files it under a standalone project named after the
+path (`users-nasta-documents-coding-deepcast`). Add the folder as a root and
+those sessions merge into the real project on the next boot.
+
+To see which of these you have:
+
+```bash
+kdbs projects --json | jq -r '.[] | select(.rootPath=="") | .slug'
+```
+
+Anything listed there is a transcript folder KDBScope has history for but no
+files. Adding its parent as a root will attach it to the right project.
+
+Changing the grouping rules rebuilds the derived index automatically (the
+sources are read-only and untouched); it takes as long as a first index.
+
+---
+
+## 6. Settings worth knowing
 
 Edit `.env`, then `docker compose up -d` to apply.
 
@@ -171,7 +220,8 @@ Edit `.env`, then `docker compose up -d` to apply.
 | `EMBEDDINGS_MODEL` | `nomic-embed-text` | Any Ollama embedding model. Changing it triggers a rebuild. |
 | `LLM_PROVIDER` / `LLM_BASE_URL` | `g2p` / `:8181/v1` | Point Ask at any OpenAI-compatible endpoint. Set `LLM_API_KEY` if it needs one. |
 | `LLM_MODEL` | `gemini-2.5-flash` | The model that writes Ask answers. |
-| `CODE_ROOT_HOST` | `__CODING NEW` | The projects tree to index. Also used to build editor deep links. |
+| `CODE_ROOT_HOST` | `__CODING NEW` | The main projects tree to index. Also used for editor deep links and to attach Claude sessions to projects. |
+| `CODE_ROOT_HOST_2` … `_5` | unset | Extra project trees. See [section 5](#5-indexing-more-than-one-project-folder). |
 | `CLAUDE_PROJECTS_HOST` | `~/.claude/projects` | Where Claude Code stores transcripts. |
 | `UI_PORT` / `API_PORT` / `MCP_PORT` | 8712 / 8710 / 8711 | Only if something else owns the port. |
 
@@ -181,7 +231,7 @@ KDBScope cannot modify them.
 
 ---
 
-## 6. Everyday commands
+## 7. Everyday commands
 
 ```bash
 make up / make down          # start / stop (data volumes survive)
@@ -199,7 +249,7 @@ docker compose down -v && make up
 
 ---
 
-## 7. If something looks wrong
+## 8. If something looks wrong
 
 | Symptom | What it means |
 |---|---|

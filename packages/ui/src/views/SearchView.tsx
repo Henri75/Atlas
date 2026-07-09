@@ -11,6 +11,22 @@ const SOURCES: (SourceType | '')[] = [
   'kdb_report', 'claude_session', 'git_commit', 'doc',
 ];
 
+/**
+ * Turn a fetch/HTTP failure into something the user can act on. A dead API
+ * returns a full nginx HTML error page, which is useless as a message.
+ */
+function describeError(e: unknown): string {
+  const msg = (e as Error)?.message ?? String(e);
+  if (/^50[0-9]/.test(msg) || /bad gateway/i.test(msg)) {
+    return 'The API is not reachable. Is the stack running? Try `make ps` and `make logs`.';
+  }
+  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+    return 'Could not reach the server. Is the stack running?';
+  }
+  // Strip an HTML body if one leaked through.
+  return msg.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
 /** Render [n] citations as amber superscripts. */
 function Cited({ text }: { text: string }) {
   const parts = text.split(/(\[\d+\])/g);
@@ -67,7 +83,10 @@ export function SearchView({
           const r = await api.search({ q, project, source, limit: 30 });
           if (seq.current === mySeq) setResult(r);
         } catch (e) {
-          if (seq.current === mySeq) setError((e as Error).message);
+          if (seq.current === mySeq) {
+            setResult(null);
+            setError(describeError(e));
+          }
         } finally {
           if (seq.current === mySeq) setLoading(false);
         }
@@ -84,7 +103,9 @@ export function SearchView({
           controller.signal,
         );
         for await (const ev of stream) {
-          if (seq.current !== mySeq) return; // superseded by a newer question
+          // Superseded by a newer question: stop consuming, but let `finally`
+          // run so the streaming flag is always cleared.
+          if (seq.current !== mySeq) break;
           if (ev.type === 'sources') {
             setAskResult((prev) => ({ ...prev!, sources: ev.sources }));
           } else if (ev.type === 'delta') {
@@ -92,12 +113,14 @@ export function SearchView({
           } else if (ev.type === 'done') {
             setAskResult((prev) => ({ ...prev!, model: ev.model, degraded: ev.degraded }));
           } else if (ev.type === 'error') {
+            setAskResult(null); // an empty answer panel would hide the error
             setError(ev.message);
           }
         }
       } catch (e) {
         if (seq.current === mySeq && (e as Error).name !== 'AbortError') {
-          setError((e as Error).message);
+          setAskResult(null);
+          setError(describeError(e));
         }
       } finally {
         if (seq.current === mySeq) setStreaming(false);
@@ -161,9 +184,21 @@ export function SearchView({
       </div>
 
       {loading && <Spinner />}
-      {error && <p className="font-mono text-sm py-4" style={{ color: 'var(--color-report)' }}>{error}</p>}
+      {error && (
+        <div
+          role="alert"
+          className="mt-6 rounded-md border px-4 py-3 text-[13px] leading-relaxed"
+          style={{
+            borderColor: 'color-mix(in srgb, var(--color-report) 45%, transparent)',
+            background: 'color-mix(in srgb, var(--color-report) 8%, transparent)',
+          }}
+        >
+          <span style={{ color: 'var(--color-report)' }}>Something went wrong.</span>{' '}
+          <span className="text-muted">{error}</span>
+        </div>
+      )}
 
-      {mode === 'ask' && askResult && (
+      {mode === 'ask' && askResult && !error && (
         <div className="mt-6 rise">
           {askResult.degraded && (
             <p className="font-mono text-xs mb-3" style={{ color: 'var(--color-report)' }}>
@@ -205,7 +240,7 @@ export function SearchView({
         </div>
       )}
 
-      {!loading && mode === 'search' && result && (
+      {!loading && mode === 'search' && result && !error && (
         <div className="mt-6">
           {result.degraded && <DegradedBanner mode={result.mode} />}
           <p className="font-mono text-[11px] text-faint mb-3">

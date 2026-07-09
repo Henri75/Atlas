@@ -476,7 +476,11 @@ export class Catalog {
    * Used when the id scheme changes and old dedup keys can no longer match.
    */
   async resetDerivedData(): Promise<void> {
-    await this.pool.query('TRUNCATE entries, scan_state, sessions RESTART IDENTITY CASCADE');
+    // `projects` too: how sources are attributed to a project can change, and
+    // a stale project row would linger with no entries (or the wrong ones).
+    await this.pool.query(
+      'TRUNCATE projects, entries, scan_state, sessions RESTART IDENTITY CASCADE',
+    );
   }
 
   async setSetting(key: string, value: string): Promise<void> {
