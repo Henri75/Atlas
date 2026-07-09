@@ -12,6 +12,7 @@ get ranked, cited results or a synthesized LLM answer.
 KDBScope is a **read-only lens**: it never writes to your projects. The whole index
 (Postgres + Qdrant) is a rebuildable cache.
 
+> **New here? Read [Getting Started](docs/getting-started.md).**
 > Full documentation lives in [`docs/`](docs/index.md).
 
 ## Quick start
@@ -88,7 +89,7 @@ All Docker images are pinned `tag@digest` in `docker-compose.yml` / `docker/*.Do
 
 ```bash
 make install   # npm workspaces
-make test      # vitest (143 tests)
+make test      # vitest (171 tests)
 make lint      # tsc across all packages
 make smoke     # health-checks a running stack
 ```

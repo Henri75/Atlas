@@ -3,6 +3,7 @@
 # Operations
 
 ## Revision History
+- 2026-07-09 12:20 UTC — ID scheme migration; scan jobs release their id on completion.
 - 2026-07-09 02:10 UTC — Backfill resume cursor; degraded-search banner behaviour.
 - 2026-07-09 01:50 UTC — Model-switch/backfill behaviour, Ollama ≥ 0.13 requirement, misleading-metric warnings, recentErrors.
 - 2026-07-09 01:20 UTC — Initial version.
@@ -84,6 +85,18 @@ rebuilds from scratch — its vectors have a different dimension.
 - **`/api/stats` `chunks`** comes from that same approximate count.
 - **`errors`** is a lifetime total. Use `recentErrors` to answer "is it
   failing right now?".
+
+## Changing how ids are derived
+
+Entry `dedup_key`s and Qdrant point ids are derived deterministically. If that
+derivation changes, `packages/core/src/ids.ts` bumps `ID_SCHEME`. At the next
+boot the indexer notices the mismatch, clears the derived index (entries, scan
+state, sessions, and the vector collection) and **obliterates the scan queue**,
+then re-parses everything. Sources are read-only and untouched.
+
+The queue must be cleared alongside the catalog: scan jobs carry deterministic
+ids, and BullMQ treats `add()` for a retained completed id as a silent no-op —
+so a wiped catalog with a remembering queue indexes nothing.
 
 ## Data reset
 

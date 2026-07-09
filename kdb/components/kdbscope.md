@@ -108,3 +108,33 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-09] - Two silent correctness bugs found by testing the untested modules
+
+**Objective:**
+- Fill genuine test-coverage gaps, then write a getting-started guide.
+
+**Summary of Work:**
+- Added tests for the four untested core modules (ids, catalog.dedupKey, qdrant filter, chatComplete) and for scan-job options. 143 -> 171 tests.
+- Fixed a dedup_key collision: deterministicUuid joined parts with a SPACE, so ('line:1','fix bug') and ('line:1 fix','bug') hashed identically. Proved it, switched to \x1f, bumped the namespace to v2. The indexer detects the scheme change at boot and rebuilds the derived index.
+- That migration exposed a worse bug: scan jobs use deterministic ids and BullMQ retained completed jobs, so add() for an already-run id is a SILENT NO-OP. Every source that had been scanned once was never scanned again. 272 retained jobs sat under the 1000 cap, so nothing had ever been evicted.
+- Rewrote chatComplete on withRetry (it hand-rolled a loop matching error TEXT).
+- Wrote docs/getting-started.md and verified every command, flag, make target and the MCP tool count against the real binaries.
+
+**Key Decisions & Rationale:**
+- Truncating entries/scan_state/sessions is safe because they are derived from read-only mounts — the index is a cache, never the source of truth. Confirmed rw=false on both mounts before running it.
+- removeOnComplete: true rather than dropping deterministic ids: the id still dedups PENDING work, it just must not stay reserved after the job finishes.
+- The id-scheme migration obliterates the scan queue too: wiping the catalog makes the queue's memory of "already scanned this" a lie.
+
+**Code/Files Modified:**
+- packages/core/src/{ids,catalog,qdrant,llm}.ts, packages/indexer/src/{main,scheduler}.ts
+- test/core/{ids,dedupKey,qdrantFilter,llmComplete}.test.ts, test/indexer/scheduler.test.ts
+- docs/getting-started.md (new), docs/{index,operations}.md, README.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** verified the destructive migration live — 'id scheme v1 -> v2', catalog cleared, no duplicate dedup_keys, rebuild running, 0 retained jobs (was 272), 0 errors. Search stayed healthy throughout.
+- **What Failed:** the migration itself was initially a no-op: it wiped the catalog and then enqueued 136 jobs that BullMQ silently swallowed, because their ids matched retained completed jobs. Caught it because entries stayed at 0 with pending at 0.
+- **Pattern:** three of this session's worst bugs (stale active_collection, empty-collection-only backfill trigger, retained job ids) are the same shape — two pieces of state that must agree, updated independently. Worth grepping for the shape, not the symptom.
+
+**Status:**
+- Completed

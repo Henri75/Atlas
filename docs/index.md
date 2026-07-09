@@ -3,8 +3,10 @@
 # KDBScope Documentation
 
 ## Revision History
+- 2026-07-09 12:20 UTC — Added the Getting Started guide.
 - 2026-07-09 01:20 UTC — Initial docs set.
 
+- **[Getting Started](getting-started.md) — start here: install, run, search, keep the index current.**
 - [Architecture](architecture.md) — services, data model, search pipeline.
 - [Configuration](configuration.md) — every env var, providers, ports.
 - [API](api.md) — REST endpoints.

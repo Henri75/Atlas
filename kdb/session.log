@@ -22,3 +22,11 @@
 
 **AI Response Summary:**
 > Shipped the remaining backlog (MCP kdb_entry, backfill resume cursor, Ollama version guard, degraded-search banner) and completed the full re-embed onto Ollama: 74202 entries -> 102202 chunks in 2332s. Verified the finished system on real data — hybrid search 314ms, streaming Ask 0.79s to first token through nginx, MCP search->entry loop, and a healthy-collection restart correctly skipping the rebuild. 143 tests, lint clean, smoke 6/6, zero index errors since the Ollama fix.
+---
+### [2026-07-09 12:25 UTC]
+
+**User Prompt Summary:**
+> Update documentation and the test suite, commit and push. Then write a getting-started doc (start, configure, use, update the index, useful settings) and summarize it so I can start testing.
+
+**AI Response Summary:**
+> Filled the four real test-coverage gaps and found two silent correctness bugs doing it: deterministic ids joined parts with a space, so two different entries could share a dedup_key and the second was never indexed; and scan jobs kept their deterministic ids reserved after completing, so BullMQ silently swallowed every subsequent scan of a source — SCAN_INTERVAL_MIN was effectively "scan once, then never again". Fixed both (id scheme v2 with a boot migration that rebuilds the derived index and clears the queue; removeOnComplete: true), rewrote chatComplete on the shared withRetry helper, and verified the destructive migration live (no duplicate keys, 0 retained jobs, rebuild running, search healthy). 143 -> 171 tests. Wrote docs/getting-started.md and checked every command, flag, make target and the MCP tool count against the real binaries.
