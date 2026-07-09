@@ -3,6 +3,7 @@
 # Operations
 
 ## Revision History
+- 2026-07-09 02:10 UTC — Backfill resume cursor; degraded-search banner behaviour.
 - 2026-07-09 01:50 UTC — Model-switch/backfill behaviour, Ollama ≥ 0.13 requirement, misleading-metric warnings, recentErrors.
 - 2026-07-09 01:20 UTC — Initial version.
 
@@ -38,16 +39,25 @@ jobs (both embed, and a local Ollama serves one request at a time), and only
 publishes `active_collection` when the new collection can serve. Search keeps
 running against the previous collection throughout.
 
-A rebuild of ~74k entries takes roughly 30–40 minutes on Ollama/Apple Silicon.
-`kdbs status` and the UI show progress and an ETA.
+A rebuild of ~74k entries takes roughly 30–40 minutes on Ollama/Apple Silicon
+(~40 entries/s). `kdbs status` and the UI show progress and an ETA.
+
+The rebuild **resumes**: a cursor is persisted after every page, keyed by
+collection name, so restarting the indexer mid-rebuild continues where it left
+off instead of re-embedding from the first entry. A *different* model still
+rebuilds from scratch — its vectors have a different dimension.
 
 ## Troubleshooting
 
-- **`degraded: true` / mode `fts`** — Qdrant down or the collection doesn't
-  match the active embedder. Check `docker logs kdb-qdrant-1`; restart api after
-  changing embedding config.
+- **`degraded: true` / mode `fts`** — Qdrant is unreachable, so search falls back
+  to Postgres text search (weaker ranking and recall). The UI and `kdbs search`
+  now say so in a banner. Check `docker logs kdb-qdrant-1`.
 - **mode `sparse-only`** — embedding provider unreachable (e.g. Ollama stopped).
-  Keyword search still works; hybrid resumes when the provider is back.
+  Keyword matching still works, but semantically similar wording is missed;
+  hybrid resumes automatically when the provider is back.
+- **Search silently returns nothing useful after a model change** — the API
+  follows `settings.active_collection` within 15s. If it lags, check that the
+  indexer finished its rebuild (`kdbs status` shows `re-embed`).
 - **Ask returns sources but no answer** — LLM endpoint unreachable (G2P not
   running?). The response says so explicitly; sources are still returned.
 - **Index errors** — `GET /api/admin/errors`, or `kdbs status`, which reports

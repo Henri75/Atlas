@@ -88,7 +88,7 @@ All Docker images are pinned `tag@digest` in `docker-compose.yml` / `docker/*.Do
 
 ```bash
 make install   # npm workspaces
-make test      # vitest (129 tests)
+make test      # vitest (143 tests)
 make lint      # tsc across all packages
 make smoke     # health-checks a running stack
 ```
