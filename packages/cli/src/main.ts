@@ -199,9 +199,25 @@ program
       console.log(`${bold('projects')}  ${r.projects}`);
       console.log(`${bold('entries')}   ${r.entries}`);
       console.log(`${bold('chunks')}    ${r.chunks}`);
-      console.log(`${bold('errors')}    ${r.errors > 0 ? red(String(r.errors)) : green('0')}`);
+      console.log(
+        `${bold('errors')}    ${r.recentErrors > 0 ? red(`${r.recentErrors} in the last hour`) : green('none in the last hour')}` +
+          dim(` (${r.errors} lifetime)`),
+      );
       console.log(`${bold('embedder')}  ${r.embedder} → ${dim(r.collection)}`);
       console.log(`${bold('last run')}  ${date(r.lastRunAt) || dim('never')}`);
+      if (r.pending != null) {
+        console.log(`${bold('queued')}    ${r.pending} scan job${r.pending === 1 ? '' : 's'}`);
+      }
+      if (r.backfill) {
+        const pct = Math.round((r.backfill.done / Math.max(1, r.backfill.total)) * 100);
+        const mins = Math.round(r.backfill.etaSec / 60);
+        console.log(
+          yellow(
+            `re-embed  ${r.backfill.done.toLocaleString()}/${r.backfill.total.toLocaleString()} ` +
+              `(${pct}%, ~${mins}m left) — results incomplete until this finishes`,
+          ),
+        );
+      }
       console.log(dim('\nby source:'));
       for (const [k, v] of Object.entries(r.bySource ?? {})) {
         console.log(`  ${(SOURCE_BADGE[k] ?? k).padEnd(12)} ${v}`);

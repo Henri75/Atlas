@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import type { AskService, Catalog, SearchService, SourceType } from '@kdbscope/core';
+import { editorUrl, lineFromSourceRef, toHostPath } from '@kdbscope/core';
+import type { AskService, Catalog, PathMapping, SearchService, SourceType } from '@kdbscope/core';
 
 /**
  * REST surface. Dependencies are injected so route logic is unit-testable
@@ -16,17 +17,54 @@ export interface ApiDeps {
   vectorCount: () => Promise<number>;
   /** Read at request time — the active collection can change at runtime. */
   meta: () => { embedder: string; collection: string };
+  /** Scan-queue depth by job state; null when Redis is unreachable. */
+  queueCounts: () => Promise<Record<string, number> | null>;
+  /** Container→host path mounts, for editor deep links. */
+  pathMappings: PathMapping[];
+}
+
+export interface BackfillProgress {
+  done: number;
+  total: number;
+  etaSec: number;
 }
 
 export function buildApp(deps: ApiDeps): Hono {
   const app = new Hono();
   app.use('/api/*', cors());
 
+  /**
+   * Attach the host path and an editor link to anything carrying a source.
+   * A row without a source path is returned untouched rather than failing the
+   * whole request.
+   */
+  const withSource = <T extends { sourcePath?: string; sourceRef?: string }>(item: T) => {
+    if (!item.sourcePath) return item;
+    const hostPath = toHostPath(item.sourcePath, deps.pathMappings);
+    return { ...item, hostPath, editorUrl: editorUrl(hostPath, lineFromSourceRef(item.sourceRef)) };
+  };
+
   app.get('/api/health', (c) => c.json({ ok: true, service: 'kdbscope-api' }));
 
   app.get('/api/stats', async (c) => {
-    const [stats, chunks] = await Promise.all([deps.catalog.stats(), deps.vectorCount()]);
-    return c.json({ ...stats, chunks, ...deps.meta() });
+    const [stats, chunks, queue, backfillRaw] = await Promise.all([
+      deps.catalog.stats(),
+      deps.vectorCount(),
+      deps.queueCounts(),
+      deps.catalog.getSetting('backfill').catch(() => null),
+    ]);
+    // A re-embed in progress means search may be running on a partial
+    // collection; the UI shows it rather than leaving the user guessing.
+    let backfill: BackfillProgress | null = null;
+    if (backfillRaw) {
+      try {
+        backfill = JSON.parse(backfillRaw) as BackfillProgress;
+      } catch {
+        backfill = null;
+      }
+    }
+    const pending = queue ? (queue.waiting ?? 0) + (queue.active ?? 0) + (queue.delayed ?? 0) : null;
+    return c.json({ ...stats, chunks, ...deps.meta(), queue, pending, backfill });
   });
 
   app.get('/api/search', async (c) => {
@@ -43,7 +81,7 @@ export function buildApp(deps: ApiDeps): Hono {
       },
       Math.min(Number(c.req.query('limit') ?? 20), 100),
     );
-    return c.json(result);
+    return c.json({ ...result, hits: result.hits.map(withSource) });
   });
 
   app.post('/api/ask', async (c) => {
@@ -131,12 +169,15 @@ export function buildApp(deps: ApiDeps): Hono {
     return c.json(detail);
   });
 
+  /** Full entry, including the body that search results only snippet. */
   app.get('/api/entries/:id', async (c) => {
     const id = Number(c.req.param('id'));
     const rows = await deps.catalog.getEntries([id]);
     const row = rows.get(id);
     if (!row) return c.json({ error: 'entry not found' }, 404);
-    return c.json(row);
+    return c.json(
+      withSource({ ...row, sourcePath: row.source_path, sourceRef: row.source_ref ?? undefined }),
+    );
   });
 
   app.post('/api/admin/reindex', async (c) => {

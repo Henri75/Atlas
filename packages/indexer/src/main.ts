@@ -66,14 +66,20 @@ async function main() {
     );
     const t0 = Date.now();
     const n = await backfillVectors(deps, {
-      onPage: (done, total) => {
+      onPage: async (done, total) => {
+        const rate = done / Math.max(1, (Date.now() - t0) / 1000);
+        const etaSec = Math.round((total - done) / Math.max(rate, 0.01));
+        // Surfaced by /api/stats so a stalled rebuild is visible in the UI
+        // rather than only in `docker logs`.
+        await catalog
+          .setSetting('backfill', JSON.stringify({ done, total, etaSec }))
+          .catch(() => {});
         if (done % 2000 < 200) {
-          const rate = done / Math.max(1, (Date.now() - t0) / 1000);
-          const etaMin = Math.round((total - done) / Math.max(rate, 0.01) / 60);
-          console.log(`[indexer] re-embed ${done}/${total} entries (~${etaMin}m left)`);
+          console.log(`[indexer] re-embed ${done}/${total} entries (~${Math.round(etaSec / 60)}m left)`);
         }
       },
     });
+    await catalog.setSetting('backfill', '').catch(() => {});
     console.log(`[indexer] re-embed complete: ${n} entries in ${Math.round((Date.now() - t0) / 1000)}s`);
   }
 

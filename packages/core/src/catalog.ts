@@ -441,10 +441,14 @@ export class Catalog {
   }
 
   async stats(): Promise<IndexStats> {
-    const [proj, ent, err, run, bySource] = await Promise.all([
+    const [proj, ent, err, recentErr, run, bySource] = await Promise.all([
       this.pool.query('SELECT count(*)::int AS c FROM projects'),
       this.pool.query('SELECT count(*)::int AS c FROM entries'),
       this.pool.query('SELECT count(*)::int AS c FROM index_errors'),
+      // "Is it failing now?" — a lifetime counter never resets and gets ignored.
+      this.pool.query(
+        "SELECT count(*)::int AS c FROM index_errors WHERE created_at > now() - interval '1 hour'",
+      ),
       this.pool.query('SELECT max(finished_at) AS t FROM index_runs'),
       this.pool.query('SELECT source_type, count(*)::int AS c FROM entries GROUP BY source_type'),
     ]);
@@ -453,6 +457,7 @@ export class Catalog {
       entries: ent.rows[0].c,
       chunks: 0, // filled in by the API layer from Qdrant
       errors: err.rows[0].c,
+      recentErrors: recentErr.rows[0].c,
       lastRunAt: run.rows[0].t?.toISOString(),
       bySource: Object.fromEntries(bySource.rows.map((r2) => [r2.source_type, r2.c])),
     };

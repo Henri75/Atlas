@@ -5,7 +5,9 @@ import type { ApiDeps } from '../../packages/api/src/app.js';
 function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
   return {
     catalog: {
-      stats: async () => ({ projects: 2, entries: 10, chunks: 0, errors: 1, bySource: {} }),
+      stats: async () => ({
+        projects: 2, entries: 10, chunks: 0, errors: 841, recentErrors: 0, bySource: {},
+      }),
       listProjects: async () => [{ slug: 'deepcast', name: 'DeepCast', entryCount: 10 }],
       timeline: async () => [{ entryId: 1, title: 't', occurredAt: '2026-07-08T00:00:00Z' }],
       components: async () => [{ component: 'video-import', count: 3 }],
@@ -16,12 +18,15 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
       getEntries: async (ids: number[]) =>
         new Map(ids.filter((i) => i === 1).map((i) => [i, { id: i, title: 'entry' }])),
       recentErrors: async () => [{ id: 1, message: 'boom' }],
+      getSetting: async () => null,
     } as any,
     search: { search: async () => ({ hits: [], mode: 'hybrid', degraded: false, tookMs: 5 }) } as any,
     ask: { ask: async () => ({ answer: '42 [1]', sources: [], model: 'm', degraded: false }) } as any,
     enqueueScan: vi.fn(async () => 1),
     vectorCount: async () => 123,
     meta: () => ({ embedder: 'ollama/nomic-embed-text', collection: 'kdbscope_x' }),
+    queueCounts: async () => ({ waiting: 5, active: 2, delayed: 1, failed: 0, completed: 90 }),
+    pathMappings: [{ containerRoot: '/data/code', hostRoot: '/Users/nasta/__CODING NEW' }],
     ...overrides,
   };
 }
@@ -33,10 +38,32 @@ describe('api routes', () => {
     expect(await res.json()).toMatchObject({ ok: true });
   });
 
-  it('GET /api/stats merges catalog stats + vector count + meta', async () => {
+  it('GET /api/stats merges catalog stats + vector count + meta + queue depth', async () => {
     const res = await buildApp(makeDeps()).request('/api/stats');
     const body = await res.json();
     expect(body).toMatchObject({ projects: 2, chunks: 123, collection: 'kdbscope_x' });
+    expect(body.queue).toMatchObject({ waiting: 5, active: 2 });
+    // pending = waiting + active + delayed, the number that matters to a user.
+    expect(body.pending).toBe(8);
+    expect(body.backfill).toBeNull();
+    // A healed system reports 0 recent errors despite a large lifetime count.
+    expect(body).toMatchObject({ errors: 841, recentErrors: 0 });
+  });
+
+  it('GET /api/stats surfaces an in-progress re-embed', async () => {
+    const deps = makeDeps();
+    deps.catalog.getSetting = async () =>
+      JSON.stringify({ done: 4000, total: 74202, etaSec: 1980 });
+    const body = await (await buildApp(deps).request('/api/stats')).json();
+    expect(body.backfill).toEqual({ done: 4000, total: 74202, etaSec: 1980 });
+  });
+
+  it('GET /api/stats still renders when Redis is unreachable', async () => {
+    const deps = makeDeps({ queueCounts: async () => null });
+    const body = await (await buildApp(deps).request('/api/stats')).json();
+    expect(body.queue).toBeNull();
+    expect(body.pending).toBeNull();
+    expect(body.projects).toBe(2);
   });
 
   it('GET /api/search requires q', async () => {
@@ -131,5 +158,45 @@ describe('api routes', () => {
     const app = buildApp(makeDeps());
     expect((await app.request('/api/entries/1')).status).toBe(200);
     expect((await app.request('/api/entries/9')).status).toBe(404);
+  });
+
+  it('GET /api/entries/:id survives a row with no source path', async () => {
+    // A malformed row must not 500 the endpoint.
+    const res = await buildApp(makeDeps()).request('/api/entries/1');
+    expect(res.status).toBe(200);
+    expect((await res.json()).hostPath).toBeUndefined();
+  });
+
+  it('GET /api/entries/:id returns the host path and an editor link', async () => {
+    const deps = makeDeps();
+    deps.catalog.getEntries = async () =>
+      new Map([
+        [1, { id: 1, title: 'e', body: 'full body', source_path: '/data/code/DeepCast/kdb/changelog.log', source_ref: 'line:12' }],
+      ]);
+    const body = await (await buildApp(deps).request('/api/entries/1')).json();
+    expect(body.hostPath).toBe('/Users/nasta/__CODING NEW/DeepCast/kdb/changelog.log');
+    expect(body.editorUrl).toContain('vscode://file/Users/nasta/__CODING%20NEW');
+    expect(body.editorUrl).toMatch(/:12$/);
+    expect(body.body).toBe('full body');
+  });
+
+  it('GET /api/search decorates every hit with a host path', async () => {
+    const hit = {
+      entryId: 1,
+      score: 1,
+      projectSlug: 'deepcast',
+      sourceType: 'git_commit',
+      title: 't',
+      snippet: 's',
+      sourcePath: '/data/code/DeepCast',
+      sourceRef: 'aaa111',
+    };
+    const deps = makeDeps({
+      search: { search: async () => ({ hits: [hit], mode: 'hybrid', degraded: false, tookMs: 1 }) } as any,
+    });
+    const body = await (await buildApp(deps).request('/api/search?q=x')).json();
+    expect(body.hits[0].hostPath).toBe('/Users/nasta/__CODING NEW/DeepCast');
+    // A commit sha is not a line number.
+    expect(body.hits[0].editorUrl).not.toContain(':aaa111');
   });
 });

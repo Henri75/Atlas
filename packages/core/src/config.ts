@@ -11,6 +11,12 @@ const LlmProvider = z.enum(['openai', 'g2p']);
 const schema = z.object({
   codeRoot: z.string().default('/data/code'),
   claudeProjectsDir: z.string().default('/data/claude/projects'),
+  /**
+   * The same trees as seen from the host. Indexed paths are container paths;
+   * an editor deep link needs the host path. Only the services know both.
+   */
+  codeRootHost: z.string().optional(),
+  claudeProjectsHost: z.string().optional(),
   databaseUrl: z.string().default('postgres://kdbscope:kdbscope@postgres:5432/kdbscope'),
   redisUrl: z.string().default('redis://redis:6379'),
   qdrantUrl: z.string().default('http://qdrant:6333'),
@@ -47,6 +53,8 @@ function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
   return schema.parse({
     codeRoot: opt(env.CODE_ROOT),
     claudeProjectsDir: opt(env.CLAUDE_PROJECTS_DIR),
+    codeRootHost: opt(env.CODE_ROOT_HOST),
+    claudeProjectsHost: opt(env.CLAUDE_PROJECTS_HOST),
     databaseUrl: opt(env.DATABASE_URL),
     redisUrl: opt(env.REDIS_URL),
     qdrantUrl: opt(env.QDRANT_URL),

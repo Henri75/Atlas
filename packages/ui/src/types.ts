@@ -87,10 +87,16 @@ export interface Stats {
   entries: number;
   chunks: number;
   errors: number;
+  recentErrors: number;
   lastRunAt?: string;
   bySource: Record<string, number>;
   embedder: string;
   collection: string;
+  /** Scan jobs waiting + active + delayed; null when Redis is unreachable. */
+  pending: number | null;
+  queue: Record<string, number> | null;
+  /** Present only while the vector collection is being rebuilt. */
+  backfill: { done: number; total: number; etaSec: number } | null;
 }
 
 export const SOURCE_META: Record<SourceType, { label: string; color: string }> = {

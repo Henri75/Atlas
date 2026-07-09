@@ -7,6 +7,10 @@ x-node-common: &node-common
   environment:
     CODE_ROOT: /data/code
     CLAUDE_PROJECTS_DIR: /data/claude/projects
+    # Passed through so the API can turn container paths back into host paths
+    # for editor deep links.
+    CODE_ROOT_HOST: ${CODE_ROOT_HOST:-}
+    CLAUDE_PROJECTS_HOST: ${CLAUDE_PROJECTS_HOST:-}
     DATABASE_URL: postgres://kdbscope:kdbscope@postgres:5432/kdbscope
     REDIS_URL: redis://redis:6379
     QDRANT_URL: http://qdrant:6333

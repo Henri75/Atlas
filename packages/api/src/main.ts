@@ -9,6 +9,7 @@ import {
   collectionNameFor,
   createEmbedder,
   getConfig,
+  mappingsFromConfig,
 } from '@kdbscope/core';
 import type { EmbeddingProvider } from '@kdbscope/core';
 import { buildApp } from './app.js';
@@ -53,6 +54,14 @@ async function main() {
       embedder: embedder ? `${embedder.name}/${embedder.model}` : 'none',
       collection: vectors.collection,
     }),
+    queueCounts: async () => {
+      try {
+        return await queue.getJobCounts('waiting', 'active', 'delayed', 'failed', 'completed');
+      } catch {
+        return null; // Redis down: stats still render, just without queue depth.
+      }
+    },
+    pathMappings: mappingsFromConfig(cfg),
     enqueueScan: async ({ project, full }) => {
       // The indexer's scheduler tick owns discovery; we piggyback by writing
       // a trigger job it treats identically (same queue, discovery job).

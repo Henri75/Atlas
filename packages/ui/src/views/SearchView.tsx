@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { AskResult, SearchResult, SourceType } from '../types';
 import { Badge, Empty, SpineRow, Spinner, Stamp } from '../components/ui';
+import { EntryDrawer } from '../components/EntryDrawer';
 
 /** Search + Ask: one input, two modes. '/' focuses; Enter searches; ⌘Enter asks. */
 
@@ -46,6 +47,7 @@ export function SearchView({
   const [streaming, setStreaming] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [openEntry, setOpenEntry] = useState<number | null>(null);
   const seq = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -186,14 +188,18 @@ export function SearchView({
           </div>
           <div className="mt-4 space-y-1.5">
             {askResult.sources.map((s) => (
-              <div key={s.n} className="flex items-baseline gap-2 text-sm">
+              <button
+                key={s.n}
+                onClick={() => setOpenEntry(s.entryId)}
+                className="w-full flex items-baseline gap-2 text-sm text-left hover:bg-panel rounded px-1 py-0.5"
+              >
                 <span className="font-mono text-[11px]" style={{ color: 'var(--color-kdb)' }}>
                   [{s.n}]
                 </span>
                 <Badge source={s.sourceType} />
                 <span className="text-muted truncate">{s.title}</span>
                 <Stamp iso={s.occurredAt} />
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -210,7 +216,7 @@ export function SearchView({
               <SpineRow
                 key={`${h.entryId}`}
                 source={h.sourceType}
-                onClick={h.sessionId ? () => onOpenSession(h.sessionId!) : undefined}
+                onClick={() => setOpenEntry(h.entryId)}
               >
                 <div className="flex items-baseline gap-2">
                   <Badge source={h.sourceType} />
@@ -219,6 +225,17 @@ export function SearchView({
                   )}
                   <span className="font-mono text-[11px] text-faint">{h.projectSlug}</span>
                   <div className="flex-1" />
+                  {h.sessionId && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenSession(h.sessionId!);
+                      }}
+                      className="font-mono text-[10px] text-muted hover:text-ink underline underline-offset-2"
+                    >
+                      open session
+                    </button>
+                  )}
                   <Stamp iso={h.occurredAt} />
                 </div>
                 <div className="mt-1 font-medium text-[14px]">{h.title}</div>
@@ -238,6 +255,8 @@ export function SearchView({
           hint='Try "qdrant timeout fix", or Ask: "what were the bug fixes in video import?"'
         />
       )}
+
+      <EntryDrawer entryId={openEntry} onClose={() => setOpenEntry(null)} />
     </div>
   );
 }

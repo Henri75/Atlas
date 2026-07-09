@@ -125,7 +125,10 @@ export interface IndexStats {
   projects: number;
   entries: number;
   chunks: number;
+  /** Lifetime total; historical, and healed problems stay counted. */
   errors: number;
+  /** Errors in the last hour — the number that answers "is it failing now?". */
+  recentErrors: number;
   lastRunAt?: string;
   bySource: Record<string, number>;
 }

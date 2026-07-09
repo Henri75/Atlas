@@ -3,6 +3,7 @@
 # Configuration
 
 ## Revision History
+- 2026-07-09 01:50 UTC — Ollama-preferred `auto` + version floor, WORKER_CONCURRENCY default 2, host-path passthrough, model-switch rebuild.
 - 2026-07-09 01:20 UTC — Initial version.
 
 All configuration is environment-driven through the central module
@@ -16,12 +17,15 @@ Compose reads `.env` (create with `make env`).
 | `CODE_ROOT_HOST` | `/Users/nasta/__CODING NEW` | projects root, mounted **read-only** at `/data/code` |
 | `CLAUDE_PROJECTS_HOST` | `/Users/nasta/.claude/projects` | transcripts, mounted **read-only** at `/data/claude/projects` |
 
+Both are passed into the containers so the API can map an indexed container
+path back to a host path for editor deep links.
+
 ## Indexing
 
 | Var | Default | Meaning |
 |---|---|---|
 | `SCAN_INTERVAL_MIN` | `5` | incremental scan cadence |
-| `WORKER_CONCURRENCY` | `4` | parallel scan jobs per indexer |
+| `WORKER_CONCURRENCY` | `2` | parallel scan jobs. Every job embeds, and a local Ollama serves one request at a time — more workers only deepen its queue. Raise for a remote/batched endpoint. |
 
 ## Embeddings
 
@@ -33,11 +37,17 @@ Compose reads `.env` (create with `make env`).
 | `EMBEDDINGS_API_KEY` | — | bearer token when the endpoint needs one |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | probed by `auto`/`ollama` |
 
-`auto` = Ollama if reachable, else the bundled CPU model
-(`Xenova/all-MiniLM-L6-v2`, cached in the `hf_cache` volume).
-**Switching provider/model creates a new Qdrant collection** — run
-`make reindex-full` afterwards; the indexer publishes the active collection in
-the `settings` table so api/mcp follow automatically after restart.
+`auto` prefers Ollama, pulling `EMBEDDINGS_MODEL` on first boot, and falls back
+to the bundled CPU model (`Xenova/all-MiniLM-L6-v2`, cached in the `hf_cache`
+volume) — logging loudly whenever it does. **Ollama ≥ 0.13** is required;
+0.12.x segfaults inside its embeddings endpoint.
+
+**Switching provider/model creates a new Qdrant collection** (its name encodes
+the vector dimension). The indexer rebuilds the vectors from Postgres on the
+next boot — no `make reindex-full` needed, and no re-parsing of sources — then
+publishes `active_collection`, which api/mcp follow within 15s. Search serves
+the previous collection until the new one is ready. See
+[operations](operations.md#switching-the-embedding-model).
 
 ## Ask-mode LLM
 

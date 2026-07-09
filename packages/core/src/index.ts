@@ -9,6 +9,7 @@ export * from './sparse.js';
 export * from './discovery.js';
 export * from './ids.js';
 export * from './retry.js';
+export * from './paths.js';
 export * from './catalog.js';
 export * from './qdrant.js';
 export * from './embeddings/index.js';
