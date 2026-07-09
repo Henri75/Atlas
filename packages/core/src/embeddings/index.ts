@@ -1,11 +1,24 @@
 import type { AppConfig } from '../config.js';
 import type { EmbeddingProvider } from './types.js';
 import { createBundledProvider } from './bundled.js';
-import { createOllamaProvider, ollamaAvailable, ollamaHasModel, ollamaPull } from './ollama.js';
+import {
+  createOllamaProvider,
+  ollamaAvailable,
+  ollamaHasModel,
+  ollamaPull,
+  warnIfOllamaTooOld,
+} from './ollama.js';
 import { createOpenAICompatProvider } from './openaiCompat.js';
 
 export type { EmbeddingProvider } from './types.js';
-export { ollamaAvailable, ollamaHasModel, ollamaPull } from './ollama.js';
+export {
+  MIN_OLLAMA_VERSION,
+  compareVersions,
+  ollamaAvailable,
+  ollamaHasModel,
+  ollamaPull,
+  warnIfOllamaTooOld,
+} from './ollama.js';
 
 /**
  * Provider selection. `auto` prefers Ollama — it is several times faster than
@@ -16,6 +29,7 @@ export { ollamaAvailable, ollamaHasModel, ollamaPull } from './ollama.js';
 export async function createEmbedder(cfg: AppConfig['embeddings']): Promise<EmbeddingProvider> {
   switch (cfg.provider) {
     case 'ollama':
+      await warnIfOllamaTooOld(cfg.ollamaUrl);
       return createOllamaProvider(cfg.ollamaUrl, cfg.model);
     case 'bundled':
       return createBundledProvider();
@@ -48,6 +62,9 @@ async function autoSelect(cfg: AppConfig['embeddings']): Promise<EmbeddingProvid
     );
     return createBundledProvider();
   }
+
+  // Loud, non-fatal: an old Ollama stalls indexing with no visible error.
+  await warnIfOllamaTooOld(cfg.ollamaUrl);
 
   if (!(await ollamaHasModel(cfg.ollamaUrl, cfg.model))) {
     console.log(`[embeddings] pulling ${cfg.model} into Ollama (first run, may take a while)…`);

@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { collectionNameFor } from '@kdbscope/core';
-import { ollamaHasModel } from '../../packages/core/src/embeddings/ollama.js';
+import {
+  compareVersions,
+  ollamaHasModel,
+  warnIfOllamaTooOld,
+} from '../../packages/core/src/embeddings/ollama.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -43,6 +47,50 @@ describe('ollamaHasModel', () => {
   it('returns false (never throws) when Ollama is unreachable', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }));
     expect(await ollamaHasModel('http://x', 'nomic-embed-text')).toBe(false);
+  });
+});
+
+describe('compareVersions', () => {
+  it('orders versions numerically, not lexically', () => {
+    // '0.9' > '0.12' as strings, but 0.12 is the newer release.
+    expect(compareVersions('0.12.6', '0.9.0')).toBeGreaterThan(0);
+    expect(compareVersions('0.31.1', '0.13.0')).toBeGreaterThan(0);
+    expect(compareVersions('0.12.6', '0.13.0')).toBeLessThan(0);
+    expect(compareVersions('0.13.0', '0.13.0')).toBe(0);
+  });
+
+  it('treats missing components as zero', () => {
+    expect(compareVersions('1', '1.0.0')).toBe(0);
+    expect(compareVersions('1.1', '1.0.9')).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Ollama 0.12.6 segfaults inside /api/embed under load and then hangs, which
+ * stalls indexing with no error anywhere. Warn, but never refuse to boot.
+ */
+describe('warnIfOllamaTooOld', () => {
+  it('warns for a version below the floor', async () => {
+    stubFetch(() => ({ ok: true, body: { version: '0.12.6' } }));
+    const msg = await warnIfOllamaTooOld('http://x');
+    expect(msg).toMatch(/0\.12\.6 is below/);
+    expect(msg).toMatch(/brew upgrade ollama/);
+  });
+
+  it('stays silent for a good version', async () => {
+    stubFetch(() => ({ ok: true, body: { version: '0.31.1' } }));
+    expect(await warnIfOllamaTooOld('http://x')).toBeNull();
+  });
+
+  it('never throws when Ollama is unreachable or the version is unparseable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }));
+    expect(await warnIfOllamaTooOld('http://x')).toBeNull();
+
+    stubFetch(() => ({ ok: true, body: { version: 'custom-build' } }));
+    expect(await warnIfOllamaTooOld('http://x')).toBeNull();
+
+    stubFetch(() => ({ ok: true, body: {} }));
+    expect(await warnIfOllamaTooOld('http://x')).toBeNull();
   });
 });
 
