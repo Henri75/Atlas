@@ -20,6 +20,17 @@ const out = (data: unknown, human: () => void) => {
   else human();
 };
 
+/** Search degrades silently; say what broke and what it costs. */
+function degradedReason(mode: string): string {
+  if (mode === 'sparse-only') {
+    return 'Embedding provider unreachable — keyword matching only, similar wording will be missed.';
+  }
+  if (mode === 'fts') {
+    return 'Vector index unreachable — Postgres text search, weaker ranking and recall.';
+  }
+  return `Degraded search (${mode}).`;
+}
+
 function printHit(h: any, i: number) {
   const badge = SOURCE_BADGE[h.sourceType] ?? h.sourceType;
   console.log(
@@ -42,7 +53,8 @@ program
       `/api/search${qs({ q: words.join(' '), project: o.project, source: o.source, component: o.component, limit: o.limit })}`,
     );
     out(r, () => {
-      console.log(dim(`${r.hits.length} hits · ${r.mode}${r.degraded ? red(' (degraded)') : ''} · ${r.tookMs}ms`));
+      if (r.degraded) console.log(yellow(`⚠ ${degradedReason(r.mode)}\n`));
+      console.log(dim(`${r.hits.length} hits · ${r.mode} · ${r.tookMs}ms`));
       console.log(hr());
       r.hits.forEach(printHit);
     });

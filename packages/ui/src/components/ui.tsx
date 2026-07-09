@@ -69,3 +69,37 @@ export function Empty({ title, hint }: { title: string; hint?: string }) {
 export function Spinner() {
   return <div className="text-faint font-mono text-sm py-8 text-center">querying…</div>;
 }
+
+/**
+ * Search degrades silently by design (hybrid → sparse-only → Postgres FTS), so
+ * the only sign is result quality. Say what broke and what it costs, at the
+ * weight of a warning — a grey footnote next to the timing goes unread.
+ */
+const DEGRADED: Record<string, { what: string; cost: string }> = {
+  'sparse-only': {
+    what: 'The embedding provider is unreachable',
+    cost: 'Keyword matching only — semantically similar wording will be missed.',
+  },
+  fts: {
+    what: 'The vector index is unreachable',
+    cost: 'Falling back to Postgres text search — ranking and recall are weaker.',
+  },
+};
+
+export function DegradedBanner({ mode }: { mode: string }) {
+  const info = DEGRADED[mode];
+  if (!info) return null;
+  return (
+    <div
+      role="status"
+      className="mb-3 rounded-md border px-3 py-2 text-[12px] leading-relaxed"
+      style={{
+        borderColor: 'color-mix(in srgb, var(--color-report) 40%, transparent)',
+        background: 'color-mix(in srgb, var(--color-report) 8%, transparent)',
+      }}
+    >
+      <span style={{ color: 'var(--color-report)' }}>Degraded search · {info.what}.</span>{' '}
+      <span className="text-muted">{info.cost}</span>
+    </div>
+  );
+}

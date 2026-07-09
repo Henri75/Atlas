@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { AskResult, SearchResult, SourceType } from '../types';
-import { Badge, Empty, SpineRow, Spinner, Stamp } from '../components/ui';
+import { Badge, DegradedBanner, Empty, SpineRow, Spinner, Stamp } from '../components/ui';
 import { EntryDrawer } from '../components/EntryDrawer';
 
 /** Search + Ask: one input, two modes. '/' focuses; Enter searches; ⌘Enter asks. */
@@ -207,9 +207,9 @@ export function SearchView({
 
       {!loading && mode === 'search' && result && (
         <div className="mt-6">
+          {result.degraded && <DegradedBanner mode={result.mode} />}
           <p className="font-mono text-[11px] text-faint mb-3">
-            {result.hits.length} hits · {result.mode}
-            {result.degraded ? ' · degraded' : ''} · {result.tookMs}ms
+            {result.hits.length} hits · {result.mode} · {result.tookMs}ms
           </p>
           <div className="space-y-1.5">
             {result.hits.map((h) => (
