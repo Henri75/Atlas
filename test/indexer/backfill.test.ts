@@ -1,6 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HttpError } from '@kdbscope/core';
-import { backfillVectors } from '../../packages/indexer/src/pipeline.js';
+import { backfillVectors, needsBackfill } from '../../packages/indexer/src/pipeline.js';
+
+/**
+ * Regression: the trigger originally required an *empty* collection, so a
+ * backfill that died partway (leaving 1,886 of 70,135 vectors) was never
+ * retried — the collection stayed permanently under-populated.
+ */
+describe('needsBackfill', () => {
+  it('fires when the collection has fewer vectors than the catalog has entries', () => {
+    expect(needsBackfill(0, 70135)).toBe(true);
+    expect(needsBackfill(1886, 70135)).toBe(true); // resumed after a crash
+  });
+
+  it('does not fire for a fresh install or a fully populated collection', () => {
+    expect(needsBackfill(0, 0)).toBe(false);
+    expect(needsBackfill(94744, 70135)).toBe(false); // chunks >= entries
+    expect(needsBackfill(70135, 70135)).toBe(false);
+  });
+});
 
 /**
  * Backfill exists because switching the embedding model creates a new,

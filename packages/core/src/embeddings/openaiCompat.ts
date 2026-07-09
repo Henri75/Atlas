@@ -19,7 +19,9 @@ export async function createOpenAICompatProvider(opts: {
         ...(opts.apiKey ? { authorization: `Bearer ${opts.apiKey}` } : {}),
       },
       body: JSON.stringify({ model: opts.model, input: texts }),
-      signal: AbortSignal.timeout(120_000),
+      // Remote endpoints are slower than a local model but still answer in
+      // seconds; a long ceiling only hides a dead provider.
+      signal: AbortSignal.timeout(60_000),
     });
     if (!r.ok) throw new HttpError(`${opts.name} embeddings failed: ${await r.text()}`, r.status);
     const data = (await r.json()) as { data: { index: number; embedding: number[] }[] };

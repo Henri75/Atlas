@@ -8,7 +8,13 @@ import {
   createEmbedder,
   getConfig,
 } from '@kdbscope/core';
-import { backfillVectors, processScanJob, type PipelineDeps, type ScanJobData } from './pipeline.js';
+import {
+  backfillVectors,
+  needsBackfill,
+  processScanJob,
+  type PipelineDeps,
+  type ScanJobData,
+} from './pipeline.js';
 import { SCAN_QUEUE, scheduleScans, withSchedulerLock } from './scheduler.js';
 
 /**
@@ -29,8 +35,6 @@ async function main() {
     collectionNameFor(embedder.name, embedder.model, embedder.dim),
   );
   await vectors.ensure(embedder.dim);
-  // Publish the active embedding config so api/mcp query the same collection.
-  await catalog.setSetting('active_collection', vectors.collection);
   await catalog.setSetting('active_embedder', `${embedder.name}/${embedder.model}/${embedder.dim}`);
   console.log(`[indexer] qdrant collection ready: ${vectors.collection}`);
 
@@ -38,24 +42,43 @@ async function main() {
   const connection = new Redis(cfg.redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue<ScanJobData>(SCAN_QUEUE, { connection });
 
-  // A populated catalog with an empty collection means the embedding model
-  // changed (the dimension is part of the collection name). Entries are never
-  // re-inserted, so their vectors must be backfilled from Postgres. Runs in
-  // the background: the previous collection keeps serving search meanwhile.
+  /**
+   * A collection holding fewer vectors than the catalog has entries means the
+   * embedding model changed (the dimension is part of the collection name) or
+   * a previous backfill died partway. Entries are never re-inserted
+   * (dedup_key), so a normal scan never re-emits them — the vectors must be
+   * rebuilt from Postgres.
+   *
+   * This runs to completion *before* the scan worker starts. Both paths embed,
+   * and a local Ollama serves one request at a time, so letting them compete
+   * starves the backfill (measured: ~70s per batch against 0.7s standalone).
+   *
+   * `active_collection` is only published once the rebuild finishes, so the
+   * API keeps querying the previous, fully-populated collection throughout.
+   */
   const [vectorPoints, entryCount] = await Promise.all([vectors.count(), catalog.countEntries()]);
-  if (entryCount > 0 && vectorPoints === 0) {
+  const rebuilding = needsBackfill(vectorPoints, entryCount);
+  if (rebuilding) {
+    const previous = await catalog.getSetting('active_collection');
     console.log(
-      `[indexer] ${vectors.collection} is empty but the catalog holds ${entryCount} entries — ` +
-        're-embedding from the catalog (search stays up on the old collection)',
+      `[indexer] ${vectors.collection} holds ${vectorPoints} vectors for ${entryCount} entries — ` +
+        `re-embedding from the catalog${previous ? ` (search stays on ${previous})` : ''}`,
     );
-    void backfillVectors(deps, {
+    const t0 = Date.now();
+    const n = await backfillVectors(deps, {
       onPage: (done, total) => {
-        if (done % 2000 < 200) console.log(`[indexer] re-embed ${done}/${total} entries`);
+        if (done % 2000 < 200) {
+          const rate = done / Math.max(1, (Date.now() - t0) / 1000);
+          const etaMin = Math.round((total - done) / Math.max(rate, 0.01) / 60);
+          console.log(`[indexer] re-embed ${done}/${total} entries (~${etaMin}m left)`);
+        }
       },
-    })
-      .then((n) => console.log(`[indexer] re-embed complete: ${n} entries`))
-      .catch((e) => console.error('[indexer] re-embed failed:', e));
+    });
+    console.log(`[indexer] re-embed complete: ${n} entries in ${Math.round((Date.now() - t0) / 1000)}s`);
   }
+
+  // Publish only now: readers switch to the new collection once it can serve.
+  await catalog.setSetting('active_collection', vectors.collection);
 
   const worker = new Worker<ScanJobData>(
     SCAN_QUEUE,

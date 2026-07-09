@@ -313,6 +313,18 @@ async function scanDocs(
 }
 
 /**
+ * Should the active collection be rebuilt from the catalog?
+ *
+ * True when the catalog has entries the collection cannot possibly serve.
+ * Every entry produces at least one chunk, so `points < entries` means either
+ * the embedding model changed (new, empty collection) or an earlier backfill
+ * died partway. Both are repaired by the same idempotent rebuild.
+ */
+export function needsBackfill(vectorPoints: number, entryCount: number): boolean {
+  return entryCount > 0 && vectorPoints < entryCount;
+}
+
+/**
  * Rebuild the active Qdrant collection from the catalog.
  *
  * Needed after an embedding-model switch: the collection name encodes the

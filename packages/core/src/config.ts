@@ -15,7 +15,12 @@ const schema = z.object({
   redisUrl: z.string().default('redis://redis:6379'),
   qdrantUrl: z.string().default('http://qdrant:6333'),
   scanIntervalMin: z.coerce.number().int().min(1).default(5),
-  workerConcurrency: z.coerce.number().int().min(1).max(16).default(4),
+  /**
+   * Parallel scan jobs. Every job embeds, and a local Ollama serialises
+   * requests, so a high value just queues work and provokes dropped
+   * connections. Raise it only for a remote/batched embedding endpoint.
+   */
+  workerConcurrency: z.coerce.number().int().min(1).max(16).default(2),
   embeddings: z.object({
     provider: EmbeddingsProvider.default('auto'),
     model: z.string().default('nomic-embed-text'),

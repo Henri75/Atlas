@@ -38,6 +38,14 @@ export async function ollamaPull(baseUrl: string, model: string): Promise<void> 
   if (!r.ok) throw new Error(`ollama pull ${model} failed: ${r.status} ${await r.text()}`);
 }
 
+/**
+ * A healthy 32-item batch answers in well under a second. A minutes-long
+ * ceiling does not buy resilience: it turns a fast, retryable failure into a
+ * silent stall — observed when an old Ollama runner crashed mid-request and
+ * simply stopped responding.
+ */
+const EMBED_TIMEOUT_MS = 30_000;
+
 export async function createOllamaProvider(
   baseUrl: string,
   model: string,
@@ -47,7 +55,7 @@ export async function createOllamaProvider(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model, input: texts }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
     });
     // Carry the status so withRetry can classify 5xx/429 as transient.
     if (!r.ok) throw new HttpError(`ollama embed failed: ${await r.text()}`, r.status);
