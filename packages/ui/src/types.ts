@@ -79,8 +79,21 @@ export interface SessionRow {
   started_at?: string;
   ended_at?: string;
   prompt_count: number;
+  action_count: number;
   files_touched: string[];
 }
+
+/** How a captured session message was classified at parse time. */
+export type EntryKind =
+  | 'prompt'
+  | 'plan'
+  | 'insight'
+  | 'summary'
+  | 'action'
+  | 'response';
+
+/** Alias kept for the session views, which speak in terms of messages. */
+export type SessionEntryKind = EntryKind;
 
 export interface Stats {
   projects: number;

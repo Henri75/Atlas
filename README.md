@@ -60,6 +60,10 @@ __CODING NEW ─ro─►│ indexer │◄──(redis)──►│  api   │�
   the old one. Vectors are rebuilt from Postgres, not by re-parsing sources.
 - **Deep links**: every hit maps its container path back to a host path and a
   `vscode://` link, down to the line.
+- **Conversational Ask**: follow-up questions carry the earlier turns; retry or
+  delete any turn.
+- **Message kinds**: session messages are classified at parse time (`insight`,
+  `plan`, `summary`, `action`…) and filterable in search, CLI and MCP.
 
 ## Version table (§10)
 
@@ -89,7 +93,7 @@ All Docker images are pinned `tag@digest` in `docker-compose.yml` / `docker/*.Do
 
 ```bash
 make install   # npm workspaces
-make test      # vitest (171 tests)
+make test      # vitest (222 tests)
 make lint      # tsc across all packages
 make smoke     # health-checks a running stack
 ```

@@ -1,7 +1,14 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { editorUrl, lineFromSourceRef, toHostPath } from '@kdbscope/core';
-import type { AskService, Catalog, PathMapping, SearchService, SourceType } from '@kdbscope/core';
+import type {
+  AskService,
+  Catalog,
+  EntryKind,
+  PathMapping,
+  SearchService,
+  SourceType,
+} from '@kdbscope/core';
 
 /**
  * REST surface. Dependencies are injected so route logic is unit-testable
@@ -76,6 +83,7 @@ export function buildApp(deps: ApiDeps): Hono {
         project: c.req.query('project') || undefined,
         sourceType: (c.req.query('source') as SourceType) || undefined,
         component: c.req.query('component') || undefined,
+        kind: (c.req.query('kind') as EntryKind) || undefined,
         since: c.req.query('since') || undefined,
         until: c.req.query('until') || undefined,
       },
@@ -84,14 +92,29 @@ export function buildApp(deps: ApiDeps): Hono {
     return c.json({ ...result, hits: result.hits.map(withSource) });
   });
 
+  /**
+   * Conversation history arrives from the browser, so it is whitelisted rather
+   * than trusted: only user/assistant turns with string content. Accepting a
+   * `system` role would let a client rewrite the instructions.
+   */
+  const sanitizeHistory = (raw: unknown) =>
+    (Array.isArray(raw) ? raw : [])
+      .filter(
+        (t: any) =>
+          t && (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string',
+      )
+      .slice(-24)
+      .map((t: any) => ({ role: t.role, content: t.content.slice(0, 20_000) }));
+
   app.post('/api/ask', async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const question = typeof body.question === 'string' ? body.question.trim() : '';
     if (!question) return c.json({ error: 'question is required' }, 400);
     const result = await deps.ask.ask(
       question,
-      { project: body.project, sourceType: body.source, component: body.component },
+      { project: body.project, sourceType: body.source, component: body.component, kind: body.kind },
       Math.min(Number(body.k ?? 12), 30),
+      sanitizeHistory(body.history),
     );
     return c.json(result);
   });
@@ -109,8 +132,9 @@ export function buildApp(deps: ApiDeps): Hono {
 
     const events = deps.ask.askStream(
       question,
-      { project: body.project, sourceType: body.source, component: body.component },
+      { project: body.project, sourceType: body.source, component: body.component, kind: body.kind },
       Math.min(Number(body.k ?? 12), 30),
+      sanitizeHistory(body.history),
     );
 
     const stream = new ReadableStream({

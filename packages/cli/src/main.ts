@@ -46,11 +46,12 @@ program
   .option('-p, --project <slug>')
   .option('-s, --source <type>')
   .option('-c, --component <name>')
+  .option('-k, --kind <kind>', 'insight | plan | summary | action | prompt | response')
   .option('-n, --limit <n>', 'max results', '10')
   .description('hybrid search across all indexed history')
   .action(async (words, o) => {
     const r = await get(
-      `/api/search${qs({ q: words.join(' '), project: o.project, source: o.source, component: o.component, limit: o.limit })}`,
+      `/api/search${qs({ q: words.join(' '), project: o.project, source: o.source, component: o.component, kind: o.kind, limit: o.limit })}`,
     );
     out(r, () => {
       if (r.degraded) console.log(yellow(`⚠ ${degradedReason(r.mode)}\n`));

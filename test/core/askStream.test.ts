@@ -96,6 +96,57 @@ describe('AskService.askStream', () => {
     expect(Date.now() - t0).toBeLessThan(1000);
   });
 
+  /**
+   * A follow-up like "why?" carries no search signal and retrieves nothing,
+   * but the conversation above it holds the answer. Only a *first* question
+   * with no hits is a genuine dead end.
+   */
+  it('answers a follow-up even when retrieval finds nothing', async () => {
+    const svc = makeService([], frame('Because of the pidfile.'));
+    const events = await collect(
+      svc.askStream('why?', {}, 12, [
+        { role: 'user', content: 'what broke?' },
+        { role: 'assistant', content: 'pgbouncer crash-looped [1]' },
+      ]),
+    );
+    const text = events.filter((e) => e.type === 'delta').map((e: any) => e.text).join('');
+    expect(text).toBe('Because of the pidfile.');
+    expect(events.at(-1)).toMatchObject({ type: 'done' });
+  });
+
+  it('still short-circuits a first question that retrieves nothing', async () => {
+    const svc = makeService([]);
+    const events = await collect(svc.askStream('nothing at all'));
+    expect((events[1] as any).text).toMatch(/No indexed content matched/);
+  });
+
+  it('sends prior turns before the freshly retrieved context', async () => {
+    const spy = vi.fn(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode(frame('ok')));
+          c.close();
+        },
+      }),
+    }));
+    vi.stubGlobal('fetch', spy);
+    const svc = makeService([hit]);
+    await collect(
+      svc.askStream('and then?', {}, 12, [
+        { role: 'user', content: 'first question' },
+        { role: 'assistant', content: 'first answer' },
+      ]),
+    );
+
+    const sent = JSON.parse((spy.mock.calls[0] as any)[1].body).messages;
+    expect(sent.map((m: any) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(sent[1].content).toBe('first question');
+    // The newest question carries the context blocks, so [n] refers to them.
+    expect(sent[3].content).toContain('Context blocks:');
+    expect(sent[3].content).toContain('and then?');
+  });
+
   it('never yields a delta before its sources', async () => {
     const svc = makeService([hit], frame('x'));
     const events = await collect(svc.askStream('q'));

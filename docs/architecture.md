@@ -3,6 +3,7 @@
 # Architecture
 
 ## Revision History
+- 2026-07-09 22:25 UTC — Message kinds; distiller keeps all prose + records actions; EXTRACTION_SCHEME.
 - 2026-07-09 16:00 UTC — Host vs container paths; multi-root discovery; PROJECT_GROUPING.
 - 2026-07-09 01:20 UTC — Initial version.
 
@@ -28,10 +29,10 @@ what keeps the unit tests fast and hermetic.
   deterministic `dedup_key` so re-scans are idempotent, plus a generated `tsvector`
   used as the search fallback.
 - **Chunk** (Qdrant point): searchable unit (~1800 chars, 200 overlap), payload
-  `{entry_id, project, source_type, component, session_id, occurred_at}`, point id
-  = deterministic UUID of (project, sourcePath, entryId, seq).
-- **Session** (`sessions`): one Claude Code transcript; files-touched and counts
-  merged across incremental tail reads.
+  `{entry_id, project, source_type, component, session_id, kind, occurred_at}`,
+  point id = deterministic UUID of (project, sourcePath, entryId, seq).
+- **Session** (`sessions`): one Claude Code transcript; title, prompt/action
+  counts, files-touched and timespan merged across incremental tail reads.
 
 ## Sources and parsers
 
@@ -43,9 +44,41 @@ what keeps the unit tests fast and hermetic.
 | git history | `parsers/gitLog.ts` | `git log <lastSha>..HEAD` |
 | docs (`README.md`, `docs/**/*.md`) | `parsers/docsMd.ts` | whole-file on change |
 
-The Claude distiller keeps user prompts, assistant prose ≥ 280 chars, and
-file-edit tool calls; it drops tool results, thinking, progress noise. This is
-what turns 11 GB of transcripts into a few hundred MB of meaningful text.
+The Claude distiller keeps **every** user prompt and every piece of assistant
+prose, plus a compact record of the actions taken; it drops tool results,
+thinking blocks, progress events and base64 payloads — the genuinely bulky,
+low-signal parts. That is what turns 11 GB of transcripts into a few hundred MB
+of meaningful text.
+
+An earlier version dropped assistant messages under 280 characters. Measured on
+real transcripts, that discarded ~53% of Claude's replies (a short *"No security
+findings."* is exactly what you go looking for later) to save ~7% of the prose
+volume. **Length is a poor proxy for value; kind is a good one.**
+
+## Message kinds
+
+Each captured session message is classified at parse time — deterministic, free,
+no LLM — so search can ask for intent directly rather than guessing from prose:
+
+| Kind | What it is |
+|---|---|
+| `prompt` | something the user asked for |
+| `plan` | a plan or spec the user handed over |
+| `insight` | a `★ Insight` block |
+| `summary` | a `## Summary` / *What I did* wrap-up |
+| `action` | tools that changed something (edits, commands, agents); one entry per turn |
+| `response` | everything else Claude said |
+
+The kind reaches the Qdrant payload **and** the Postgres fallback, so
+`GET /api/search?q=…&kind=insight` works in hybrid and degraded modes alike.
+`EXTRACTION_SCHEME` in `packages/core/src/parsers/claudeJsonl.ts` is bumped
+whenever this rule changes, which rebuilds the derived index at the next boot.
+
+Session metadata (title, prompt count, action count, timespan, files touched) is
+gathered across the **whole** stream even once the per-session entry cap stops
+entry collection: Claude writes its `summary` event at either end of the file, so
+bailing out early silently loses the title. Sessions with no summary fall back to
+their first prompt — a raw UUID is a useless label.
 
 ## Search pipeline
 

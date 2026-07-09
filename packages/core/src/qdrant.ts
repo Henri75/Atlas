@@ -22,6 +22,8 @@ export interface VectorPoint {
     source_type: string;
     component?: string;
     session_id?: string;
+    /** Message classification (insight, summary, action…) for session entries. */
+    kind?: string;
     occurred_at?: string;
   };
 }
@@ -41,6 +43,7 @@ export function buildQdrantFilter(filters: SearchFilters): { must: object[] } | 
   if (filters.project) must.push({ key: 'project', match: { value: filters.project } });
   if (filters.sourceType) must.push({ key: 'source_type', match: { value: filters.sourceType } });
   if (filters.component) must.push({ key: 'component', match: { value: filters.component } });
+  if (filters.kind) must.push({ key: 'kind', match: { value: filters.kind } });
   if (filters.since || filters.until) {
     must.push({
       key: 'occurred_at',
@@ -86,7 +89,7 @@ export class VectorStore {
       vectors: { dense: { size: denseDim, distance: 'Cosine' } },
       sparse_vectors: { sparse: { modifier: 'idf' } },
     });
-    for (const field of ['project', 'source_type', 'component', 'session_id'] as const) {
+    for (const field of ['project', 'source_type', 'component', 'session_id', 'kind'] as const) {
       await this.client.createPayloadIndex(this.collection, {
         field_name: field,
         field_schema: 'keyword',

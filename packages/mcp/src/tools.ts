@@ -43,10 +43,16 @@ export const TOOLS: ToolDef[] = [
       project: z.string().optional().describe('Project slug filter, e.g. "deepcast"'),
       source: z.enum(SOURCE_TYPES).optional().describe('Restrict to one source type'),
       component: z.string().optional().describe('Component name filter'),
+      kind: z
+        .enum(['prompt', 'plan', 'insight', 'summary', 'action', 'response'])
+        .optional()
+        .describe(
+          'Narrow to how a Claude session message was classified. "insight" and "summary" are often more useful than a keyword search.',
+        ),
       limit: z.number().int().min(1).max(100).optional(),
     },
     request: (a) => ({
-      path: `/api/search${qs({ q: a.query, project: a.project, source: a.source, component: a.component, limit: a.limit })}`,
+      path: `/api/search${qs({ q: a.query, project: a.project, source: a.source, component: a.component, kind: a.kind, limit: a.limit })}`,
     }),
   },
   {

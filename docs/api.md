@@ -3,6 +3,7 @@
 # REST API
 
 ## Revision History
+- 2026-07-09 22:25 UTC — Conversation history on both Ask endpoints; `kind` filter.
 - 2026-07-09 01:50 UTC — Streaming Ask (SSE), source deep links, richer /api/stats.
 - 2026-07-09 01:20 UTC — Initial version.
 
@@ -12,8 +13,8 @@ Base: `http://127.0.0.1:8710`. JSON everywhere. No auth (localhost-only tool).
 |---|---|---|---|
 | GET | `/api/health` | — | `{ok}` |
 | GET | `/api/stats` | — | counts, per-source breakdown, embedder, collection, lastRunAt, `queue`, `pending`, `backfill`, `recentErrors` |
-| GET | `/api/search` | `q` (required), `project`, `source`, `component`, `since`, `until`, `limit` | `{hits[], mode, degraded, tookMs}`; each hit carries `hostPath` + `editorUrl` |
-| POST | `/api/ask` | `{question, project?, source?, component?, k?}` | `{answer, sources[], model, degraded}` |
+| GET | `/api/search` | `q` (required), `project`, `source`, `component`, `kind`, `since`, `until`, `limit` | `{hits[], mode, degraded, tookMs}`; each hit carries `hostPath` + `editorUrl` |
+| POST | `/api/ask` | `{question, project?, source?, component?, kind?, k?, history?}` | `{answer, sources[], model, degraded}` |
 | POST | `/api/ask/stream` | same as `/api/ask` | SSE: `sources` → `delta`* → `done` |
 | GET | `/api/projects` | — | projects with entry counts |
 | GET | `/api/projects/:slug/timeline` | `limit`, `before` (ISO cursor), `sources` (csv) | `{items[]}` newest first |
@@ -28,6 +29,26 @@ Base: `http://127.0.0.1:8710`. JSON everywhere. No auth (localhost-only tool).
 `mode` in search responses: `hybrid` (dense+sparse RRF), `sparse-only`
 (embedding provider unreachable), `fts` (Qdrant unreachable — Postgres fallback).
 `degraded: true` whenever the served mode is not `hybrid`.
+
+## Conversations
+
+Both Ask endpoints accept an optional `history`: an array of prior
+`{role: 'user'|'assistant', content}` turns. It is whitelisted server-side — a
+`system` role from a client would rewrite the assistant's instructions — and the
+newest 12 turns are replayed.
+
+Prior turns are sent *before* the freshly retrieved context, so the `[n]`
+citations in an answer always refer to the blocks directly above the question.
+A follow-up such as *"why?"* carries no search signal and may retrieve nothing;
+with history present that is fine (the conversation holds the answer), while a
+*first* question with no hits is still a genuine dead end.
+
+## Filtering by message kind
+
+`kind` narrows results to how a session message was classified: `prompt`,
+`plan`, `insight`, `summary`, `action`, `response`. For example
+`GET /api/search?q=qdrant&kind=insight` returns only `★ Insight` blocks. See
+[architecture](architecture.md#message-kinds).
 
 ## Streaming Ask
 

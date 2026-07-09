@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at TIMESTAMPTZ,
   ended_at TIMESTAMPTZ,
   prompt_count INT NOT NULL DEFAULT 0,
+  action_count INT NOT NULL DEFAULT 0,
   files_touched JSONB NOT NULL DEFAULT '[]',
   source_path TEXT NOT NULL DEFAULT ''
 );
@@ -99,6 +100,10 @@ CREATE TABLE IF NOT EXISTS index_runs (
   finished_at TIMESTAMPTZ,
   stats JSONB NOT NULL DEFAULT '{}'
 );
+
+-- CREATE TABLE IF NOT EXISTS never adds a column to a table that already
+-- exists, so new columns need an explicit, idempotent ALTER.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS action_count INT NOT NULL DEFAULT 0;
 `;
 
 export interface ScanState {
@@ -253,11 +258,11 @@ export class Catalog {
 
   async upsertSession(projectId: number, meta: SessionMeta, sourcePath: string): Promise<void> {
     await this.pool.query(
-      `INSERT INTO sessions (id, project_id, title, cwd, started_at, ended_at, prompt_count, files_touched, source_path)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO sessions (id, project_id, title, cwd, started_at, ended_at, prompt_count, action_count, files_touched, source_path)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (id) DO UPDATE SET title=COALESCE(EXCLUDED.title, sessions.title),
          ended_at=EXCLUDED.ended_at, prompt_count=EXCLUDED.prompt_count,
-         files_touched=EXCLUDED.files_touched`,
+         action_count=EXCLUDED.action_count, files_touched=EXCLUDED.files_touched`,
       [
         meta.sessionId,
         projectId,
@@ -266,6 +271,7 @@ export class Catalog {
         meta.startedAt ?? null,
         meta.endedAt ?? null,
         meta.promptCount,
+        meta.actionCount ?? 0,
         JSON.stringify(meta.filesTouched),
         sourcePath,
       ],
@@ -333,7 +339,8 @@ export class Catalog {
 
   async sessionsList(slug: string, limit = 50) {
     const r = await this.pool.query(
-      `SELECT s.id, s.title, s.cwd, s.started_at, s.ended_at, s.prompt_count, s.files_touched
+      `SELECT s.id, s.title, s.cwd, s.started_at, s.ended_at, s.prompt_count,
+              s.action_count, s.files_touched
        FROM sessions s JOIN projects p ON p.id = s.project_id
        WHERE p.slug = $1 ORDER BY s.started_at DESC NULLS LAST LIMIT $2`,
       [slug, limit],
@@ -421,6 +428,11 @@ export class Catalog {
     if (filters.component) {
       params.push(filters.component);
       where += ` AND e.component = $${params.length}`;
+    }
+    if (filters.kind) {
+      // meta is JSONB; at this scale a plain key lookup needs no extra index.
+      params.push(filters.kind);
+      where += ` AND e.meta->>'kind' = $${params.length}`;
     }
     params.push(limit);
     const r = await this.pool.query(

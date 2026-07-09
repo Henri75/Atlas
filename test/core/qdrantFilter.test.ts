@@ -37,6 +37,18 @@ describe('buildQdrantFilter', () => {
     });
   });
 
+  /** Classification is decoration unless you can actually query it. */
+  it('filters by message kind', () => {
+    expect(buildQdrantFilter({ kind: 'insight' })).toEqual({
+      must: [{ key: 'kind', match: { value: 'insight' } }],
+    });
+  });
+
+  it('combines kind with the other filters', () => {
+    const f = buildQdrantFilter({ project: 'deepcast', kind: 'summary' })!;
+    expect(f.must).toHaveLength(2);
+  });
+
   it('ignores empty strings rather than filtering on ""', () => {
     // An empty project would otherwise match nothing at all.
     expect(buildQdrantFilter({ project: '', component: '' })).toBeUndefined();

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import type { AskResult, SearchResult, SourceType } from '../types';
+import type { EntryKind, SearchResult, SourceType } from '../types';
 import { Badge, DegradedBanner, Empty, SpineRow, Spinner, Stamp } from '../components/ui';
 import { EntryDrawer } from '../components/EntryDrawer';
+import { Conversation, useAskConversation } from './AskConversation';
 
 /** Search + Ask: one input, two modes. '/' focuses; Enter searches; ⌘Enter asks. */
 
@@ -10,6 +11,9 @@ const SOURCES: (SourceType | '')[] = [
   '', 'kdb_changelog', 'kdb_component', 'kdb_session', 'kdb_backlog',
   'kdb_report', 'claude_session', 'git_commit', 'doc',
 ];
+
+/** Only session entries carry a kind; the filter is offered for all sources. */
+const KINDS: (EntryKind | '')[] = ['', 'prompt', 'plan', 'insight', 'summary', 'action', 'response'];
 
 /**
  * Turn a fetch/HTTP failure into something the user can act on. A dead API
@@ -27,25 +31,6 @@ function describeError(e: unknown): string {
   return msg.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
 }
 
-/** Render [n] citations as amber superscripts. */
-function Cited({ text }: { text: string }) {
-  const parts = text.split(/(\[\d+\])/g);
-  return (
-    <div className="whitespace-pre-wrap leading-relaxed">
-      {parts.map((p, i) => {
-        const m = p.match(/^\[(\d+)\]$/);
-        return m ? (
-          <sup key={i} className="font-mono text-[11px] px-0.5" style={{ color: 'var(--color-kdb)' }}>
-            [{m[1]}]
-          </sup>
-        ) : (
-          <span key={i}>{p}</span>
-        );
-      })}
-    </div>
-  );
-}
-
 export function SearchView({
   project,
   inputRef,
@@ -57,86 +42,68 @@ export function SearchView({
 }) {
   const [q, setQ] = useState('');
   const [source, setSource] = useState<SourceType | ''>('');
+  const [kind, setKind] = useState<EntryKind | ''>('');
   const [mode, setMode] = useState<'search' | 'ask'>('search');
   const [result, setResult] = useState<SearchResult | null>(null);
-  const [askResult, setAskResult] = useState<AskResult | null>(null);
-  const [streaming, setStreaming] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [scopeChanged, setScopeChanged] = useState(false);
   const [openEntry, setOpenEntry] = useState<number | null>(null);
   const seq = useRef(0);
-  const abortRef = useRef<AbortController | null>(null);
 
-  const run = useCallback(
-    async (kind: 'search' | 'ask') => {
-      if (!q.trim()) return;
-      const mySeq = ++seq.current;
-      // Cancel an in-flight stream so the server stops generating for a
-      // question nobody is reading any more.
-      abortRef.current?.abort();
-      setError('');
-      setMode(kind);
+  const ask = useAskConversation(project, setOpenEntry);
+  const busy = ask.turns.some((t) => t.streaming);
 
-      if (kind === 'search') {
-        setLoading(true);
-        try {
-          const r = await api.search({ q, project, source, limit: 30 });
-          if (seq.current === mySeq) setResult(r);
-        } catch (e) {
-          if (seq.current === mySeq) {
-            setResult(null);
-            setError(describeError(e));
-          }
-        } finally {
-          if (seq.current === mySeq) setLoading(false);
-        }
-        return;
+  const runSearch = useCallback(async () => {
+    if (!q.trim()) return;
+    const mySeq = ++seq.current;
+    setMode('search');
+    setError('');
+    setScopeChanged(false);
+    setLoading(true);
+    try {
+      const r = await api.search({ q, project, source, kind, limit: 30 });
+      if (seq.current === mySeq) setResult(r);
+    } catch (e) {
+      if (seq.current === mySeq) {
+        setResult(null);
+        setError(describeError(e));
       }
+    } finally {
+      if (seq.current === mySeq) setLoading(false);
+    }
+  }, [q, project, source, kind]);
 
-      const controller = new AbortController();
-      abortRef.current = controller;
-      setAskResult({ answer: '', sources: [], model: '', degraded: false });
-      setStreaming(true);
-      try {
-        const stream = api.askStream(
-          { question: q, project: project || undefined },
-          controller.signal,
-        );
-        for await (const ev of stream) {
-          // Superseded by a newer question: stop consuming, but let `finally`
-          // run so the streaming flag is always cleared.
-          if (seq.current !== mySeq) break;
-          if (ev.type === 'sources') {
-            setAskResult((prev) => ({ ...prev!, sources: ev.sources }));
-          } else if (ev.type === 'delta') {
-            setAskResult((prev) => ({ ...prev!, answer: prev!.answer + ev.text }));
-          } else if (ev.type === 'done') {
-            setAskResult((prev) => ({ ...prev!, model: ev.model, degraded: ev.degraded }));
-          } else if (ev.type === 'error') {
-            setAskResult(null); // an empty answer panel would hide the error
-            setError(ev.message);
-          }
-        }
-      } catch (e) {
-        if (seq.current === mySeq && (e as Error).name !== 'AbortError') {
-          setAskResult(null);
-          setError(describeError(e));
-        }
-      } finally {
-        if (seq.current === mySeq) setStreaming(false);
-      }
-    },
-    [q, project, source],
-  );
+  const runAsk = useCallback(() => {
+    if (!q.trim() || busy) return;
+    setMode('ask');
+    setError('');
+    setScopeChanged(false);
+    ask.send(q.trim());
+    setQ('');
+  }, [q, busy, ask]);
 
-  // Abort any in-flight stream when the view unmounts.
-  useEffect(() => () => abortRef.current?.abort(), []);
-
+  /**
+   * Changing the project changes what any answer *means*: its citations point
+   * at entries from the old scope. Keeping them on screen is worse than
+   * clearing, so drop the results and say why rather than leave the user
+   * wondering whether the panel refreshed.
+   */
+  const first = useRef(true);
   useEffect(() => {
-    // Re-run an existing search when the project filter changes.
-    if (result && mode === 'search' && q.trim()) void run('search');
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    const had = result !== null || ask.turns.length > 0;
+    setResult(null);
+    ask.reset();
+    setError('');
+    setScopeChanged(had);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
+
+  const scopeLabel = project || 'all projects';
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -146,9 +113,14 @@ export function SearchView({
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') void run(e.metaKey || e.ctrlKey ? 'ask' : 'search');
+            if (e.key !== 'Enter') return;
+            e.metaKey || e.ctrlKey ? runAsk() : void runSearch();
           }}
-          placeholder="Search everything… (Enter = search, ⌘Enter = ask)"
+          placeholder={
+            ask.turns.length
+              ? 'Ask a follow-up… (⌘Enter)'
+              : 'Search everything… (Enter = search, ⌘Enter = ask)'
+          }
           className="flex-1 bg-panel border border-line rounded-md px-4 py-3 text-[15px] placeholder:text-faint"
           aria-label="Search query"
         />
@@ -164,24 +136,59 @@ export function SearchView({
             </option>
           ))}
         </select>
+        <select
+          value={kind}
+          onChange={(e) => setKind(e.target.value as EntryKind | '')}
+          className="bg-panel border border-line rounded-md px-2 py-3 text-sm text-muted font-mono"
+          aria-label="Message kind filter"
+          title="Session messages are classified: insights, plans, summaries, actions…"
+        >
+          {KINDS.map((k) => (
+            <option key={k} value={k}>
+              {k === '' ? 'any kind' : k}
+            </option>
+          ))}
+        </select>
         <button
-          onClick={() => void run('search')}
+          onClick={() => void runSearch()}
           className="px-4 py-3 rounded-md bg-panel-2 border border-line text-sm hover:border-faint"
         >
           Search
         </button>
         <button
-          onClick={() => void run('ask')}
-          className="px-4 py-3 rounded-md text-sm font-medium border"
+          onClick={runAsk}
+          disabled={busy}
+          className="px-4 py-3 rounded-md text-sm font-medium border disabled:opacity-50"
           style={{
             borderColor: 'var(--color-kdb)',
             color: 'var(--color-kdb)',
             background: 'color-mix(in srgb, var(--color-kdb) 8%, transparent)',
           }}
         >
-          Ask
+          {ask.turns.length ? 'Follow up' : 'Ask'}
         </button>
       </div>
+
+      {/* Always say what is being searched — the sidebar selection is easy to lose. */}
+      <div className="mt-2 flex items-center gap-3 font-mono text-[11px] text-faint">
+        <span>
+          scope: <span className="text-muted">{scopeLabel}</span>
+          {source && <span className="text-muted"> · {source}</span>}
+          {kind && <span className="text-muted"> · {kind}</span>}
+        </span>
+        {ask.turns.length > 0 && (
+          <button onClick={ask.reset} className="text-muted hover:text-ink underline underline-offset-2">
+            new conversation
+          </button>
+        )}
+      </div>
+
+      {scopeChanged && (
+        <p className="mt-3 font-mono text-[11px]" style={{ color: 'var(--color-report)' }}>
+          Project changed to “{scopeLabel}” — previous results were for a different scope and have
+          been cleared. Ask or search again.
+        </p>
+      )}
 
       {loading && <Spinner />}
       {error && (
@@ -198,46 +205,13 @@ export function SearchView({
         </div>
       )}
 
-      {mode === 'ask' && askResult && !error && (
-        <div className="mt-6 rise">
-          {askResult.degraded && (
-            <p className="font-mono text-xs mb-3" style={{ color: 'var(--color-report)' }}>
-              ⚠ LLM unavailable — showing retrieved sources only
-            </p>
-          )}
-          <div className="bg-panel border border-line rounded-md p-5 min-h-[3.5rem]">
-            {askResult.answer ? (
-              <Cited text={askResult.answer} />
-            ) : (
-              <span className="font-mono text-sm text-faint">
-                {streaming ? 'reading sources…' : ''}
-              </span>
-            )}
-            {streaming && askResult.answer && (
-              <span
-                className="inline-block w-[7px] h-[15px] translate-y-[2px] ml-0.5 animate-pulse"
-                style={{ background: 'var(--color-kdb)' }}
-                aria-hidden
-              />
-            )}
-          </div>
-          <div className="mt-4 space-y-1.5">
-            {askResult.sources.map((s) => (
-              <button
-                key={s.n}
-                onClick={() => setOpenEntry(s.entryId)}
-                className="w-full flex items-baseline gap-2 text-sm text-left hover:bg-panel rounded px-1 py-0.5"
-              >
-                <span className="font-mono text-[11px]" style={{ color: 'var(--color-kdb)' }}>
-                  [{s.n}]
-                </span>
-                <Badge source={s.sourceType} />
-                <span className="text-muted truncate">{s.title}</span>
-                <Stamp iso={s.occurredAt} />
-              </button>
-            ))}
-          </div>
-        </div>
+      {mode === 'ask' && ask.turns.length > 0 && (
+        <Conversation
+          turns={ask.turns}
+          onRetry={ask.retry}
+          onDelete={ask.remove}
+          onOpenEntry={setOpenEntry}
+        />
       )}
 
       {!loading && mode === 'search' && result && !error && (
@@ -248,11 +222,7 @@ export function SearchView({
           </p>
           <div className="space-y-1.5">
             {result.hits.map((h) => (
-              <SpineRow
-                key={`${h.entryId}`}
-                source={h.sourceType}
-                onClick={() => setOpenEntry(h.entryId)}
-              >
+              <SpineRow key={`${h.entryId}`} source={h.sourceType} onClick={() => setOpenEntry(h.entryId)}>
                 <div className="flex items-baseline gap-2">
                   <Badge source={h.sourceType} />
                   {h.component && (
@@ -284,7 +254,7 @@ export function SearchView({
         </div>
       )}
 
-      {!result && !askResult && !loading && (
+      {!result && ask.turns.length === 0 && !loading && !error && !scopeChanged && (
         <Empty
           title="Ask your codebases what happened."
           hint='Try "qdrant timeout fix", or Ask: "what were the bug fixes in video import?"'

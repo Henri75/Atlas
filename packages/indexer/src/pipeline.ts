@@ -103,6 +103,8 @@ export async function indexEntries(
           source_type: b.entry.sourceType,
           component: b.entry.component,
           session_id: b.entry.sessionId,
+          // Lets search ask for insights/summaries/actions directly.
+          kind: (b.entry.meta?.kind as string | undefined) ?? undefined,
           occurred_at: b.entry.occurredAt,
         },
       })),
@@ -226,13 +228,19 @@ async function scanClaude(
 
         // Tail reads only see new events — merge with the stored session row.
         const prev = await deps.catalog.getSessionRow(sessionId);
+        // Precedence: a real `summary` from any pass, then whatever is already
+        // stored, then the first prompt. Most sessions never get a summary, so
+        // without the fallback the UI can only show a raw UUID.
         const merged = {
           sessionId,
           cwd: meta.cwd ?? prev?.cwd ?? undefined,
-          title: meta.title ?? prev?.title ?? undefined,
+          title: meta.title ?? prev?.title ?? meta.firstPrompt ?? undefined,
           startedAt: prev?.started_at?.toISOString?.() ?? meta.startedAt,
           endedAt: meta.endedAt ?? prev?.ended_at?.toISOString?.(),
+          // Tail reads only see new events, so counts accumulate; a full re-read
+          // (offset 0) starts over.
           promptCount: (offset > 0 ? (prev?.prompt_count ?? 0) : 0) + meta.promptCount,
+          actionCount: (offset > 0 ? (prev?.action_count ?? 0) : 0) + meta.actionCount,
           filesTouched: [...new Set([...(prev?.files_touched ?? []), ...meta.filesTouched])].sort(),
         };
         await deps.catalog.upsertSession(projectId, merged, path);

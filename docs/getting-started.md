@@ -3,6 +3,7 @@
 # Getting Started
 
 ## Revision History
+- 2026-07-09 22:30 UTC — Ask conversations, message kinds, timeline layouts, session filters.
 - 2026-07-09 16:00 UTC — Multiple project roots; clarified that `make cli-link` is global and run once.
 - 2026-07-09 12:20 UTC — Initial version.
 
@@ -83,11 +84,27 @@ Four views, switchable with keys `1`–`4`:
 
 1. **Search & Ask** — press `/` to focus the box.
    - `Enter` runs a hybrid search (semantic + keyword).
-   - `⌘Enter` asks the LLM, which streams a cited answer.
-   - Click any result to open the full entry, with **Open in editor**.
-2. **Timeline** — a project's history, newest first.
-3. **Components** — browse a project's components and their recorded history.
-4. **Sessions** — replay a Claude Code conversation.
+   - `⌘Enter` asks the LLM, which **streams** a cited answer.
+   - Ask is a **conversation**: keep asking follow-ups and the LLM sees the
+     earlier turns. Hover a turn to **retry** a reply (`↻`) or **delete** it
+     (`✕`); *new conversation* starts over.
+   - The **kind** dropdown narrows to how a session message was classified —
+     `insight`, `plan`, `summary`, `action`, `prompt`. Asking a project for its
+     insights is often more useful than a keyword search.
+   - A line under the box always shows the current **scope**. Changing the
+     project clears the results, because their citations pointed at entries in
+     the old scope.
+   - Click any result — or any `[n]` citation — to open the full entry, with
+     **Open in editor**.
+2. **Timeline** — a project's history, newest first. Toggle **FEED** (grouped by
+   day, colour-coded) or **TABLE** (date and time in their own columns, easier
+   to scan by *when*). The choice is remembered. Filter the loaded entries.
+3. **Components** — browse a project's components and their recorded history,
+   with a filter.
+4. **Sessions** — replay a Claude Code conversation. Filter the list; inside a
+   session, filter the messages or narrow to a kind (`YOU`, `CLAUDE`, `INSIGHT`,
+   `DID`, …). The header shows when it ran, how long it took, and how many
+   prompts, actions and files were involved.
 
 If a banner says search is *degraded*, it names what broke and what it costs.
 

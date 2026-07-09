@@ -57,17 +57,45 @@ export interface StoredEntry extends Entry {
 export interface SessionMeta {
   sessionId: string;
   cwd?: string;
+  /** From a `summary` event, when Claude wrote one. */
   title?: string;
+  /** Fallback label when there is no summary — most sessions have none. */
+  firstPrompt?: string;
   startedAt?: string;
   endedAt?: string;
   promptCount: number;
+  /** Tool invocations that changed something (edits, commands, agents). */
+  actionCount: number;
   filesTouched: string[];
 }
+
+/**
+ * How a captured session message was classified at parse time, so search can
+ * ask for insights or summaries directly rather than guessing from prose.
+ */
+export type EntryKind =
+  | 'prompt'
+  | 'plan'
+  | 'insight'
+  | 'summary'
+  | 'action'
+  | 'response';
+
+export const ALL_ENTRY_KINDS: EntryKind[] = [
+  'prompt',
+  'plan',
+  'insight',
+  'summary',
+  'action',
+  'response',
+];
 
 export interface SearchFilters {
   project?: string;
   sourceType?: SourceType;
   component?: string;
+  /** Only meaningful for claude_session entries. */
+  kind?: EntryKind;
   since?: string;
   until?: string;
 }

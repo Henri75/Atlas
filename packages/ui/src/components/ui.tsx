@@ -111,6 +111,79 @@ export function Spinner() {
   return <div className="text-faint font-mono text-sm py-8 text-center">querying…</div>;
 }
 
+/** Client-side filter box. Lists here are small and already in memory. */
+export function FilterInput({
+  value,
+  onChange,
+  placeholder,
+  count,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  /** "showing N of M" — silence about what a filter hid is its own bug. */
+  count?: { shown: number; total: number };
+}) {
+  return (
+    <div className="flex items-center gap-3 mb-3">
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        className="flex-1 bg-panel border border-line rounded-md px-3 py-1.5 text-[13px] placeholder:text-faint"
+      />
+      {value && (
+        <button onClick={() => onChange('')} className="text-[12px] text-muted hover:text-ink">
+          clear
+        </button>
+      )}
+      {count && (
+        <span className="font-mono text-[11px] text-faint whitespace-nowrap">
+          {count.shown === count.total
+            ? `${count.total}`
+            : `${count.shown} of ${count.total}`}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Case-insensitive substring match, safe for empty needles. */
+export function matches(haystack: string | undefined, needle: string): boolean {
+  if (!needle) return true;
+  return (haystack ?? '').toLowerCase().includes(needle.toLowerCase());
+}
+
+/** Highlight every occurrence of `needle` without interpreting it as regex. */
+export function Highlight({ text, needle }: { text: string; needle: string }) {
+  if (!needle) return <>{text}</>;
+  const lower = text.toLowerCase();
+  const target = needle.toLowerCase();
+  const parts: ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+  for (;;) {
+    const at = lower.indexOf(target, i);
+    if (at === -1) {
+      parts.push(text.slice(i));
+      break;
+    }
+    if (at > i) parts.push(text.slice(i, at));
+    parts.push(
+      <mark
+        key={key++}
+        className="rounded-sm px-0.5"
+        style={{ background: 'color-mix(in srgb, var(--color-kdb) 30%, transparent)', color: 'inherit' }}
+      >
+        {text.slice(at, at + target.length)}
+      </mark>,
+    );
+    i = at + target.length;
+  }
+  return <>{parts}</>;
+}
+
 /**
  * Search degrades silently by design (hybrid → sparse-only → Postgres FTS), so
  * the only sign is result quality. Say what broke and what it costs, at the

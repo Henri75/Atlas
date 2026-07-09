@@ -3,6 +3,7 @@
 # MCP Server
 
 ## Revision History
+- 2026-07-09 22:30 UTC — kdb_search gains a `kind` filter (insight / plan / summary / action).
 - 2026-07-09 02:00 UTC — Added kdb_entry (full entry body + deep link); clarified the agent flow.
 - 2026-07-09 01:20 UTC — Initial version.
 
@@ -19,7 +20,7 @@ repo pick the server up automatically.
 
 | Tool | Use it for |
 |---|---|
-| `kdb_search` | ranked snippets across all history (query, project?, source?, component?, limit?) |
+| `kdb_search` | ranked snippets across all history (query, project?, source?, component?, kind?, limit?) |
 | `kdb_ask` | synthesized, cited answer to a question (question, project?, k?) |
 | `kdb_entry` | the **full body** of one entry, plus its host path and editor link (entry_id) |
 | `kdb_projects` | list indexed projects |

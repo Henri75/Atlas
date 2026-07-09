@@ -3,6 +3,7 @@
 # CLI — `kdbs`
 
 ## Revision History
+- 2026-07-09 22:30 UTC — `--kind` filter on `search`.
 - 2026-07-09 01:50 UTC — Streaming `ask`, `--no-stream`, richer `status`.
 - 2026-07-09 01:20 UTC — Initial version.
 

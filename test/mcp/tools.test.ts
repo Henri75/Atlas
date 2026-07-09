@@ -35,6 +35,14 @@ describe('MCP tool registry', () => {
     expect(path).toBe('/api/search?q=video+import+bug&project=deepcast&limit=5');
   });
 
+  /** A silently dropped filter would give agents wrong answers, not an error. */
+  it('kdb_search forwards the kind filter', () => {
+    const t = TOOLS.find((t) => t.name === 'kdb_search')!;
+    expect(t.request({ query: 'qdrant', kind: 'insight' }).path).toBe(
+      '/api/search?q=qdrant&kind=insight',
+    );
+  });
+
   it('kdb_ask posts a JSON body', () => {
     const t = TOOLS.find((t) => t.name === 'kdb_ask')!;
     const { path, init } = t.request({ question: 'what changed?' });

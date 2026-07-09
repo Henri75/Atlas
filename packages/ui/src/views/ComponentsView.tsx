@@ -1,7 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import type { ComponentRow, ProjectRow } from '../types';
-import { Badge, Empty, Eyebrow, PickProject, SpineRow, Spinner, Stamp } from '../components/ui';
+import {
+  Badge,
+  Empty,
+  Eyebrow,
+  FilterInput,
+  PickProject,
+  SpineRow,
+  Spinner,
+  Stamp,
+  matches,
+} from '../components/ui';
 
 /** Component explorer: list on the left, selected component's history on the right. */
 export function ComponentsView({
@@ -17,6 +27,11 @@ export function ComponentsView({
   const [selected, setSelected] = useState('');
   const [entries, setEntries] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [q, setQ] = useState('');
+  const shownComponents = useMemo(
+    () => components.filter((c) => matches(c.component, q)),
+    [components, q],
+  );
 
   useEffect(() => {
     setComponents([]);
@@ -43,8 +58,14 @@ export function ComponentsView({
     <div className="grid grid-cols-[280px_1fr] gap-6 max-w-6xl mx-auto">
       <div>
         <Eyebrow>Components — {project}</Eyebrow>
+        <FilterInput
+          value={q}
+          onChange={setQ}
+          placeholder="Filter components…"
+          count={{ shown: shownComponents.length, total: components.length }}
+        />
         <div className="space-y-0.5 max-h-[75vh] overflow-y-auto pr-1">
-          {components.map((c) => (
+          {shownComponents.map((c) => (
             <button
               key={c.component}
               onClick={() => setSelected(c.component)}

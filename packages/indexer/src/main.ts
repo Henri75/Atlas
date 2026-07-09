@@ -3,6 +3,7 @@ import { Redis } from 'ioredis';
 import cron from 'node-cron';
 import {
   Catalog,
+  EXTRACTION_SCHEME,
   ID_SCHEME,
   PROJECT_GROUPING,
   VectorStore,
@@ -42,16 +43,22 @@ async function main() {
   //  - grouping: how sources are attributed to projects changed, so existing
   //    rows hang off the wrong project.
   const hadEntries = (await catalog.countEntries()) > 0;
-  const storedScheme = (await catalog.getSetting('id_scheme')) || (hadEntries ? 'v1' : ID_SCHEME);
-  const storedGrouping =
-    (await catalog.getSetting('grouping_scheme')) || (hadEntries ? 'v1' : PROJECT_GROUPING);
 
-  const reason =
-    storedScheme !== ID_SCHEME
-      ? `id scheme ${storedScheme} -> ${ID_SCHEME}`
-      : storedGrouping !== PROJECT_GROUPING
-        ? `project grouping ${storedGrouping} -> ${PROJECT_GROUPING}`
-        : null;
+  // Each marker guards one rule that turns sources into rows. If any changed,
+  // the existing rows were made by the old rule and no rescan will replace
+  // them, so the derived index is rebuilt.
+  const MARKERS = [
+    { key: 'id_scheme', label: 'id scheme', want: ID_SCHEME },
+    { key: 'grouping_scheme', label: 'project grouping', want: PROJECT_GROUPING },
+    { key: 'extraction_scheme', label: 'session extraction', want: EXTRACTION_SCHEME },
+  ];
+
+  let reason: string | null = null;
+  for (const m of MARKERS) {
+    // An unset marker on a populated catalog means it predates that marker.
+    const stored = (await catalog.getSetting(m.key)) || (hadEntries ? 'v1' : m.want);
+    if (stored !== m.want && !reason) reason = `${m.label} ${stored} -> ${m.want}`;
+  }
 
   const schemeChanged = reason !== null;
   if (schemeChanged) {
@@ -61,8 +68,7 @@ async function main() {
     );
     await catalog.resetDerivedData();
   }
-  await catalog.setSetting('id_scheme', ID_SCHEME);
-  await catalog.setSetting('grouping_scheme', PROJECT_GROUPING);
+  for (const m of MARKERS) await catalog.setSetting(m.key, m.want);
 
   const embedder = await createEmbedder(cfg.embeddings);
   console.log(`[indexer] embedder: ${embedder.name}/${embedder.model} dim=${embedder.dim}`);
