@@ -19,3 +19,6 @@
 - [2026-07-09] [kdbscope] DONE: degraded-search banner in UI + CLI (was an 11px grey footnote nobody reads)
 - [2026-07-09] [kdbscope] DONE: id scheme v2 (space-joined ids could collide); boot migration wipes the derived index + queue
 - [2026-07-09] [kdbscope] DONE: removeOnComplete:true — retained completed job ids silently blocked every later scan of a source
+- [2026-07-09] [kdbscope] DONE: nginx cached the api container IP -> every /api call 502'd after an api rebuild
+- [2026-07-09] [kdbscope] DONE: claude transcripts matched on container paths, splitting every project in two
+- [2026-07-09] [kdbscope] DONE: multiple project roots (CODE_ROOT_HOST_2..5)

@@ -136,3 +136,34 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-09] - The UI was broken in three ways at once
+
+**Objective:**
+- Fix the 502s, the silent Ask, and the unusable project selection the owner reported; add support for several project folders.
+
+**Summary of Work:**
+- nginx: resolve the api upstream at request time (docker DNS 127.0.0.11 + variable proxy_pass + $request_uri) instead of once at config load.
+- UI: error and result state made mutually exclusive; a real alert block; nginx HTML bodies translated into "the API is not reachable"; `return` inside the stream loop replaced with `break` so `finally` clears the streaming flag; PickProject empty state; offline banner distinguishing "no projects" from "no connection"; /api/projects reports host paths.
+- Discovery: projects now carry hostPath alongside rootPath, and Claude transcript dirs match on the host path. Added PROJECT_GROUPING so the derived index rebuilds automatically.
+- Multi-root: CODE_ROOT_HOST_2..5, paired {container, host} at parse time; discoverProjects takes a list; claudeDirFallbackSlug strips whichever root matches.
+
+**Key Decisions & Rationale:**
+- Config pairs container and host paths at parse time rather than keeping two arrays, because "two lists whose indices must correspond" is the exact bug shape that produced the last three outages.
+- Compose cannot express an optional mount, so unused root slots re-mount root 1; the indexer only scans a slot when its _HOST var is set.
+- PROJECT_GROUPING is a separate marker from ID_SCHEME: the ids did not change, the grouping did. Reusing ID_SCHEME would have been a lie.
+
+**Code/Files Modified:**
+- docker/nginx.conf, docker-compose.yml, .env.example
+- packages/core/src/{config,discovery,paths,catalog}.ts
+- packages/indexer/src/{scanners,scheduler,main}.ts, packages/api/src/app.ts
+- packages/ui/src/{App.tsx,components/ui.tsx,views/*.tsx}
+- docs/{getting-started,configuration,architecture}.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** verified each fix against the failure, not the code: force-recreated api and hit :8712 without restarting nginx (200); search and ask/stream both work through nginx again (sources 0.44s, first token 1.24s); after the grouping migration `deepcast` holds both its files and its sessions, and the host-path-slug duplicates are gone. 171 -> 190 tests.
+- **What Failed:** I "verified" the new UI by piping a 211KB minified bundle through a shell variable into grep — every string came back MISSING. Grepping the file inside the container showed all of them present. The deploy was fine; the test was wrong. Check an artifact where it lives.
+- **Pattern, fourth time today:** two pieces of state that must agree, updated independently — nginx's cached IP vs Docker's DNS; the UI's `error` vs `askResult`; a project's container path vs its host path.
+
+**Status:**
+- Completed
