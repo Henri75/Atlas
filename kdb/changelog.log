@@ -14,3 +14,4 @@
 - [COMPLETED] - [2026-07-09 22:40 UTC] - [Feature] - [kdbscope] - [Ask is a conversation: follow-ups carry prior turns, retry re-asks without the reply being replaced, any turn deletable; project change now clears stale results and shows the active scope]
 - [COMPLETED] - [2026-07-10 00:05 UTC] - [Feature] - [kdbscope] - [Overview dashboard at /api/dashboard and as the UI landing page: projects/documents/chunks/sessions, service health, per-store disk usage, source breakdown, and a callout for vectors orphaned by an embedding-model change (1.02 GB here)]
 - [COMPLETED] - [2026-07-10 00:05 UTC] - [Improvement] - [kdbscope] - [Human-readable numbers throughout: compact counts with exact values on hover in the UI, thousands separators and binary byte units in the CLI, relative timestamps]
+- [IN-PROGRESS] - [2026-07-10 22:08 UTC] - [Feature] - [kdbscope] - [Docs staleness (archived/aging) + full docs coverage + dashboard indexing-activity stats]

@@ -4,6 +4,7 @@ export * from './parsers/kdbLog.js';
 export * from './parsers/claudeJsonl.js';
 export * from './parsers/gitLog.js';
 export * from './parsers/docsMd.js';
+export * from './docStatus.js';
 export * from './chunker.js';
 export * from './sparse.js';
 export * from './discovery.js';
