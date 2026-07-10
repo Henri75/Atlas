@@ -112,11 +112,39 @@ export interface StorageUsage {
   collections: CollectionSize[];
 }
 
+export interface SourceDetailRow {
+  sourceType: SourceType;
+  entries: number;
+  files: number;
+  /** Raw content size in characters (length(body)), not bytes on disk. */
+  volumeChars: number;
+  lastIndexedAt?: string;
+}
+
+export interface ActivityPoint {
+  /** YYYY-MM-DD, indexing day (created_at), not event day. */
+  day: string;
+  sourceType: SourceType;
+  count: number;
+}
+
+export interface RunRow {
+  id: number;
+  kind: string;
+  startedAt?: string;
+  finishedAt?: string;
+  stats: { enqueued?: number } & Record<string, unknown>;
+}
+
 export interface Dashboard extends Stats {
   sessions: number;
   storage: StorageUsage;
   health: Record<string, boolean>;
   vectors: { points: number; vectors: number; segments: number } | null;
+  sourceDetail: SourceDetailRow[];
+  activity: ActivityPoint[];
+  runs: RunRow[];
+  archivedDocs: number;
 }
 
 export interface Stats {

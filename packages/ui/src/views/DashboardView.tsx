@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import type { Dashboard, SourceType } from '../types';
+import type { ActivityPoint, Dashboard, RunRow, SourceDetailRow, SourceType } from '../types';
 import { SOURCE_META } from '../types';
 import { Empty, Eyebrow, Spinner } from '../components/ui';
-import { bytes, compact, exact, relativeTime } from '../format';
+import { bytes, compact, duration, exact, plural, relativeTime } from '../format';
 
 /**
  * The landing page: what is indexed, whether it is working, and what it costs.
@@ -164,9 +164,26 @@ export function DashboardView({ onGoTo }: { onGoTo: (view: 'search') => void }) 
       </div>
 
       <section className="mt-8">
-        <Eyebrow>What is indexed</Eyebrow>
-        <SourceBreakdown bySource={data.bySource} total={data.entries} />
+        <Eyebrow>Indexing activity — last 30 days</Eyebrow>
+        <ActivityChart activity={data.activity ?? []} />
       </section>
+
+      <section className="mt-8">
+        <Eyebrow>What is indexed</Eyebrow>
+        <SourceBreakdown
+          bySource={data.bySource}
+          total={data.entries}
+          detail={data.sourceDetail ?? []}
+          archivedDocs={data.archivedDocs ?? 0}
+        />
+      </section>
+
+      {(data.runs ?? []).length > 0 && (
+        <section className="mt-8">
+          <Eyebrow>Recent index runs</Eyebrow>
+          <RecentRuns runs={data.runs} />
+        </section>
+      )}
 
       <button
         onClick={() => onGoTo('search')}
@@ -219,14 +236,23 @@ function Row({
   );
 }
 
-/** Proportional bars, largest first. Zero-count sources are simply absent. */
+/**
+ * Proportional bars, largest first, now with the inventory behind each bar:
+ * distinct files, raw content volume and when this source last saw new data.
+ * Zero-count sources are simply absent.
+ */
 function SourceBreakdown({
   bySource,
   total,
+  detail,
+  archivedDocs,
 }: {
   bySource: Record<string, number>;
   total: number;
+  detail: SourceDetailRow[];
+  archivedDocs: number;
 }) {
+  const byType = new Map(detail.map((d) => [d.sourceType, d]));
   const rows = Object.entries(bySource)
     .filter(([, n]) => n > 0)
     .sort((a, b) => b[1] - a[1]);
@@ -238,6 +264,7 @@ function SourceBreakdown({
     <div className="space-y-1.5">
       {rows.map(([source, n]) => {
         const meta = SOURCE_META[source as SourceType];
+        const d = byType.get(source as SourceType);
         const pct = total > 0 ? Math.round((n / total) * 100) : 0;
         return (
           <div key={source} className="flex items-center gap-3 text-[12px]">
@@ -254,6 +281,136 @@ function SourceBreakdown({
               {compact(n)}
             </span>
             <span className="font-mono text-[10px] text-faint tabular-nums w-9 text-right">{pct}%</span>
+            <span
+              className="font-mono text-[10px] text-faint tabular-nums w-40 text-right hidden md:inline"
+              title={
+                d
+                  ? `${plural(d.files, 'file')} · ${exact(d.volumeChars)} chars of content · last new data ${relativeTime(d.lastIndexedAt)}`
+                  : undefined
+              }
+            >
+              {d ? `${compact(d.files)} files · ${bytes(d.volumeChars)}` : ''}
+            </span>
+          </div>
+        );
+      })}
+      {archivedDocs > 0 && (
+        <p className="font-mono text-[10px] text-faint pt-1">
+          {exact(archivedDocs)} doc sections live under archive-style paths — indexed and
+          searchable, downranked in results.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Daily stacked bars of entries indexed (created_at), grouped into the app's
+ * source color families. Identity keeps the same colors used everywhere else;
+ * exact per-source counts ride in each bar's title. All-zero days still render
+ * a hairline so gaps read as "idle", not "missing data".
+ */
+const ACTIVITY_FAMILIES: { key: string; label: string; color: string; types: SourceType[] }[] = [
+  { key: 'kdb', label: 'KDB', color: 'var(--color-kdb)', types: ['kdb_changelog', 'kdb_session', 'kdb_component', 'kdb_backlog'] },
+  { key: 'report', label: 'REPORT', color: 'var(--color-report)', types: ['kdb_report'] },
+  { key: 'claude', label: 'CLAUDE', color: 'var(--color-claude)', types: ['claude_session'] },
+  { key: 'git', label: 'COMMIT', color: 'var(--color-git)', types: ['git_commit'] },
+  { key: 'doc', label: 'DOC', color: 'var(--color-doc)', types: ['doc'] },
+];
+
+function ActivityChart({ activity }: { activity: ActivityPoint[] }) {
+  // Fill the last 30 calendar days so idle days show as gaps, not silence.
+  const days: string[] = [];
+  for (let i = 29; i >= 0; i--) {
+    days.push(new Date(Date.now() - i * 24 * 3600 * 1000).toISOString().slice(0, 10));
+  }
+  const perDay = new Map<string, Map<string, number>>();
+  for (const p of activity) {
+    const fam = ACTIVITY_FAMILIES.find((f) => f.types.includes(p.sourceType))?.key ?? 'doc';
+    const m = perDay.get(p.day) ?? new Map<string, number>();
+    m.set(fam, (m.get(fam) ?? 0) + p.count);
+    perDay.set(p.day, m);
+  }
+  const totals = days.map((d) => [...(perDay.get(d)?.values() ?? [])].reduce((a, b) => a + b, 0));
+  const max = Math.max(...totals, 1);
+  const seen = new Set(activity.map((p) => p.day));
+  const anything = seen.size > 0;
+
+  if (!anything) return <Empty title="No indexing activity in the last 30 days." />;
+
+  return (
+    <div>
+      <div className="flex items-end gap-[3px] h-24" role="img" aria-label="Entries indexed per day, last 30 days">
+        {days.map((day, i) => {
+          const m = perDay.get(day);
+          const total = totals[i]!;
+          const breakdown = m
+            ? ACTIVITY_FAMILIES.filter((f) => m.has(f.key))
+                .map((f) => `${f.label.toLowerCase()} ${exact(m.get(f.key)!)}`)
+                .join(', ')
+            : 'nothing indexed';
+          return (
+            <div
+              key={day}
+              className="flex-1 flex flex-col justify-end h-full"
+              title={`${day} — ${plural(total, 'entry', 'entries')}${m ? ` (${breakdown})` : ''}`}
+            >
+              {total === 0 ? (
+                <div className="h-px" style={{ background: 'var(--color-line)' }} />
+              ) : (
+                ACTIVITY_FAMILIES.filter((f) => m!.has(f.key)).map((f) => (
+                  <div
+                    key={f.key}
+                    className="w-full first:rounded-t-sm"
+                    style={{
+                      height: `${Math.max((m!.get(f.key)! / max) * 100, 2)}%`,
+                      background: f.color,
+                      marginTop: 1,
+                    }}
+                  />
+                ))
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-1 flex justify-between font-mono text-[10px] text-faint">
+        <span>{days[0]}</span>
+        <span title="Peak day">max {exact(max)}/day</span>
+        <span>{days.at(-1)}</span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-3">
+        {ACTIVITY_FAMILIES.map((f) => (
+          <span key={f.key} className="flex items-center gap-1.5 font-mono text-[10px] text-muted">
+            <span className="size-2 rounded-sm" style={{ background: f.color }} aria-hidden />
+            {f.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Scheduler ticks and manual reindexes: when, how long, how much enqueued. */
+function RecentRuns({ runs }: { runs: RunRow[] }) {
+  return (
+    <div className="space-y-1 font-mono text-[11px] text-faint">
+      {runs.slice(0, 6).map((r) => {
+        const secs =
+          r.startedAt && r.finishedAt
+            ? (new Date(r.finishedAt).getTime() - new Date(r.startedAt).getTime()) / 1000
+            : null;
+        return (
+          <div key={r.id} className="flex items-baseline gap-2">
+            <span className="w-24 shrink-0">{r.kind}</span>
+            <span className="text-muted">{relativeTime(r.startedAt)}</span>
+            <span className="flex-1" />
+            {r.stats?.enqueued != null && (
+              <span className="tabular-nums">{plural(Number(r.stats.enqueued), 'job')}</span>
+            )}
+            <span className="tabular-nums w-14 text-right">
+              {r.finishedAt ? duration(secs) : 'running…'}
+            </span>
           </div>
         );
       })}

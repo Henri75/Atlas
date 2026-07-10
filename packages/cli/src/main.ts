@@ -245,6 +245,15 @@ program
       );
       console.log(`${bold('embedder')}  ${r.embedder} → ${dim(r.collection)}`);
       console.log(`${bold('last run')}  ${date(r.lastRunAt) || dim('never')}`);
+      if (Array.isArray(r.activity) && r.activity.length) {
+        const today = new Date().toISOString().slice(0, 10);
+        const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+        const sum = (from: string) =>
+          r.activity.filter((a: any) => a.day >= from).reduce((s: number, a: any) => s + a.count, 0);
+        console.log(
+          `${bold('activity')}  ${num(sum(today))} entries today · ${num(sum(weekAgo))} last 7 days`,
+        );
+      }
       if (r.pending != null) {
         console.log(`${bold('queued')}    ${num(r.pending)} scan job${r.pending === 1 ? '' : 's'}`);
       }
@@ -282,8 +291,20 @@ program
       }
 
       console.log(dim('\nby source:'));
+      const detail = new Map(((r.sourceDetail ?? []) as any[]).map((d) => [d.sourceType, d]));
       for (const [k, v] of Object.entries(r.bySource ?? {})) {
-        console.log(`  ${(SOURCE_BADGE[k] ?? k).padEnd(12)} ${num(v as number).padStart(9)}`);
+        const d = detail.get(k);
+        const extra = d
+          ? dim(
+              `  ${num(d.files).padStart(7)} files  ${bytes(d.volumeChars).padStart(9)}  last ${date(d.lastIndexedAt) || 'never'}`,
+            )
+          : '';
+        console.log(`  ${(SOURCE_BADGE[k] ?? k).padEnd(12)} ${num(v as number).padStart(9)}${extra}`);
+      }
+      if (r.archivedDocs > 0) {
+        console.log(
+          dim(`  ${num(r.archivedDocs)} doc sections under archive paths — indexed, downranked`),
+        );
       }
     });
   });
