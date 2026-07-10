@@ -15,6 +15,36 @@ const SOURCES: (SourceType | '')[] = [
 /** Only session entries carry a kind; the filter is offered for all sources. */
 const KINDS: (EntryKind | '')[] = ['', 'prompt', 'plan', 'insight', 'summary', 'action', 'response'];
 
+/** Doc staleness scope. Archived docs are indexed and downranked, never hidden — unless asked. */
+const DOC_STATUSES: { value: '' | 'active' | 'archived'; label: string }[] = [
+  { value: '', label: 'any status' },
+  { value: 'active', label: 'exclude archived' },
+  { value: 'archived', label: 'archived only' },
+];
+
+/** Badge for stale doc hits: archived is loud, aging is informational. */
+function StaleBadge({ hit }: { hit: { docStatus?: 'aging' | 'archived'; ageMonths?: number } }) {
+  if (!hit.docStatus) return null;
+  const archived = hit.docStatus === 'archived';
+  const color = archived ? 'var(--color-report)' : 'var(--color-faint)';
+  const label = archived
+    ? `archived${hit.ageMonths != null ? ` · ${hit.ageMonths} mo` : ''}`
+    : `aging · ${hit.ageMonths} mo`;
+  return (
+    <span
+      className="font-mono text-[10px] tracking-widest px-1.5 py-0.5 rounded-sm whitespace-nowrap"
+      style={{ color, background: `color-mix(in srgb, ${color} 12%, transparent)` }}
+      title={
+        archived
+          ? 'Lives under an archive-style path (archive/, _legacy/, Previous/…). Downranked, never hidden.'
+          : 'Not modified in a long time; ranked normally.'
+      }
+    >
+      {label}
+    </span>
+  );
+}
+
 /**
  * Turn a fetch/HTTP failure into something the user can act on. A dead API
  * returns a full nginx HTML error page, which is useless as a message.
@@ -43,6 +73,7 @@ export function SearchView({
   const [q, setQ] = useState('');
   const [source, setSource] = useState<SourceType | ''>('');
   const [kind, setKind] = useState<EntryKind | ''>('');
+  const [docStatus, setDocStatus] = useState<'' | 'active' | 'archived'>('');
   const [mode, setMode] = useState<'search' | 'ask'>('search');
   const [result, setResult] = useState<SearchResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -62,7 +93,7 @@ export function SearchView({
     setScopeChanged(false);
     setLoading(true);
     try {
-      const r = await api.search({ q, project, source, kind, limit: 30 });
+      const r = await api.search({ q, project, source, kind, docStatus, limit: 30 });
       if (seq.current === mySeq) setResult(r);
     } catch (e) {
       if (seq.current === mySeq) {
@@ -72,7 +103,7 @@ export function SearchView({
     } finally {
       if (seq.current === mySeq) setLoading(false);
     }
-  }, [q, project, source, kind]);
+  }, [q, project, source, kind, docStatus]);
 
   const runAsk = useCallback(() => {
     if (!q.trim() || busy) return;
@@ -149,6 +180,19 @@ export function SearchView({
             </option>
           ))}
         </select>
+        <select
+          value={docStatus}
+          onChange={(e) => setDocStatus(e.target.value as '' | 'active' | 'archived')}
+          className="bg-panel border border-line rounded-md px-2 py-3 text-sm text-muted font-mono"
+          aria-label="Doc status filter"
+          title="Docs under archive-style paths are downranked by default; exclude or target them here."
+        >
+          {DOC_STATUSES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
         <button
           onClick={() => void runSearch()}
           className="px-4 py-3 rounded-md bg-panel-2 border border-line text-sm hover:border-faint"
@@ -175,6 +219,12 @@ export function SearchView({
           scope: <span className="text-muted">{scopeLabel}</span>
           {source && <span className="text-muted"> · {source}</span>}
           {kind && <span className="text-muted"> · {kind}</span>}
+          {docStatus && (
+            <span className="text-muted">
+              {' '}
+              · {DOC_STATUSES.find((s) => s.value === docStatus)?.label}
+            </span>
+          )}
         </span>
         {ask.turns.length > 0 && (
           <button onClick={ask.reset} className="text-muted hover:text-ink underline underline-offset-2">
@@ -241,6 +291,7 @@ export function SearchView({
                       open session
                     </button>
                   )}
+                  <StaleBadge hit={h} />
                   <Stamp iso={h.occurredAt} />
                 </div>
                 <div className="mt-1 font-medium text-[14px]">{h.title}</div>

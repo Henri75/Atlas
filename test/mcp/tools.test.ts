@@ -43,6 +43,13 @@ describe('MCP tool registry', () => {
     );
   });
 
+  it('kdb_search forwards doc_status as the docStatus param', () => {
+    const t = TOOLS.find((t) => t.name === 'kdb_search')!;
+    expect(t.request({ query: 'auth flow', doc_status: 'active' }).path).toBe(
+      '/api/search?q=auth+flow&docStatus=active',
+    );
+  });
+
   it('kdb_ask posts a JSON body', () => {
     const t = TOOLS.find((t) => t.name === 'kdb_ask')!;
     const { path, init } = t.request({ question: 'what changed?' });

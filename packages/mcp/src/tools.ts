@@ -37,7 +37,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'kdb_search',
     description:
-      'Hybrid semantic+keyword search across all indexed projects: kdb logs, Claude Code sessions, git commits, docs. Returns ranked snippets, each with an entryId (pass to kdb_entry for the full text) and a hostPath.',
+      'Hybrid semantic+keyword search across all indexed projects: kdb logs, Claude Code sessions, git commits, docs. Returns ranked snippets, each with an entryId (pass to kdb_entry for the full text) and a hostPath. Docs under archive-style paths are downranked and labeled docStatus=archived (aging = old but active); treat those hits as historical context, not current truth.',
     schema: {
       query: z.string().describe('Natural-language or keyword query'),
       project: z.string().optional().describe('Project slug filter, e.g. "deepcast"'),
@@ -49,10 +49,14 @@ export const TOOLS: ToolDef[] = [
         .describe(
           'Narrow to how a Claude session message was classified. "insight" and "summary" are often more useful than a keyword search.',
         ),
+      doc_status: z
+        .enum(['active', 'archived'])
+        .optional()
+        .describe('active = exclude archived docs entirely; archived = only them'),
       limit: z.number().int().min(1).max(100).optional(),
     },
     request: (a) => ({
-      path: `/api/search${qs({ q: a.query, project: a.project, source: a.source, component: a.component, kind: a.kind, limit: a.limit })}`,
+      path: `/api/search${qs({ q: a.query, project: a.project, source: a.source, component: a.component, kind: a.kind, docStatus: a.doc_status, limit: a.limit })}`,
     }),
   },
   {

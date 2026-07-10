@@ -45,11 +45,20 @@ function degradedReason(mode: string): string {
   return `Degraded search (${mode}).`;
 }
 
+/** Staleness tag: archived is loud (downranked), aging is informational. */
+function staleTag(h: any): string {
+  if (h.docStatus === 'archived') {
+    return ` ${red(`[archived${h.ageMonths != null ? ` ${h.ageMonths}mo` : ''}]`)}`;
+  }
+  if (h.docStatus === 'aging') return ` ${yellow(`[aging ${h.ageMonths}mo]`)}`;
+  return '';
+}
+
 function printHit(h: any, i: number) {
   const badge = SOURCE_BADGE[h.sourceType] ?? h.sourceType;
   console.log(
     `${dim(String(i + 1).padStart(2))} ${bold(h.title.slice(0, 90))}\n` +
-      `   ${cyan(h.projectSlug)} ${magenta(badge)}${h.component ? ` ${yellow(h.component)}` : ''} ${dim(date(h.occurredAt))}\n` +
+      `   ${cyan(h.projectSlug)} ${magenta(badge)}${h.component ? ` ${yellow(h.component)}` : ''}${staleTag(h)} ${dim(date(h.occurredAt))}\n` +
       `   ${dim(h.snippet.replace(/\s+/g, ' ').slice(0, 160))}`,
   );
 }
@@ -62,10 +71,11 @@ program
   .option('-c, --component <name>')
   .option('-k, --kind <kind>', 'insight | plan | summary | action | prompt | response')
   .option('-n, --limit <n>', 'max results', '10')
+  .option('--doc-status <s>', 'active (exclude archived docs) | archived (only them)')
   .description('hybrid search across all indexed history')
   .action(async (words, o) => {
     const r = await get(
-      `/api/search${qs({ q: words.join(' '), project: o.project, source: o.source, component: o.component, kind: o.kind, limit: o.limit })}`,
+      `/api/search${qs({ q: words.join(' '), project: o.project, source: o.source, component: o.component, kind: o.kind, docStatus: o.docStatus, limit: o.limit })}`,
     );
     out(r, () => {
       if (r.degraded) console.log(yellow(`⚠ ${degradedReason(r.mode)}\n`));

@@ -22,6 +22,9 @@ export interface SearchHit {
   occurredAt?: string;
   sourcePath: string;
   sourceRef?: string;
+  /** 'archived' (downranked) or 'aging' (label only); absent = active. */
+  docStatus?: 'aging' | 'archived';
+  ageMonths?: number;
 }
 
 export interface SearchResult {
