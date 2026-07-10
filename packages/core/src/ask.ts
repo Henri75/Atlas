@@ -15,6 +15,9 @@ const SYSTEM_PROMPT =
   'Claude Code sessions, git commits, docs). Cite sources inline as [n] after each ' +
   'claim. If the context is insufficient, say exactly what is missing. Be concrete: ' +
   'name components, dates, files and root causes. Answer in the language of the question. ' +
+  'Context blocks may be labeled [ARCHIVED — …] or [AGING — …]: prefer active and recent ' +
+  'sources, say so explicitly when you rely on labeled material, and when sources ' +
+  'conflict, trust the newer one. ' +
   'In a follow-up, you may also rely on the earlier turns of this conversation; the ' +
   'context blocks below are freshly retrieved for the newest question, so its [n] ' +
   'citations refer to those blocks.';
@@ -41,7 +44,11 @@ export function buildAskPrompt(question: string, hits: SearchHit[], bodies: Map<
     .map((h, i) => {
       const body = (bodies.get(h.entryId) ?? h.snippet).slice(0, 1500);
       const date = h.occurredAt ? ` (${h.occurredAt.slice(0, 10)})` : '';
-      return `[${i + 1}] ${h.projectSlug} / ${h.sourceType}${h.component ? ` / ${h.component}` : ''}${date}\n${h.title}\n${body}`;
+      // In-band staleness signal: retrieval already downranked archived docs,
+      // but whatever still lands in context must arrive labeled.
+      const age = h.ageMonths != null ? ` — ${h.ageMonths} mo old` : '';
+      const stale = h.docStatus ? ` [${h.docStatus.toUpperCase()}${age}]` : '';
+      return `[${i + 1}] ${h.projectSlug} / ${h.sourceType}${h.component ? ` / ${h.component}` : ''}${date}${stale}\n${h.title}\n${body}`;
     })
     .join('\n\n---\n\n');
   return `Context blocks:\n\n${blocks}\n\nQuestion: ${question}`;

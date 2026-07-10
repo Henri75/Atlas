@@ -44,3 +44,25 @@ describe('buildAskPrompt', () => {
     expect(block.length).toBeLessThan(2000);
   });
 });
+
+describe('buildAskPrompt staleness labels', () => {
+  it('marks archived and aging blocks so the model can discount them', () => {
+    const docHits: SearchHit[] = [
+      {
+        ...hits[0]!,
+        entryId: 3,
+        sourceType: 'doc',
+        docStatus: 'archived',
+        ageMonths: 20,
+        sourcePath: '/x/docs/_legacy/auth.md',
+      },
+      { ...hits[0]!, entryId: 4, sourceType: 'doc', docStatus: 'aging', ageMonths: 14 },
+      { ...hits[0]!, entryId: 5, sourceType: 'doc' },
+    ];
+    const prompt = buildAskPrompt('q', docHits, new Map());
+    expect(prompt).toContain('[1] deepcast / doc / video-import (2026-07-08) [ARCHIVED — 20 mo old]');
+    expect(prompt).toContain('[2] deepcast / doc / video-import (2026-07-08) [AGING — 14 mo old]');
+    // Active blocks stay unlabeled.
+    expect(prompt.split('\n\n---\n\n')[2]).not.toContain('[A');
+  });
+});
