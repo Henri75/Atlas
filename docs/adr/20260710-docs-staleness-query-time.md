@@ -49,4 +49,4 @@ Accepted
 ## References
 - Spec: `docs/superpowers/specs/2026-07-10-docs-staleness-design.md`
 - Plan: `docs/superpowers/plans/2026-07-11-docs-staleness-and-stats.md`
-- KDB: `kdb/components/kdbscope.log` entry of 2026-07-10
+- KDB: `kdb/components/atlas.log` entry of 2026-07-10 (the log was `kdbscope.log` until the 2026-07-12 rename)

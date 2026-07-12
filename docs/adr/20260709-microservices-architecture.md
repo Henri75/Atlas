@@ -42,4 +42,4 @@ SQLite and PostgreSQL were evaluated.
 
 ## References
 - Design spec: docs/superpowers/specs/2026-07-09-kdbscope-design.md
-- kdb component log: kdb/components/kdbscope.log (§2.2 entries)
+- kdb component log: kdb/components/atlas.log (§2.2 entries; the component was named `kdbscope` until the 2026-07-12 rename to Atlas)

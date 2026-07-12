@@ -1,4 +1,4 @@
-<!-- GENERATED VIEW — do not edit. Rebuilt from kdbscope.log by bin/kdb_rebuild.mjs -->
+<!-- GENERATED VIEW — do not edit. Rebuilt from atlas.log by bin/kdb_rebuild.mjs -->
 
 ---
 ### [2026-07-08] - KDBScope v0.1.0 — cross-project knowledge indexer built end-to-end
