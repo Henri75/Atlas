@@ -451,3 +451,42 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-13] - Markdown renders as HTML in every view, not just the Ask answer
+
+**Objective:**
+- Every surface that shows indexed content renders its markdown as formatted HTML (bold, lists, headings, code) instead of printing the raw syntax.
+
+**Summary of Work:**
+- Everything Atlas indexes is markdown at the source — kdb logs are written as `**Objective:**` / `- bullet` / `### heading` blocks, and commit bodies and docs are markdown by nature. Four surfaces were printing that source verbatim inside `<pre whitespace-pre-wrap>`: EntryDrawer (`entry.body`), ComponentsView (`e.body`), SessionsView detail (`e.body`), SearchView (`h.snippet`). A correct renderer already existed but was wired only into the Ask answer.
+- Widened `Markdown.tsx` from an Ask-answer component into the single renderer for all indexed content, and wired it into all four surfaces.
+- Two Ask-specific behaviours had to become optional first:
+  - **Citations are now opt-in.** `citationize` rewrote every `[n]` into an amber superscript. That is correct for an answer with a source list, but in a git commit body or a transcript `[1]` is array syntax — turning it into a citation marker is corruption. The transform now runs only when the caller passes `citations`.
+  - **Filter highlighting moved into the pipeline.** SessionsView composed `<Highlight>` (returns React nodes) inside the `<pre>`. Rendered markdown is injected as an HTML *string*, so the two cannot nest. Highlighting is now an optional `needle` prop applied as a post-sanitize string transform — the same discipline `citationize` already used.
+- Added a `compact` variant for search snippets and dense rows: block elements collapse to body size with no vertical margin, so a result row stays two lines tall and `line-clamp-2` keeps measuring correctly. It also repairs markdown cut mid-syntax before parsing.
+- `.kdb-md` font-size became `inherit` (was a hard 15px): the same markup is read at 15px in an answer and 12.5px in a component row, so the caller now owns the size. Restored 15px explicitly at the Ask call site.
+
+**Key Decisions & Rationale:**
+- **Reuse (modify), not a second renderer.** A parallel "plain markdown" component would have duplicated the parse → sanitize → inject pipeline, i.e. duplicated the security-critical part. One renderer, two optional enrichments.
+- **Snippets render rather than being stripped to plain text (user's call).** The cost is that `body.slice(0, 280)` cuts mid-construct, and marked is tolerant but not *repairing* — a dangling `**` emits the literal asterisks we are trying to remove, and an open fence swallows the rest. `repairTruncated` closes unbalanced `` ` ``, `**`, `~~` and fences before parsing. Only applied under `compact`, since a full body is never cut.
+- **Highlighting splits on tags and only transforms the text between them.** Without that, typing `li` or `strong` into the filter box would match the tag names in the HTML just generated and wrap them in `<mark>`, destroying the document. The needle is also escaped on the way in — it is raw user input spliced into sanitized HTML, the one place DOMPurify never sees.
+- The needle is escaped to match the *haystack*, not the reverse: the sanitized HTML holds `&` as `&amp;`, so an unescaped `&` would never match.
+
+**Code/Files Modified:**
+- packages/ui/src/components/Markdown.tsx
+- packages/ui/src/components/EntryDrawer.tsx
+- packages/ui/src/views/ComponentsView.tsx
+- packages/ui/src/views/SessionsView.tsx
+- packages/ui/src/views/SearchView.tsx
+- packages/ui/src/views/AskConversation.tsx
+- packages/ui/src/styles.css
+- test/ui/markdown.test.tsx
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** 430/430 tests pass (26 in markdown.test.tsx, up from 14). Verified against live data: real `kdb_component` hits pulled from the running API render `### […]` → `<h3>`, `**Objective:**` → `<strong>`, and a list item truncated mid-sentence by the 280-char cut still renders as a proper `<li>`.
+- **What Worked:** the rewrite incidentally fixed a real pre-existing type error — the old `citationize` ended in `as string & typeof whole`, referencing a parameter not in scope (`Markdown.tsx(46,25): Cannot find name 'whole'`). tsc errors went 3 → 2.
+- **What Failed:** two existing tests pinned "always linkify `[n]`", which is only safe while the Ask answer is the sole caller. Widening the component invalidated the assumption, so those tests were rewritten rather than preserved — keeping them green would have meant shipping the bug.
+- **Note:** the two remaining tsc errors (`TimelineItem` lacks `projectSlug`) are pre-existing on HEAD and out of scope; logged to backlog.
+
+**Status:**
+- Completed

@@ -123,3 +123,11 @@
 
 **AI Response Summary:**
 > Diagnosed all five as one root cause — the UI mixed *modes* (how you look) with *objects* (what you look at) and gave them identical treatment in one column — then mocked three full layouts in the real theme and built the chosen one: rail holds views only, a persistent scope bar with project chips sits above the content it governs, and Search/Ask became a segmented mode switch. Multi-project turned out cheap because `sourceTypes` had already solved multi-value filtering on both search paths; kept Components/Sessions as honest single-project browsers rather than letting a view lie about what it shows. Live-verified across two projects; 417 tests green.
+---
+### [2026-07-13 02:15 UTC]
+
+**User Prompt Summary:**
+> Across all pages (components, session, timeline, etc.), ensure markdown is displayed as formatted HTML — bold instead of `**`, real `<li>` lists, and so on.
+
+**AI Response Summary:**
+> Widened the existing Ask-only `Markdown` component into the single renderer for all indexed content and wired it into the entry drawer, components view, session transcripts and search snippets. Made citation markers opt-in (so `[1]` in a commit body stays literal), moved filter highlighting into the post-sanitize string pipeline, and added a `compact` variant that repairs snippets cut mid-syntax. 430/430 tests pass; verified against live API content.

@@ -336,6 +336,10 @@ export function Conversation({
                 ) : t.content ? (
                   <Markdown
                     text={t.content}
+                    // The answer is the thing you sit and read, so it keeps the
+                    // generous reading size. (.kdb-md inherits its size now, so
+                    // the caller says how big its markdown is.)
+                    className="text-[15px]"
                     citations={citations.get(t.id)}
                     onCite={(n) => jumpToSource(t.id, n)}
                     onCitePeek={(n, at) =>

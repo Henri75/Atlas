@@ -6,10 +6,10 @@ import { Markdown } from '../../packages/ui/src/components/Markdown';
 afterEach(cleanup);
 
 /**
- * The Ask answer is model output synthesized from arbitrary indexed content
- * (session transcripts included), so it is untrusted. These pin the pipeline:
- * markdown renders, citations become superscripts, and injected markup is
- * stripped before it can reach the DOM.
+ * Everything this renders is untrusted: kdb log bodies, git commit messages and
+ * session transcripts are indexed from arbitrary sources, and the Ask answer is
+ * model output that can be prompt-injected. These pin the pipeline: markdown
+ * renders, and injected markup is stripped before it can reach the DOM.
  */
 describe('Markdown', () => {
   it('renders markdown structure as HTML', () => {
@@ -19,12 +19,16 @@ describe('Markdown', () => {
     expect(container.querySelector('strong')?.textContent).toBe('bold');
   });
 
-  it('turns [n] and [n, m] citations into superscripts', () => {
-    const { container } = render(<Markdown text={'grounded [1] and combined [2, 3]'} />);
-    const sups = container.querySelectorAll('sup.kdb-cite');
-    // [1], [2], [3] — the comma list expands to one sup each.
-    expect(sups).toHaveLength(3);
-    expect([...sups].map((s) => s.textContent)).toEqual(['[1]', '[2]', '[3]']);
+  it('renders a kdb component entry as structure, not as syntax', () => {
+    // The shape every kdb component log is written in. Before this component was
+    // wired into the views, the reader saw the asterisks.
+    const { container } = render(
+      <Markdown text={'**Objective:**\n- Stop the timeout\n\n**Status:**\n- Completed'} />,
+    );
+    expect(container.querySelectorAll('strong')).toHaveLength(2);
+    expect(container.querySelectorAll('li')).toHaveLength(2);
+    // The literal markers are gone from the rendered text.
+    expect(container.textContent).not.toContain('**');
   });
 
   it('strips a script tag from untrusted answer text', () => {
@@ -97,11 +101,121 @@ describe('Markdown — citation links', () => {
     expect(container.querySelector('sup.kdb-cite-link')).toBeTruthy();
   });
 
-  it('renders citations without links when no source list is supplied', () => {
-    // Backwards compatible: the amber superscript still renders.
-    const { container } = render(<Markdown text="plain [1]" />);
-    expect(container.querySelector('sup.kdb-cite')).toBeTruthy();
+  it('leaves [n] completely alone when there are no citations', () => {
+    // The component now renders git commit bodies and session transcripts too,
+    // where `[1]` is array syntax or a log prefix — not a citation. Rewriting it
+    // into an amber superscript there would be corruption, not enrichment. The
+    // transform therefore only runs when the caller passes a citation set.
+    const { container } = render(<Markdown text="const first = items[0] and rows[1]" />);
+    expect(container.querySelector('sup.kdb-cite')).toBeNull();
+    expect(container.textContent).toContain('rows[1]');
+  });
+
+  it('still marks an unknown citation inert when a source list IS supplied', () => {
+    const { container } = render(<Markdown text="invented [9]" citations={new Set([1])} />);
+    expect(container.querySelector('sup.kdb-cite')?.textContent).toBe('[9]');
     expect(container.querySelector('sup.kdb-cite-link')).toBeNull();
+  });
+});
+
+/**
+ * The list views highlight the filter term inside the body. The old plain-text
+ * renderer did that by returning React nodes; rendered markdown is injected as an
+ * HTML *string*, so the match has to be spliced into the markup instead. That
+ * splice is the dangerous part, and these are the two ways it can go wrong.
+ */
+describe('Markdown — filter highlighting', () => {
+  it('wraps the match in <mark> inside rendered markdown', () => {
+    const { container } = render(<Markdown text={'**Objective:** stop the timeout'} needle="timeout" />);
+    const mark = container.querySelector('mark.kdb-mark');
+    expect(mark?.textContent).toBe('timeout');
+    // Structure survives the splice.
+    expect(container.querySelector('strong')?.textContent).toBe('Objective:');
+  });
+
+  it('matches case-insensitively, like the plain-text filter it replaces', () => {
+    const { container } = render(<Markdown text="Qdrant timed out" needle="qdrant" />);
+    expect(container.querySelector('mark.kdb-mark')?.textContent).toBe('Qdrant');
+  });
+
+  it('does not corrupt markup when the needle matches a tag name', () => {
+    // Typing "li" or "strong" into the filter box must not reach into the HTML we
+    // just generated and wrap a tag name. If the transform looked at tags rather
+    // than only text nodes, this test finds it: the list would be destroyed.
+    const { container } = render(<Markdown text={'- lithium\n- sodium'} needle="li" />);
+    expect(container.querySelectorAll('li')).toHaveLength(2);
+    // The match landed in the *text*, not in the tag.
+    expect(container.querySelector('mark.kdb-mark')?.textContent).toBe('li');
+    expect(container.textContent).toContain('lithium');
+  });
+
+  it('escapes a needle carrying markup rather than injecting it', () => {
+    // The needle is raw user input spliced back into sanitized HTML — the one
+    // place DOMPurify never sees. It must be escaped on the way in.
+    const { container } = render(
+      <Markdown text={'a <script>x</script> b'} needle="<script>" />,
+    );
+    expect(container.querySelector('script')).toBeNull();
+    expect(container.innerHTML).not.toContain('<script>');
+  });
+
+  it('matches text containing an HTML entity', () => {
+    // The haystack is escaped HTML, so `&` lives there as `&amp;`. Searching for
+    // the literal `&` only works if the needle is escaped to match.
+    const { container } = render(<Markdown text="Tom & Jerry" needle="Tom & Jerry" />);
+    expect(container.querySelector('mark.kdb-mark')?.textContent).toBe('Tom & Jerry');
+  });
+
+  it('renders unchanged when the needle is empty', () => {
+    const { container } = render(<Markdown text="**bold**" needle="" />);
+    expect(container.querySelector('mark.kdb-mark')).toBeNull();
+    expect(container.querySelector('strong')?.textContent).toBe('bold');
+  });
+});
+
+/**
+ * Search snippets are a blind `body.slice(0, 280)`, so they routinely end inside
+ * a markdown construct. marked is tolerant but not *repairing*: given an unclosed
+ * `**` it emits literal asterisks — precisely the syntax we are rendering to get
+ * rid of — and an unclosed fence swallows the rest of the snippet.
+ */
+describe('Markdown — compact (truncated snippets)', () => {
+  it('closes a bold marker left dangling by the cut', () => {
+    const { container } = render(<Markdown text="fixed the **timeout" compact />);
+    expect(container.querySelector('strong')?.textContent).toBe('timeout');
+    expect(container.textContent).not.toContain('**');
+  });
+
+  it('closes a code span left dangling by the cut', () => {
+    const { container } = render(<Markdown text="run `make ps" compact />);
+    expect(container.querySelector('code')?.textContent).toBe('make ps');
+    expect(container.textContent).not.toContain('`');
+  });
+
+  it('closes a fence left open by the cut', () => {
+    const { container } = render(<Markdown text={'see:\n```ts\nconst x = 1'} compact />);
+    expect(container.querySelector('pre code')?.textContent).toContain('const x = 1');
+  });
+
+  it('leaves balanced markdown untouched', () => {
+    const { container } = render(<Markdown text="**done** and `ok`" compact />);
+    expect(container.querySelector('strong')?.textContent).toBe('done');
+    expect(container.querySelector('code')?.textContent).toBe('ok');
+  });
+
+  it('applies the compact class so blocks collapse to row height', () => {
+    // A `### heading` in a two-line result row would otherwise blow the row's
+    // height and stop line-clamp measuring correctly.
+    const { container } = render(<Markdown text="### Heading" compact />);
+    expect(container.querySelector('.kdb-md-compact')).toBeTruthy();
+    expect(container.querySelector('h3')?.textContent).toBe('Heading');
+  });
+
+  it('does not repair a full body, which is never cut', () => {
+    // A lone `**` in prose is not a truncation — without `compact` it stays as
+    // written rather than being "helpfully" closed.
+    const { container } = render(<Markdown text="a ** b" />);
+    expect(container.querySelector('strong')).toBeNull();
   });
 });
 

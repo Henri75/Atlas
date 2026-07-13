@@ -92,9 +92,14 @@ html {
 /* Thin scrollbars fitting the instrument look. */
 * { scrollbar-width: thin; scrollbar-color: var(--color-line) transparent; }
 
-/* Rendered LLM answers: markdown → sanitized HTML (see Markdown.tsx). Scoped
-   to .kdb-md so it never leaks into the instrument chrome. */
-.kdb-md { line-height: 1.6; font-size: 15px; }
+/* Rendered markdown → sanitized HTML (see Markdown.tsx): kdb log bodies, git
+   commit messages, session transcripts and Ask answers all render through here.
+   Scoped to .kdb-md so it never leaks into the instrument chrome.
+
+   The size is `inherit`, not a fixed px: the same markup is read at 15px in an
+   Ask answer and at 12.5px in a dense component row, so the *caller* sets the
+   size on the container and everything below scales from it in `em`. */
+.kdb-md { line-height: 1.6; font-size: inherit; }
 .kdb-md > :first-child { margin-top: 0; }
 .kdb-md > :last-child { margin-bottom: 0; }
 .kdb-md h1, .kdb-md h2, .kdb-md h3, .kdb-md h4 {
@@ -177,6 +182,57 @@ html {
 .kdb-md sup.kdb-cite-link:focus-visible {
   background: color-mix(in srgb, var(--color-kdb) 25%, transparent);
 }
+
+/* Filter matches inside rendered markdown. Same amber as the plain-text
+   `Highlight` in ui.tsx — one filter, one colour, whichever renderer is
+   underneath. `color: inherit` keeps a match inside a heading or a <strong>
+   from losing the weight it was matched in. */
+.kdb-md mark.kdb-mark {
+  background: color-mix(in srgb, var(--color-kdb) 30%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
+
+/* Compact variant: search snippets and dense list rows.
+
+   The problem it solves is vertical. A `### heading` or a `- list` in a result
+   row is a *block* box with its own margins and a 1.4em font — dropped into a
+   two-line row it doubles the height, and `line-clamp` (which needs inline-ish
+   children to measure) stops clamping at the right place. So here the structure
+   still renders — bold is bold, a list is a list — but every block collapses to
+   body size with no vertical margin. You read the emphasis, not the layout. */
+.kdb-md-compact { line-height: 1.5; }
+.kdb-md-compact h1,
+.kdb-md-compact h2,
+.kdb-md-compact h3,
+.kdb-md-compact h4,
+.kdb-md-compact p,
+.kdb-md-compact ul,
+.kdb-md-compact ol,
+.kdb-md-compact pre,
+.kdb-md-compact blockquote,
+.kdb-md-compact table {
+  margin: 0.15em 0;
+  font-size: 1em;
+}
+.kdb-md-compact h1,
+.kdb-md-compact h2,
+.kdb-md-compact h3,
+.kdb-md-compact h4 {
+  /* Still distinguishable as a heading — by weight and colour, not by size. */
+  font-weight: 600;
+  color: var(--color-ink);
+  line-height: 1.4;
+}
+.kdb-md-compact ul,
+.kdb-md-compact ol { padding-left: 1.1em; }
+.kdb-md-compact li { margin: 0; }
+.kdb-md-compact pre { padding: 0.3em 0.5em; border-radius: 4px; }
+.kdb-md-compact pre code { font-size: 0.95em; }
+.kdb-md-compact hr { margin: 0.3em 0; }
+/* A snippet is a fragment; a rule across it is pure noise. */
+.kdb-md-compact > hr:first-child { display: none; }
 
 /* The source a citation jumped to. Scrolling something into view without
    marking it leaves the user hunting for what moved. */

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import type { ComponentRow, ProjectRow } from '../types';
+import { Markdown } from '../components/Markdown';
 import {
   Badge,
   Empty,
@@ -99,9 +100,15 @@ export function ComponentsView({
                   <span className="font-medium text-[14px] flex-1">{e.title}</span>
                   <Stamp iso={e.occurred_at} />
                 </div>
-                <pre className="mt-2 text-[12.5px] text-muted whitespace-pre-wrap font-sans leading-relaxed max-h-72 overflow-y-auto">
-                  {e.body}
-                </pre>
+                {/* Component entries are the structured kdb blocks — Objective,
+                    Summary of Work, Key Decisions. Rendered, that structure is
+                    the point of the view; raw, it was a wall of asterisks. Long
+                    histories keep scrolling inside the row rather than pushing
+                    the next entry off screen. */}
+                <Markdown
+                  text={e.body}
+                  className="mt-2 text-[12.5px] text-muted max-h-72 overflow-y-auto"
+                />
               </SpineRow>
             ))}
           </div>

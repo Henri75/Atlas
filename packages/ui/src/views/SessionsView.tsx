@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import type { ProjectRow, SessionEntryKind, SessionRow } from '../types';
+import { Markdown } from '../components/Markdown';
 import {
   Empty,
   Eyebrow,
@@ -144,9 +145,16 @@ function SessionDetail({
                 </span>
                 <Stamp iso={e.occurred_at} />
               </div>
-              <pre className="mt-1 text-[13px] whitespace-pre-wrap font-sans leading-relaxed text-ink/90 max-h-96 overflow-y-auto">
-                <Highlight text={e.body} needle={q} />
-              </pre>
+              {/* Transcript messages are markdown — Claude writes lists, code
+                  fences and bold; prompts are often pasted markdown too. The
+                  filter term still highlights, but it can no longer be a React
+                  wrapper: rendered markdown is injected as an HTML string, so
+                  the match is spliced into the markup instead (see Markdown). */}
+              <Markdown
+                text={e.body}
+                needle={q}
+                className="mt-1 text-[13px] text-ink/90 max-h-96 overflow-y-auto"
+              />
             </div>
           );
         })}

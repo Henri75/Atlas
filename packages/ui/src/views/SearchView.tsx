@@ -15,6 +15,7 @@ import {
   Stamp,
 } from '../components/ui';
 import { EntryDrawer } from '../components/EntryDrawer';
+import { Markdown } from '../components/Markdown';
 import { AskComposer, Conversation, useAskConversation } from './AskConversation';
 
 /**
@@ -366,7 +367,17 @@ export function SearchView({
                   <Stamp iso={h.occurredAt} />
                 </div>
                 <div className="mt-1 font-medium text-[14px]">{h.title}</div>
-                <div className="mt-0.5 text-[13px] text-muted line-clamp-2">{h.snippet}</div>
+                {/* The snippet is a blind 280-char cut of a markdown body, so it
+                    renders `compact`: structure shows (bold, bullets), but every
+                    block collapses to body size and zero margin so the row stays
+                    two lines and the clamp keeps working. Markdown cut mid-syntax
+                    is repaired before parsing — otherwise a dangling `**` renders
+                    as the asterisks we are trying to get rid of. */}
+                <Markdown
+                  text={h.snippet}
+                  compact
+                  className="mt-0.5 text-[13px] text-muted line-clamp-2"
+                />
               </SpineRow>
             ))}
             {result.hits.length === 0 && (

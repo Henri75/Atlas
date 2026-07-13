@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { SourceType } from '../types';
+import { Markdown } from './Markdown';
 import { Badge, Spinner, Stamp } from './ui';
 
 interface FullEntry {
@@ -109,9 +110,10 @@ export function EntryDrawer({ entryId, onClose }: { entryId: number | null; onCl
                 </div>
                 <p className="mt-1 font-mono text-[10px] text-faint break-all">{entry.hostPath}</p>
 
-                <pre className="mt-5 text-[13px] whitespace-pre-wrap font-sans leading-relaxed text-ink/90">
-                  {entry.body}
-                </pre>
+                {/* The record as it was written: kdb entries, commit bodies and
+                    docs are all markdown at the source, so they render as
+                    structure here rather than as visible syntax. */}
+                <Markdown text={entry.body} className="mt-5 text-[13px] text-ink/90" />
               </>
             )}
           </div>
