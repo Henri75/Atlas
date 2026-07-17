@@ -3,6 +3,7 @@
 # Architecture
 
 ## Revision History
+- 2026-07-17 15:49 UTC — Documented *Concurrency and data integrity*: why many simultaneous agents + a background reindex never corrupt data (stateless reads, idempotent `ON CONFLICT` writes, collision-free job keys, lone-append telemetry), and the single-instance `api`/`mcp` assumption.
 - 2026-07-13 00:20 UTC — Multi-project scope (search/ask/timeline); UI information architecture: rail holds views, a persistent scope bar holds projects. See *Scoping by project*.
 - 2026-07-12 22:50 UTC — Answer telemetry: the served model (from the gateway's headers) replaces the configured one, plus token usage, TTFT and generation rate. See *Served model vs configured model*.
 - 2026-07-12 13:50 UTC — Renamed the product to **Atlas** (was KDBScope). See *Naming: Atlas vs KDB* below for what did and did not change.
@@ -58,6 +59,36 @@ in `docker-compose.yml` for the same reason — it fixes the volume prefix
 
 All domain logic lives in `packages/core`; services are thin wrappers, which is
 what keeps the unit tests fast and hermetic.
+
+## Concurrency and data integrity
+
+Many clients hit Atlas at once — several Claude Code agents plus the UI — while
+the indexer writes in the background. Nothing corrupts, by construction:
+
+- **Reads are stateless.** Each API request is an independent Hono handler; the
+  MCP server builds a *fresh* server+transport per request
+  (`sessionIdGenerator: undefined`), so no two callers share mutable state.
+  Concurrent reads that outnumber the Postgres pool (`max: 10`) **queue and
+  drain** — they add latency, never errors. Qdrant/Redis/the LLM gateway are
+  themselves concurrency-safe.
+- **The write path is idempotent.** `entries.dedup_key` is `UNIQUE` and every
+  insert is `ON CONFLICT (dedup_key) DO NOTHING`, so the same content inserted
+  by two workers — or by an agent-triggered reindex racing the scheduler tick —
+  yields exactly one row. `insertEntries` also collapses duplicate keys *within*
+  a single multi-row statement, because `ON CONFLICT` cannot dedup a row against
+  itself in one statement. Readers see a consistent MVCC snapshot throughout.
+- **Writers can't collide.** Scan jobs carry deterministic BullMQ ids keyed on
+  `(project, source)`, so two jobs for the same file collapse into one rather
+  than running in parallel. The cron scheduler runs behind a Redis lock
+  (`SET NX EX`); boot migrations serialise on `pg_advisory_lock(732015)`.
+- **Telemetry is a lone append.** `usage_log` writes are single fire-and-forget
+  INSERTs (no read-modify-write), so concurrent agents each append their own row
+  and the write never blocks or fails the request it measures.
+
+**Load-bearing assumption: `api` and `mcp` run as single instances** (no Compose
+`replicas`). The guarantees above hold regardless, but the in-process 30s
+storage cache and the `active_collection` follow both assume one process each —
+scaling them out needs shared caching first. See *Operations → Scaling*.
 
 ## Data model
 

@@ -3,6 +3,7 @@
 # Operations
 
 ## Revision History
+- 2026-07-17 15:49 UTC — Added *Scaling / concurrency*: many simultaneous agents are safe; don't replicate `api`/`mcp` without shared caching (`indexer` scales fine).
 - 2026-07-12 13:50 UTC — Renamed the product to **Atlas**: the CLI is `atlas` (was `kdbs`), MCP tools are `atlas_*` (was `kdb_*`). Datastore identifiers (Postgres db/role, Qdrant collection prefix, queue and lock keys, the id namespace) still say `kdbscope` **on purpose** — they key existing data, and renaming them forces a full re-index. The Compose project name is pinned to `kdb` so the checkout can be renamed without orphaning the volumes.
 - 2026-07-09 12:20 UTC — ID scheme migration; scan jobs release their id on completion.
 - 2026-07-09 02:10 UTC — Backfill resume cursor; degraded-search banner behaviour.
@@ -98,6 +99,24 @@ then re-parses everything. Sources are read-only and untouched.
 The queue must be cleared alongside the catalog: scan jobs carry deterministic
 ids, and BullMQ treats `add()` for a retained completed id as a silent no-op —
 so a wiped catalog with a remembering queue indexes nothing.
+
+## Scaling / concurrency
+
+Atlas serves many clients at once (several Claude Code agents + the UI) while the
+indexer writes in the background, and that is safe — see *Architecture →
+Concurrency and data integrity* for why (stateless reads, idempotent
+`ON CONFLICT` writes, collision-free scan-job ids, lone-append telemetry). A read
+burst larger than the Postgres pool (`max: 10`) queues and adds latency; it does
+not error or corrupt.
+
+**Do not add Compose `replicas` to `api` or `mcp` without shared caching first.**
+Each currently keeps in-process state that assumes a single instance: the 30s
+storage cache and the `active_collection` follow. Correctness (no corruption)
+survives replication because the datastore invariants do the real work, but you
+would get duplicated background probes and briefly inconsistent
+collection-switch views. To scale horizontally, move that cache to Redis first.
+`indexer` is different: it may run at `WORKER_CONCURRENCY` > 1 safely (default 2)
+because the write path is idempotent and jobs are keyed per `(project, source)`.
 
 ## Data reset
 

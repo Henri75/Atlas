@@ -555,3 +555,30 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-17] - Concurrency safety: audit, regression tests, docs
+
+**Objective:**
+- Confirm many simultaneous agents (+ background reindex) can't corrupt Atlas data, and lock that in with tests + docs.
+
+**Summary of Work:**
+- Audited the concurrency story end to end. Reads are stateless (fresh MCP server+transport per request; independent Hono handlers; shared pg pool max:10 that queues rather than fails). Writes are idempotent (entries.dedup_key UNIQUE + ON CONFLICT DO NOTHING; insertEntries also collapses duplicate keys within one statement). Writers can't collide (deterministic BullMQ job ids per project+source; Redis scheduler lock; pg_advisory_lock(732015) for migrations). usage_log is a lone fire-and-forget INSERT.
+- Live stress test on the running stack: 80 searches + 60 entry reads + a reindex, all concurrent → 0 failures, 0 NULL rows, 0 duplicate dedup_keys, 0 index errors. 60-way search burst (6x pool) queued (avg 1.6s) instead of erroring; entry reads stayed ~13ms.
+- Added test/core/insertEntries.test.ts (8 tests) with a fake-pool Catalog: pins the within-statement dedup collapse, distinct-entry preservation, the 65535 param-ceiling chunking, the ON CONFLICT DO NOTHING clause, and the logUsage write path (single INSERT, no SELECT/UPDATE, field clamping, null tool/query).
+- Documented it: architecture.md gains 'Concurrency and data integrity'; operations.md gains 'Scaling / concurrency' with the load-bearing rule — do NOT add Compose replicas to api/mcp without shared caching first (in-process 30s storage cache + active_collection follow assume one process); indexer scales fine (WORKER_CONCURRENCY>1) because writes are idempotent.
+
+**Key Decisions & Rationale:**
+- No code change needed: single-instance api/mcp + dedup_key UNIQUE already make corruption structurally impossible. The work was proving it and preventing regressions (a future 'replicas: 2' or a refactor that drops the in-statement dedup collapse).
+- Tested insertEntries via a fake pool rather than a live DB to keep the suite hermetic and fast, matching the existing test style.
+
+**Code/Files Modified:**
+- test/core/insertEntries.test.ts (new)
+- docs/architecture.md
+- docs/operations.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** 449 -> 457 tests green, lint clean. Live burst of 140+ concurrent requests stayed healthy.
+- **What Failed:** Nothing. The 907ms avg latency I first saw was the full search path under a 60-way burst (Qdrant+embed+PG queued behind pool), not a usage-log cost — the log write is off the response path.
+
+**Status:**
+- Completed

@@ -147,3 +147,11 @@
 
 **AI Response Summary:**
 > Live-tested all 10 MCP tools + CLI; fixed unbounded atlas_session (paging + body caps + totalEntries), silent empty results on unknown slugs (now 404 + hint), added MCP initialize-time instructions with beta caveat and an 'Atlas usage' reporting duty, rewrote the Ask system prompt as numbered rules, built usage telemetry (usage_log + /api/admin/usage + atlas usage), fixed a pre-existing lint break, updated docs, registered Atlas user-scope in Claude Code and added CLAUDE.md §12. 449 tests green, smoke 7/7, committed and pushed.
+---
+### [2026-07-17 16:35 UTC]
+
+**User Prompt Summary:**
+> What happens if two or more clients hit Atlas at once — ensure it works and no data is corrupted; then update tests + docs and commit/push.
+
+**AI Response Summary:**
+> Audited + live-stress-tested concurrency (140+ simultaneous requests during a reindex: 0 failures, 0 dup keys, 0 errors); confirmed corruption is structurally impossible (stateless reads, dedup_key UNIQUE + ON CONFLICT DO NOTHING, collision-free job ids, lone-append telemetry). Added 8 regression tests (test/core/insertEntries.test.ts) and documented concurrency in architecture.md + operations.md incl. the single-instance api/mcp rule. 457 tests green, committed + pushed.
