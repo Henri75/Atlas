@@ -4,7 +4,15 @@ import type { ApiDeps } from '../../packages/api/src/app.js';
 
 /** What each route handed to Catalog.timeline. Reset before every test. */
 const timelineCalls: { slug: string | string[]; opts: unknown }[] = [];
-beforeEach(() => (timelineCalls.length = 0));
+const sessionDetailCalls: { opts: unknown }[] = [];
+const componentHistoryCalls: { limit?: number }[] = [];
+const usageRows: unknown[] = [];
+beforeEach(() => {
+  timelineCalls.length = 0;
+  sessionDetailCalls.length = 0;
+  componentHistoryCalls.length = 0;
+  usageRows.length = 0;
+});
 
 function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
   return {
@@ -30,11 +38,30 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
           },
         ];
       },
+      // Per-project routes 404 on slugs this returns false for.
+      projectExists: async (slug: string) => slug === 'deepcast',
+      logUsage: async (row: unknown) => {
+        usageRows.push(row);
+      },
+      usageStats: async (days: number) => ({
+        days, calls: 12, errors: 1, clients: 2, byTool: [], byDay: [],
+      }),
       components: async () => [{ component: 'video-import', count: 3 }],
-      componentHistory: async () => [{ id: 1, title: 'x' }],
+      componentHistory: async (_slug: string, _name: string, limit?: number) => {
+        componentHistoryCalls.push({ limit });
+        return [{ id: 1, title: 'x', body: 'b'.repeat(5000) }];
+      },
       sessionsList: async () => [{ id: 'abc' }],
-      sessionDetail: async (id: string) =>
-        id === 'abc' ? { session: { id: 'abc' }, entries: [] } : null,
+      sessionDetail: async (id: string, opts?: unknown) => {
+        sessionDetailCalls.push({ opts });
+        return id === 'abc'
+          ? {
+              session: { id: 'abc' },
+              entries: [{ id: 7, title: 't', body: 'x'.repeat(3000) }],
+              totalEntries: 240,
+            }
+          : null;
+      },
       getEntries: async (ids: number[]) =>
         new Map(ids.filter((i) => i === 1).map((i) => [i, { id: i, title: 'entry' }])),
       recentErrors: async () => [{ id: 1, message: 'boom' }],
@@ -523,5 +550,114 @@ describe('multi-project filters', () => {
     });
 
     expect(ask.ask.mock.calls[0]![1]).toMatchObject({ projects: ['deepcast', 'atlas'] });
+  });
+});
+
+/**
+ * A typo'd project slug used to return an empty 200 — to an agent that reads
+ * exactly like "this project has no history", which is a wrong answer, not an
+ * error. The per-project routes must now say "unknown slug" out loud.
+ */
+describe('unknown project slugs', () => {
+  it.each([
+    '/api/projects/nope/timeline',
+    '/api/projects/nope/components',
+    '/api/projects/nope/components/video-import',
+    '/api/projects/nope/sessions',
+  ])('%s 404s with a hint', async (path) => {
+    const res = await buildApp(makeDeps()).request(path);
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toContain('unknown project slug "nope"');
+  });
+
+  it('a known slug still serves its components', async () => {
+    const res = await buildApp(makeDeps()).request('/api/projects/deepcast/components');
+    expect(res.status).toBe(200);
+    expect((await res.json()).components).toHaveLength(1);
+  });
+});
+
+/**
+ * Context-budget plumbing for the MCP server: a session can serialise to tens
+ * of thousands of tokens, so the route must page entries and cap bodies when
+ * asked — and must change nothing when not asked (the UI relies on that).
+ */
+describe('session paging and body caps', () => {
+  it('forwards limit/offset to the catalog and reports totalEntries', async () => {
+    const res = await buildApp(makeDeps()).request('/api/sessions/abc?limit=50&offset=10');
+    expect(res.status).toBe(200);
+    expect(sessionDetailCalls[0]!.opts).toEqual({ limit: 50, offset: 10 });
+    expect((await res.json()).totalEntries).toBe(240);
+  });
+
+  it('max_body cuts long bodies and flags them, leaving the id to re-fetch', async () => {
+    const body = await (await buildApp(makeDeps()).request('/api/sessions/abc?max_body=1500')).json();
+    expect(body.entries[0].body).toHaveLength(1500);
+    expect(body.entries[0].bodyTruncated).toBe(true);
+    expect(body.entries[0].id).toBe(7);
+  });
+
+  it('without params, bodies arrive whole and unflagged', async () => {
+    const body = await (await buildApp(makeDeps()).request('/api/sessions/abc')).json();
+    expect(sessionDetailCalls[0]!.opts).toEqual({ limit: undefined, offset: undefined });
+    expect(body.entries[0].body).toHaveLength(3000);
+    expect(body.entries[0].bodyTruncated).toBeUndefined();
+  });
+
+  it('component history forwards limit and caps bodies the same way', async () => {
+    const res = await buildApp(makeDeps()).request(
+      '/api/projects/deepcast/components/video-import?limit=20&max_body=2000',
+    );
+    const body = await res.json();
+    expect(componentHistoryCalls[0]!.limit).toBe(20);
+    expect(body.entries[0].body).toHaveLength(2000);
+    expect(body.entries[0].bodyTruncated).toBe(true);
+  });
+});
+
+/**
+ * Agent-usage telemetry. Only self-identified traffic is recorded: the point
+ * is to watch how agents use Atlas, and unlabeled UI polling every 30s would
+ * be most of the table. The write is async fire-and-forget, so tests flush
+ * the microtask queue before asserting.
+ */
+describe('usage telemetry', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it('records a labeled request with tool, path, query and status', async () => {
+    const app = buildApp(makeDeps());
+    await app.request('/api/search?q=hello', {
+      headers: { 'x-atlas-client': 'mcp', 'x-atlas-tool': 'atlas_search' },
+    });
+    await flush();
+    expect(usageRows).toHaveLength(1);
+    expect(usageRows[0]).toMatchObject({
+      client: 'mcp',
+      tool: 'atlas_search',
+      method: 'GET',
+      path: '/api/search',
+      query: 'q=hello',
+      status: 200,
+    });
+  });
+
+  it('ignores unlabeled (UI) requests', async () => {
+    await buildApp(makeDeps()).request('/api/search?q=hello');
+    await flush();
+    expect(usageRows).toHaveLength(0);
+  });
+
+  it('records failures too — a 404 is exactly what monitoring wants to see', async () => {
+    const app = buildApp(makeDeps());
+    await app.request('/api/projects/nope/components', {
+      headers: { 'x-atlas-client': 'cli' },
+    });
+    await flush();
+    expect(usageRows[0]).toMatchObject({ client: 'cli', status: 404 });
+  });
+
+  it('GET /api/admin/usage aggregates the window it was asked for', async () => {
+    const body = await (await buildApp(makeDeps()).request('/api/admin/usage?days=30')).json();
+    expect(body).toMatchObject({ days: 30, calls: 12, errors: 1, clients: 2 });
   });
 });

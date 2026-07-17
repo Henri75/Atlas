@@ -141,3 +141,11 @@
 
 **AI Response Summary:**
 > Profiled the live stack, found the ~2GB Qdrant use was a boot/optimization peak. Enabled int8 quantization (in-place retrofit, no re-embed) + capped segment size -> ~590MB cold-boot peak. Reclaimed a 338MB orphan collection. Batched insertEntries into multi-row INSERTs. Scoped search payload to entry_id only. Measured FTS-cap idea and abandoned it (<1MB benefit). 430/430 tests pass, search stays hybrid/non-degraded, no data loss.
+---
+### [2026-07-17 15:52 UTC]
+
+**User Prompt Summary:**
+> Test, fix and improve Atlas (CLI + MCP) and make it agent-ready for Claude Code: review LLM prompts for the mid-size models, improve agent-facing descriptions incl. beta caveats, add usage statistics/logging, update docs + tests, register in Claude Code with enable/disable instructions, commit and push.
+
+**AI Response Summary:**
+> Live-tested all 10 MCP tools + CLI; fixed unbounded atlas_session (paging + body caps + totalEntries), silent empty results on unknown slugs (now 404 + hint), added MCP initialize-time instructions with beta caveat and an 'Atlas usage' reporting duty, rewrote the Ask system prompt as numbered rules, built usage telemetry (usage_log + /api/admin/usage + atlas usage), fixed a pre-existing lint break, updated docs, registered Atlas user-scope in Claude Code and added CLAUDE.md §12. 449 tests green, smoke 7/7, committed and pushed.

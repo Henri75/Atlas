@@ -99,6 +99,8 @@ export interface TimelineItem {
   title: string;
   occurredAt: string;
   sourcePath: string;
+  /** Present on merged multi-project feeds so each row can say where it came from. */
+  projectSlug?: string;
 }
 
 export interface ComponentRow {

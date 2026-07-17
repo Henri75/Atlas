@@ -3,6 +3,7 @@
 # REST API
 
 ## Revision History
+- 2026-07-17 15:49 UTC — Agent-safety batch: per-project routes (`/timeline`, `/components`, `/components/:name`, `/sessions`) **404 on an unknown slug** with a hint (an empty 200 read as "project has no data"). `/api/sessions/:id` accepts `limit`/`offset`/`max_body` and returns `totalEntries`; `/components/:name` accepts `limit`/`max_body`; bodies cut by `max_body` are flagged `bodyTruncated: true`. New **usage telemetry**: requests carrying `x-atlas-client` (mcp/cli) are logged to `usage_log`; aggregates at `GET /api/admin/usage?days=N`.
 - 2026-07-13 00:20 UTC — Multi-project filtering: `project` accepts a comma-separated set on GET (`project=a,b`) and an array in a JSON body; `scopeFallback.requested` is now a list and widening fires only when *none* of the selected projects match. New collection route `GET /api/timeline?projects=a,b` merges feeds chronologically; the per-project route is unchanged. Timeline items carry `projectSlug`.
 - 2026-07-12 22:50 UTC — The SSE `done` event carries `metrics?`: the model that actually **served** the answer (from the gateway's `X-G2p-Reply-Model`, not the configured `LLM_MODEL`), provider-reported token counts, TTFT and generation rate. Absent on a degraded answer.
 - 2026-07-11 04:35 UTC — `source` accepts a comma-separated subset (`doc,kdb_component`); Ask retrieval reranks for source-type diversity; Ask returns `scopeFallback` (and the SSE `sources` event carries it) when a project scope was empty and widened to all projects.
@@ -24,14 +25,20 @@ Base: `http://127.0.0.1:8710`. JSON everywhere. No auth (localhost-only tool).
 | GET | `/api/timeline` | `projects` (required, comma-separated), `limit`, `before`, `sources` | merged activity feed; each item carries `projectSlug` |
 | POST | `/api/ask/stream` | same as `/api/ask` | SSE: `sources` → `delta`* → `done`; `sources` carries `scopeFallback?`, `done` carries `metrics?` (served model, tokens, TTFT, tok/s) |
 | GET | `/api/projects` | — | projects with entry counts |
-| GET | `/api/projects/:slug/timeline` | `limit`, `before` (ISO cursor), `sources` (csv) | `{items[]}` newest first |
-| GET | `/api/projects/:slug/components` | — | `{components[]}` |
-| GET | `/api/projects/:slug/components/:name` | — | `{component, entries[]}` |
-| GET | `/api/projects/:slug/sessions` | — | `{sessions[]}` |
-| GET | `/api/sessions/:id` | — | `{session, entries[]}` (404 if unknown) |
+| GET | `/api/projects/:slug/timeline` | `limit`, `before` (ISO cursor), `sources` (csv) | `{items[]}` newest first; 404 on unknown slug |
+| GET | `/api/projects/:slug/components` | — | `{components[]}`; 404 on unknown slug |
+| GET | `/api/projects/:slug/components/:name` | `limit` (entries, newest first), `max_body` (chars/body) | `{component, entries[]}`; cut bodies carry `bodyTruncated: true`; 404 on unknown slug |
+| GET | `/api/projects/:slug/sessions` | — | `{sessions[]}`; 404 on unknown slug |
+| GET | `/api/sessions/:id` | `limit` (entries/page, ≤1000), `offset`, `max_body` (chars/body) | `{session, entries[], totalEntries}` (404 if unknown); cut bodies carry `bodyTruncated: true` |
 | GET | `/api/entries/:id` | — | full entry row (404 if unknown) |
 | POST | `/api/admin/reindex` | `{project?, full?}` | `{enqueued}` |
 | GET | `/api/admin/errors` | — | last 50 index errors |
+| GET | `/api/admin/usage` | `days` (default 7) | agent-usage aggregates: `{days, calls, errors, clients, byTool[], byDay[]}` |
+
+**Usage telemetry:** a request that carries `x-atlas-client: mcp|cli` (and
+optionally `x-atlas-tool`) is recorded in the `usage_log` table — client, tool,
+path, query string, status and duration. Unlabeled requests (the UI, curl) are
+not recorded; the write is fire-and-forget and never slows the response.
 
 `mode` in search responses: `hybrid` (dense+sparse RRF), `sparse-only`
 (embedding provider unreachable), `fts` (Qdrant unreachable — Postgres fallback).

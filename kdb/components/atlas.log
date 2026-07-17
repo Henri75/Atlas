@@ -517,3 +517,39 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-17] - Beta hardening: agent-readiness (MCP/CLI), prompt rework, usage telemetry
+
+**Objective:**
+- Make Atlas ready for coding agents (Claude Code): test every surface, fix agent-hostile behaviors, and register it for all future sessions.
+
+**Summary of Work:**
+- Live-tested all 10 MCP tools + all CLI subcommands against the running stack (300k entries). Search/ask/timeline/components/session/reindex/status all functional; Ask answers verified accurate and cited (gemini-2.5-flash via G2P).
+- Context safety: atlas_session returned 71k chars in one MCP result. /api/sessions/:id now takes limit/offset/max_body and returns totalEntries; /components/:name takes limit/max_body; capped bodies flagged bodyTruncated:true (id kept for atlas_entry follow-up). MCP defaults: session limit 50 / max_body 1500, component_history limit 20 / max_body 2000. UI/no-param calls unchanged.
+- Unknown project slugs: per-project routes (timeline/components/component/sessions) used to return empty 200s (CLI printed nothing) — now 404 with a hint, backed by Catalog.projectExists.
+- MCP server now sends initialize-time instructions (SERVER_INSTRUCTIONS): what Atlas is, BETA caveat (verify against cited sources), unscoped-first guidance, ghost-slug warning, truncation semantics, and a mandatory 'Atlas usage' note (tools used, 1-5 rating, issues) in agent reports.
+- Ask SYSTEM_PROMPT rewritten for the mid-size models that serve it: 8 numbered rules in priority order (grounding + no-fabrication first, honest 'not found', direct-answer-first); context blocks cut at 1500 chars now end with an explicit …[truncated] marker.
+- Usage telemetry: new pg table usage_log; API middleware records requests labeled x-atlas-client (mcp sends x-atlas-tool too), fire-and-forget; GET /api/admin/usage aggregates; new 'atlas usage' CLI command. UI traffic deliberately unlabeled/unlogged.
+- Registered Atlas at user scope (claude mcp add --scope user) and added CLAUDE.md §12 (usage guidance + beta reporting duty). Docs updated: api/mcp/cli/getting-started (incl. disable/re-enable).
+- Also fixed a pre-existing make lint failure (TimelineItem lacked projectSlug; ProjectTag now tolerates a missing slug).
+
+**Key Decisions & Rationale:**
+- Telemetry lives in the API (one table, one write path); clients only self-identify via headers. UI polling would bury agent signal, so unlabeled traffic is not recorded.
+- Truncation is flagged, never silent: agents get bodyTruncated + totalEntries + the entry id to re-fetch, matching the 'no silent caps' principle.
+- MCP over CLI for Claude Code: typed schemas + connect-time instructions beat parsing --json output; CLI stays for humans/scripts.
+
+**Code/Files Modified:**
+- packages/core/src/catalog.ts, packages/core/src/ask.ts
+- packages/api/src/app.ts
+- packages/mcp/src/tools.ts, packages/mcp/src/main.ts
+- packages/cli/src/main.ts, packages/cli/src/api.ts
+- packages/ui/src/types.ts, packages/ui/src/components/ui.tsx
+- test/api/routes.test.ts, test/mcp/tools.test.ts
+- docs/api.md, docs/mcp.md, docs/cli.md, docs/getting-started.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** 444 -> 449 tests green, lint clean, smoke 7/7. Live-verified: 404 hint, bounded session page (50/118 entries, flags), MCP instructions served on initialize, telemetry loop closed (the test call itself appeared in 'atlas usage').
+- **What Failed:** Nothing rolled back. Note: the linked CLI binary runs from dist/ — a new subcommand silently doesn't exist until npm run build.
+
+**Status:**
+- Completed

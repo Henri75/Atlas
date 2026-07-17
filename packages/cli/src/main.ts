@@ -24,7 +24,11 @@ import {
 
 const program = new Command()
   .name('atlas')
-  .description('Atlas: search & ask across all your projects’ history')
+  .description(
+    'Atlas: search & ask across all your projects’ history (kdb logs, Claude Code sessions, git, docs).\n' +
+      'Beta: treat results as leads, not ground truth — `ask` answers come from a mid-size LLM and can be\n' +
+      'incomplete or wrong; verify important claims against the cited sources. Use --json for scripting/agents.',
+  )
   .version('0.1.0')
   .option('--json', 'raw JSON output');
 
@@ -225,6 +229,39 @@ program
   .action(async (o) => {
     const r = await post('/api/admin/reindex', { project: o.project, full: o.full === true });
     out(r, () => console.log(green(`reindex triggered (${r.enqueued} job)`)));
+  });
+
+program
+  .command('usage')
+  .option('-d, --days <n>', 'window in days', '7')
+  .description('how agents (MCP/CLI) have been using Atlas: calls, latency, errors')
+  .action(async (o) => {
+    const r = await get(`/api/admin/usage${qs({ days: o.days })}`);
+    out(r, () => {
+      console.log(
+        `${bold('last ' + r.days + ' days')}  ${num(r.calls)} calls · ${r.clients} client kind${r.clients === 1 ? '' : 's'} · ` +
+          (r.errors > 0 ? red(`${num(r.errors)} errors`) : green('no errors')),
+      );
+      if (!r.byTool.length) {
+        console.log(dim('no recorded agent traffic yet — MCP and CLI calls land here'));
+        return;
+      }
+      console.log(dim('\nby tool:'));
+      for (const t of r.byTool) {
+        console.log(
+          `  ${magenta(t.client.padEnd(4))} ${bold(String(t.tool).padEnd(28))} ${num(t.calls).padStart(6)} calls  ` +
+            `${String(t.avg_ms).padStart(6)}ms avg  ${String(t.max_ms).padStart(7)}ms max  ` +
+            (t.errors > 0 ? red(`${t.errors} err`) : dim('0 err')) +
+            `  ${dim(date(t.last_at))}`,
+        );
+      }
+      if (r.byDay.length) {
+        console.log(dim('\nby day:'));
+        for (const d of r.byDay) {
+          console.log(`  ${d.day}  ${magenta(d.client.padEnd(4))} ${num(d.calls).padStart(6)} calls`);
+        }
+      }
+    });
   });
 
 program

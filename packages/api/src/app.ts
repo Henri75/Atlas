@@ -48,6 +48,32 @@ export function buildApp(deps: ApiDeps): Hono {
   app.use('/api/*', cors());
 
   /**
+   * Usage telemetry for agent traffic. Only requests that identify themselves
+   * (x-atlas-client: mcp | cli) are recorded: agents are what we monitor, and
+   * the UI's 30-second status polling would bury them in noise. The write is
+   * fire-and-forget — telemetry must never slow down or fail the call it
+   * measures, so errors are swallowed after a console note.
+   */
+  app.use('/api/*', async (c, next) => {
+    const client = c.req.header('x-atlas-client');
+    if (!client) return next();
+    const startedAt = Date.now();
+    await next();
+    const url = new URL(c.req.url);
+    void deps.catalog
+      .logUsage({
+        client,
+        tool: c.req.header('x-atlas-tool'),
+        method: c.req.method,
+        path: url.pathname,
+        query: url.search ? url.search.slice(1) : undefined,
+        status: c.res.status,
+        durationMs: Date.now() - startedAt,
+      })
+      .catch((e: unknown) => console.error('[api] usage log failed:', e));
+  });
+
+  /**
    * Parse the `source` param, which may be a single type or a comma-separated
    * subset ("doc,kdb_component"). A lone value stays in `sourceType` for
    * back-compat; a subset becomes `sourceTypes`. Callers spread the result into
@@ -260,11 +286,27 @@ export function buildApp(deps: ApiDeps): Hono {
   });
 
   /**
+   * A typo'd slug used to return an empty 200, indistinguishable from a real
+   * project with no data — an agent (or a script) then concludes "nothing
+   * happened here" instead of "I misspelled the project". Every per-project
+   * route now 404s with a hint instead.
+   */
+  const requireProject = async (slug: string): Promise<Response | null> => {
+    if (await deps.catalog.projectExists(slug)) return null;
+    return Response.json(
+      { error: `unknown project slug "${slug}" — list valid slugs via /api/projects` },
+      { status: 404 },
+    );
+  };
+
+  /**
    * A project's feed, as a *resource*. Unchanged and load-bearing: both the CLI
    * (`atlas timeline`) and the MCP server call this path. Multi-project belongs
    * on the collection route below, not crammed into a slug that means "one".
    */
   app.get('/api/projects/:slug/timeline', async (c) => {
+    const missing = await requireProject(c.req.param('slug'));
+    if (missing) return missing;
     const items = await deps.catalog.timeline(c.req.param('slug'), timelineOpts(c));
     return c.json({ items });
   });
@@ -282,25 +324,57 @@ export function buildApp(deps: ApiDeps): Hono {
     return c.json({ items });
   });
 
-  app.get('/api/projects/:slug/components', async (c) =>
-    c.json({ components: await deps.catalog.components(c.req.param('slug')) }),
-  );
+  /**
+   * Cap entry bodies at `maxBody` chars for context-budgeted consumers (MCP).
+   * Truncated rows are flagged rather than silently shortened: the entry `id`
+   * plus `bodyTruncated: true` tells an agent exactly which entry to re-fetch
+   * in full via /api/entries/:id. No param (the UI, the CLI) = untouched.
+   */
+  const capBodies = <T extends { body?: string }>(rows: T[], maxBody?: number): T[] => {
+    if (!maxBody || maxBody <= 0) return rows;
+    return rows.map((r) =>
+      typeof r.body === 'string' && r.body.length > maxBody
+        ? { ...r, body: r.body.slice(0, maxBody), bodyTruncated: true }
+        : r,
+    );
+  };
 
-  app.get('/api/projects/:slug/components/:name', async (c) =>
-    c.json({
+  app.get('/api/projects/:slug/components', async (c) => {
+    const missing = await requireProject(c.req.param('slug'));
+    if (missing) return missing;
+    return c.json({ components: await deps.catalog.components(c.req.param('slug')) });
+  });
+
+  app.get('/api/projects/:slug/components/:name', async (c) => {
+    const missing = await requireProject(c.req.param('slug'));
+    if (missing) return missing;
+    const limit = c.req.query('limit') ? Number(c.req.query('limit')) : undefined;
+    const entries = await deps.catalog.componentHistory(
+      c.req.param('slug'),
+      c.req.param('name'),
+      limit,
+    );
+    return c.json({
       component: c.req.param('name'),
-      entries: await deps.catalog.componentHistory(c.req.param('slug'), c.req.param('name')),
-    }),
-  );
+      entries: capBodies(entries, Number(c.req.query('max_body')) || undefined),
+    });
+  });
 
-  app.get('/api/projects/:slug/sessions', async (c) =>
-    c.json({ sessions: await deps.catalog.sessionsList(c.req.param('slug')) }),
-  );
+  app.get('/api/projects/:slug/sessions', async (c) => {
+    const missing = await requireProject(c.req.param('slug'));
+    if (missing) return missing;
+    return c.json({ sessions: await deps.catalog.sessionsList(c.req.param('slug')) });
+  });
 
   app.get('/api/sessions/:id', async (c) => {
-    const detail = await deps.catalog.sessionDetail(c.req.param('id'));
+    const limit = c.req.query('limit') ? Number(c.req.query('limit')) : undefined;
+    const offset = c.req.query('offset') ? Number(c.req.query('offset')) : undefined;
+    const detail = await deps.catalog.sessionDetail(c.req.param('id'), { limit, offset });
     if (!detail) return c.json({ error: 'session not found' }, 404);
-    return c.json(detail);
+    return c.json({
+      ...detail,
+      entries: capBodies(detail.entries, Number(c.req.query('max_body')) || undefined),
+    });
   });
 
   /** Full entry, including the body that search results only snippet. */
@@ -326,6 +400,12 @@ export function buildApp(deps: ApiDeps): Hono {
   app.get('/api/admin/errors', async (c) =>
     c.json({ errors: await deps.catalog.recentErrors() }),
   );
+
+  /** Aggregated agent-usage telemetry: who calls what, latency, error rate. */
+  app.get('/api/admin/usage', async (c) => {
+    const days = Number(c.req.query('days') ?? 7);
+    return c.json(await deps.catalog.usageStats(Number.isFinite(days) ? days : 7));
+  });
 
   app.onError((err, c) => {
     // Details go to the service log only — clients get a generic error.

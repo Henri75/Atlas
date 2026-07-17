@@ -3,6 +3,7 @@
 # CLI — `atlas`
 
 ## Revision History
+- 2026-07-17 15:49 UTC — New `atlas usage [-d days]`: agent-usage telemetry (calls, latency, errors per tool/day; MCP + CLI traffic is labeled via `x-atlas-client`). Beta caveat added to `--help`. Unknown project slugs now error loudly (API 404) instead of printing nothing.
 - 2026-07-12 13:50 UTC — Renamed the product to **Atlas**: the command is now `atlas` (was `kdbs`). Re-run `make cli-link` to install it. Source-type **values** (`kdb_changelog`, `kdb_component`, …) are unchanged — they name kinds of indexed content, not the tool.
 - 2026-07-11 04:35 UTC — `search -s/--source` accepts a comma-separated subset (`doc,kdb_component`); `ask` leaves scope soft (widens to all projects when a `-p` scope is empty).
 - 2026-07-10 00:00 UTC — `status` reports service health and storage; numbers are thousands-separated.
@@ -31,4 +32,6 @@ atlas sessions deepcast
 atlas session 0075adef
 atlas reindex --full -p deepcast
 atlas status
+atlas usage -d 30               # how agents (MCP/CLI) have been using Atlas
+
 ```

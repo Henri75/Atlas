@@ -4,8 +4,11 @@ export function apiBase(): string {
   return (process.env.KDBSCOPE_API_URL ?? 'http://127.0.0.1:8710').replace(/\/$/, '');
 }
 
+/** Label CLI traffic for the API's agent-usage telemetry. */
+const CLIENT_HEADERS = { 'x-atlas-client': 'cli' };
+
 export async function get(path: string): Promise<any> {
-  const res = await fetch(`${apiBase()}${path}`);
+  const res = await fetch(`${apiBase()}${path}`, { headers: CLIENT_HEADERS });
   if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 300)}`);
   return res.json();
 }
@@ -13,7 +16,7 @@ export async function get(path: string): Promise<any> {
 export async function post(path: string, body: unknown): Promise<any> {
   const res = await fetch(`${apiBase()}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 300)}`);
@@ -33,7 +36,7 @@ export async function* postStream(
 ): AsyncGenerator<AskEvent, void, unknown> {
   const res = await fetch(`${apiBase()}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS },
     body: JSON.stringify(body),
   });
   if (!res.ok || !res.body) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 300)}`);

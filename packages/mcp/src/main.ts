@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { getConfig } from '@atlas/core';
-import { TOOLS } from './tools.js';
+import { SERVER_INSTRUCTIONS, TOOLS } from './tools.js';
 
 /**
  * Stateless streamable-HTTP MCP server. Each request gets a fresh
@@ -13,14 +13,25 @@ import { TOOLS } from './tools.js';
 const cfg = getConfig();
 
 function buildMcpServer(): McpServer {
-  const server = new McpServer({ name: 'atlas', version: '0.1.0' });
+  // `instructions` reach the client at initialize time — this is the only
+  // channel for cross-tool guidance (beta caveats, scoping pitfalls); the
+  // per-tool descriptions can't carry it.
+  const server = new McpServer(
+    { name: 'atlas', version: '0.1.0' },
+    { instructions: SERVER_INSTRUCTIONS },
+  );
   for (const tool of TOOLS) {
     server.registerTool(
       tool.name,
       { description: tool.description, inputSchema: tool.schema },
       async (args: any) => {
         const { path, init } = tool.request(args ?? {});
-        const res = await fetch(`${cfg.apiUrl}${path}`, init);
+        // Identify agent traffic so the API's usage telemetry can tell which
+        // tool was called; unlabeled requests (the UI) are not recorded.
+        const res = await fetch(`${cfg.apiUrl}${path}`, {
+          ...init,
+          headers: { ...init?.headers, 'x-atlas-client': 'mcp', 'x-atlas-tool': tool.name },
+        });
         const text = await res.text();
         if (!res.ok) {
           return {

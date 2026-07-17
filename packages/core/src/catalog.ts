@@ -102,6 +102,22 @@ CREATE TABLE IF NOT EXISTS index_runs (
   stats JSONB NOT NULL DEFAULT '{}'
 );
 
+-- Agent-facing usage telemetry: one row per MCP/CLI API call (requests that
+-- carry an x-atlas-client header). UI traffic is deliberately not recorded —
+-- its 30s status polling would drown the signal this table exists to carry.
+CREATE TABLE IF NOT EXISTS usage_log (
+  id BIGSERIAL PRIMARY KEY,
+  at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  client TEXT NOT NULL,
+  tool TEXT,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  query TEXT,
+  status INT NOT NULL,
+  duration_ms INT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS usage_log_at_idx ON usage_log (at DESC);
+
 -- CREATE TABLE IF NOT EXISTS never adds a column to a table that already
 -- exists, so new columns need an explicit, idempotent ALTER.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS action_count INT NOT NULL DEFAULT 0;
@@ -159,6 +175,78 @@ export class Catalog {
       [p.slug, p.name, p.rootPath, p.hasKdb],
     );
     return r.rows[0].id;
+  }
+
+  /**
+   * Record one agent-facing API call. Callers fire-and-forget this — usage
+   * telemetry must never be able to slow down or fail the request it measures.
+   */
+  async logUsage(row: {
+    client: string;
+    tool?: string;
+    method: string;
+    path: string;
+    query?: string;
+    status: number;
+    durationMs: number;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO usage_log (client, tool, method, path, query, status, duration_ms)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        row.client.slice(0, 40),
+        row.tool?.slice(0, 80) ?? null,
+        row.method,
+        row.path.slice(0, 300),
+        row.query?.slice(0, 500) ?? null,
+        row.status,
+        Math.round(row.durationMs),
+      ],
+    );
+  }
+
+  /**
+   * Aggregate the usage log for monitoring: who calls what, how often, how
+   * slow, and how often it errors. `tool` falls back to the path so CLI calls
+   * (which carry no tool header) still group meaningfully.
+   */
+  async usageStats(days = 7) {
+    const interval = `${Math.min(Math.max(1, days), 365)} days`;
+    const [byTool, byDay, totals] = await Promise.all([
+      this.pool.query(
+        `SELECT client, coalesce(tool, path) AS tool, count(*)::int AS calls,
+                avg(duration_ms)::int AS avg_ms, max(duration_ms)::int AS max_ms,
+                count(*) FILTER (WHERE status >= 400)::int AS errors,
+                max(at) AS last_at
+         FROM usage_log WHERE at > now() - $1::interval
+         GROUP BY client, coalesce(tool, path)
+         ORDER BY calls DESC`,
+        [interval],
+      ),
+      this.pool.query(
+        `SELECT to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, client, count(*)::int AS calls
+         FROM usage_log WHERE at > now() - $1::interval
+         GROUP BY day, client ORDER BY day DESC`,
+        [interval],
+      ),
+      this.pool.query(
+        `SELECT count(*)::int AS calls,
+                count(*) FILTER (WHERE status >= 400)::int AS errors,
+                count(DISTINCT client)::int AS clients
+         FROM usage_log WHERE at > now() - $1::interval`,
+        [interval],
+      ),
+    ]);
+    return { days, ...totals.rows[0], byTool: byTool.rows, byDay: byDay.rows };
+  }
+
+  /**
+   * Cheap existence probe so per-project routes can 404 on a typo'd slug
+   * instead of returning an empty 200 that reads as "project has no data".
+   */
+  async projectExists(slug: string): Promise<boolean> {
+    const r = await this.pool.query('SELECT 1 FROM projects WHERE slug = $1', [slug]);
+    return r.rows.length > 0;
   }
 
   async listProjects(): Promise<(Project & { entryCount: number })[]> {
@@ -434,15 +522,26 @@ export class Catalog {
     return r.rows[0] ?? null;
   }
 
-  async sessionDetail(sessionId: string) {
+  /**
+   * `limit`/`offset` exist for context-budgeted consumers (the MCP server): a
+   * long session serialises to tens of thousands of tokens, which no agent can
+   * afford in one tool result. `totalEntries` is always the real count, so a
+   * caller can tell "that was everything" from "there are more pages".
+   */
+  async sessionDetail(sessionId: string, opts: { limit?: number; offset?: number } = {}) {
     const s = await this.pool.query('SELECT * FROM sessions WHERE id = $1', [sessionId]);
     if (!s.rows[0]) return null;
-    const e = await this.pool.query(
-      `SELECT id, title, body, occurred_at, meta FROM entries
-       WHERE session_id = $1 ORDER BY occurred_at ASC NULLS LAST, id ASC LIMIT 1000`,
-      [sessionId],
-    );
-    return { session: s.rows[0], entries: e.rows };
+    const limit = Math.min(Math.max(1, opts.limit ?? 1000), 1000);
+    const offset = Math.max(0, opts.offset ?? 0);
+    const [e, total] = await Promise.all([
+      this.pool.query(
+        `SELECT id, title, body, occurred_at, meta FROM entries
+         WHERE session_id = $1 ORDER BY occurred_at ASC NULLS LAST, id ASC LIMIT $2 OFFSET $3`,
+        [sessionId, limit, offset],
+      ),
+      this.pool.query('SELECT count(*)::int AS n FROM entries WHERE session_id = $1', [sessionId]),
+    ]);
+    return { session: s.rows[0], entries: e.rows, totalEntries: total.rows[0].n };
   }
 
   /**

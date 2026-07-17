@@ -39,6 +39,28 @@ export const SOURCE_TYPES = [
   'kdb_report', 'claude_session', 'git_commit', 'doc',
 ] as const;
 
+/**
+ * Server-level guidance, surfaced to MCP clients at initialize time. Tool
+ * descriptions can only say what each tool does; this is where the cross-tool
+ * workflow and the honesty caveats live. Written for a coding agent, so it
+ * front-loads the two things that most change agent behavior: Atlas is beta
+ * (verify before relying), and wrong project scoping is the main cause of
+ * false "not found" results.
+ */
+export const SERVER_INSTRUCTIONS = `Atlas indexes the recorded history of all this machine's software projects — kdb logs (append-only project journals), Claude Code session transcripts, git commits and docs — and answers questions about what happened, when, and why. Indexing is near-real-time (within ~5 minutes).
+
+Atlas is BETA. Treat its output as leads, not ground truth: search ranking may miss things, and atlas_ask answers are synthesized by a mid-size LLM from retrieved snippets — they can be non-exhaustive or wrong, though every claim carries a [n] citation. Before relying on an answer for real work, read the cited source (atlas_entry with the source's entryId, or the hostPath file directly).
+
+How to use it well:
+- Finding facts/code history: atlas_search, then atlas_entry on the interesting hits (search returns snippets only).
+- "What/why/when" questions needing synthesis: atlas_ask, then verify via its cited sources.
+- Orienting in an unfamiliar project: atlas_projects → atlas_timeline → atlas_component_history.
+- Prefer UNSCOPED search/ask first. A feature often lives under a different project slug than you expect; a wrong 'project' filter is the main reason a real answer looks missing.
+- Slugs that look like flattened absolute paths (e.g. "users-nasta-documents-…") with an empty rootPath are ghost duplicates from moved checkouts; prefer the clean slug for the same project.
+- Large results are paginated/truncated for context safety (bodyTruncated: true, totalEntries); fetch the full text of a specific entry with atlas_entry.
+
+Beta feedback duty: if you used Atlas during a task, your final report/summary to the user MUST include a short "Atlas usage" note — which tools you called and for what, a 1-5 usefulness rating, and any issues hit (wrong or missing answers, errors, slowness). This feedback is how Atlas gets fixed.`;
+
 export const TOOLS: ToolDef[] = [
   {
     name: 'atlas_search',
@@ -68,7 +90,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'atlas_ask',
     description:
-      'Ask a question about what happened across projects ("what were the bug fixes in the video import microservice?"). Retrieves relevant history and synthesizes a cited answer with an LLM. Prefer leaving `project` unset: a feature may be indexed under a different slug than you expect (e.g. G2P lives under "google-gemini-pool", not "deepcast"), and a wrong scope is the main reason a real answer looks missing. When `project` is set but nothing matches there, the search widens to all projects and the response carries a `scopeFallback` marker naming the scope that was empty.',
+      'Ask a question about what happened across projects ("what were the bug fixes in the video import microservice?"). Retrieves relevant history and synthesizes a cited answer with a mid-size LLM (beta: answers can be non-exhaustive or wrong — verify important claims via the cited sources, e.g. atlas_entry on a source\'s entryId). Prefer leaving `project` unset: a feature may be indexed under a different slug than you expect (e.g. G2P lives under "google-gemini-pool", not "deepcast"), and a wrong scope is the main reason a real answer looks missing. When `project` is set but nothing matches there, the search widens to all projects and the response carries a `scopeFallback` marker naming the scope that was empty.',
     schema: {
       question: z.string(),
       project: z
@@ -81,7 +103,8 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'atlas_projects',
-    description: 'List all indexed projects with entry counts.',
+    description:
+      'List all indexed projects with entry counts. Use it to find the right slug before scoping any other tool. Slugs that look like flattened absolute paths ("users-nasta-documents-…") with an empty rootPath are ghost duplicates of moved checkouts — prefer the clean slug.',
     schema: {},
     request: () => ({ path: '/api/projects' }),
   },
@@ -100,16 +123,23 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'atlas_components',
-    description: 'List a project’s components (from kdb component logs) with activity counts.',
+    description:
+      'List a project’s components (from kdb component logs) with activity counts. An unknown project slug returns a 404 rather than an empty list — check atlas_projects for valid slugs.',
     schema: { project: z.string() },
     request: (a) => ({ path: `/api/projects/${encodeURIComponent(a.project)}/components` }),
   },
   {
     name: 'atlas_component_history',
-    description: 'Full recorded history of one component: objectives, decisions, outcomes, bug fixes.',
-    schema: { project: z.string(), component: z.string() },
+    description:
+      'Recorded history of one component (newest first): objectives, decisions, outcomes, bug fixes. Long bodies are cut at max_body chars and flagged bodyTruncated: true — fetch a flagged entry in full with atlas_entry(id). Unknown project slugs return a 404 (check atlas_projects).',
+    schema: {
+      project: z.string(),
+      component: z.string(),
+      limit: z.number().int().min(1).max(100).optional().describe('Max entries, newest first (default 20)'),
+      max_body: z.number().int().min(200).optional().describe('Chars kept per entry body (default 2000)'),
+    },
     request: (a) => ({
-      path: `/api/projects/${encodeURIComponent(a.project)}/components/${encodeURIComponent(a.component)}`,
+      path: `/api/projects/${encodeURIComponent(a.project)}/components/${encodeURIComponent(a.component)}${qs({ limit: a.limit ?? 20, max_body: a.max_body ?? 2000 })}`,
     }),
   },
   {
@@ -121,9 +151,17 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'atlas_session',
-    description: 'Reconstruct one Claude Code session: prompts, substantial responses, files touched.',
-    schema: { session_id: z.string() },
-    request: (a) => ({ path: `/api/sessions/${encodeURIComponent(a.session_id)}` }),
+    description:
+      'Reconstruct one Claude Code session: prompts, substantial responses, files touched. Paginated for context safety: returns up to `limit` entries from `offset` plus totalEntries (page again with offset=limit if totalEntries is larger). Bodies are cut at max_body chars and flagged bodyTruncated: true; fetch a flagged entry in full with atlas_entry(id).',
+    schema: {
+      session_id: z.string(),
+      limit: z.number().int().min(1).max(1000).optional().describe('Max entries per page (default 50)'),
+      offset: z.number().int().min(0).optional().describe('Entries to skip, for paging (default 0)'),
+      max_body: z.number().int().min(200).optional().describe('Chars kept per entry body (default 1500)'),
+    },
+    request: (a) => ({
+      path: `/api/sessions/${encodeURIComponent(a.session_id)}${qs({ limit: a.limit ?? 50, offset: a.offset, max_body: a.max_body ?? 1500 })}`,
+    }),
   },
   {
     name: 'atlas_reindex',

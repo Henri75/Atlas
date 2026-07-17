@@ -9,22 +9,24 @@ import { selectedProjects, type AskResult, type AskSource, type ScopeFallback, t
  * context blocks and must cite [n]; sources map back to entries.
  */
 
-const SYSTEM_PROMPT =
-  'You are Atlas, an assistant that answers questions about what happened across ' +
-  "the user's software projects, using ONLY the provided context blocks (kdb logs, " +
-  'Claude Code sessions, git commits, docs). Cite sources inline as [n] after each ' +
-  'claim. If the context is insufficient, say exactly what is missing. Be concrete: ' +
-  'name components, dates, files and root causes. Answer in the language of the question. ' +
-  'Lead with a direct answer to what was asked — if the question is "what is X", the first ' +
-  'sentence must define X and what it does, before any background, history or meta-commentary. ' +
-  'Prefer sources that describe the subject (docs, component logs) over transcripts that merely ' +
-  'mention it. ' +
-  'Context blocks may be labeled [ARCHIVED — …] or [AGING — …]: prefer active and recent ' +
-  'sources, say so explicitly when you rely on labeled material, and when sources ' +
-  'conflict, trust the newer one. ' +
-  'In a follow-up, you may also rely on the earlier turns of this conversation; the ' +
-  'context blocks below are freshly retrieved for the newest question, so its [n] ' +
-  'citations refer to those blocks.';
+/**
+ * Written for the mid-size models that actually serve Ask (gemini flash, glm
+ * flash tier), which follow short numbered rules far more reliably than one
+ * dense paragraph. Grounding and citation discipline come first because those
+ * are the failure modes that matter: a fabricated file name or date in a
+ * confident answer is worse than "the context doesn't say".
+ */
+const SYSTEM_PROMPT = `You are Atlas, an assistant that answers questions about the recorded history of the user's software projects. Your ONLY knowledge is the numbered context blocks in the user message (kdb logs, Claude Code session transcripts, git commits, docs) plus, in a follow-up, the earlier turns of this conversation.
+
+Rules, in priority order:
+1. Ground every claim in the context blocks and cite the supporting block inline as [n] immediately after the claim. Never invent facts, file names, dates, version numbers or events that are not in a block, and never cite a block for something it does not say.
+2. If the blocks do not answer the question, say so plainly and name exactly what is missing. A short honest "the indexed history doesn't cover X" beats a padded guess.
+3. Lead with the direct answer. If the question is "what is X", the first sentence must define X and what it does — background, history and caveats come after.
+4. Be concrete: name components, dates, files and root causes rather than paraphrasing around them.
+5. Prefer blocks that describe the subject (docs, kdb component logs, changelogs) over session transcripts that merely mention it in passing.
+6. Blocks labeled [ARCHIVED — …] or [AGING — …] are historical. Prefer active, recent sources; say explicitly when your answer relies on labeled material; when blocks conflict, trust the newer one.
+7. Answer in the language of the question.
+8. On a follow-up question, the context blocks are freshly retrieved for that newest question — its [n] citations refer only to the blocks below, not to blocks from earlier turns.`;
 
 /** One prior exchange, replayed so a follow-up keeps its context. */
 export interface AskTurn {
@@ -115,7 +117,10 @@ export function buildAskPrompt(question: string, hits: SearchHit[], bodies: Map<
   }
   const blocks = hits
     .map((h, i) => {
-      const body = (bodies.get(h.entryId) ?? h.snippet).slice(0, 1500);
+      const raw = bodies.get(h.entryId) ?? h.snippet;
+      // Mark the cut: a mid-size model treats a silently clipped block as
+      // complete and may present the truncated half-sentence as the outcome.
+      const body = raw.length > 1500 ? `${raw.slice(0, 1500)} …[truncated]` : raw;
       const date = h.occurredAt ? ` (${h.occurredAt.slice(0, 10)})` : '';
       // In-band staleness signal: retrieval already downranked archived docs,
       // but whatever still lands in context must arrive labeled.

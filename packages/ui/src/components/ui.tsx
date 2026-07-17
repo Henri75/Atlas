@@ -165,7 +165,10 @@ export function ModeSwitch<T extends string>({
  * Where a record came from. Shown only when the scope spans more than one
  * project — in a single-project view it would be noise on every row.
  */
-export function ProjectTag({ slug }: { slug: string }) {
+export function ProjectTag({ slug }: { slug?: string }) {
+  // A row from an older API payload may not carry its slug; an empty tag
+  // would render as a stray bordered pill.
+  if (!slug) return null;
   return (
     <span className="font-mono text-[9.5px] text-muted bg-panel-2 border border-line rounded-sm px-1.5 py-px whitespace-nowrap">
       {slug}

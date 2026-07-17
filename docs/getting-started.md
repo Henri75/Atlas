@@ -3,6 +3,7 @@
 # Getting Started
 
 ## Revision History
+- 2026-07-17 15:49 UTC — Claude Code: register at **user scope** (all projects), plus how to disable/re-enable (`claude mcp remove/add`, `/mcp` in-session); agents receive beta instructions at connect time; `atlas usage` shows agent traffic.
 - 2026-07-10 00:00 UTC — Overview dashboard; human-readable numbers throughout.
 - 2026-07-09 22:30 UTC — Ask conversations, message kinds, timeline layouts, session filters.
 - 2026-07-09 16:00 UTC — Multiple project roots; clarified that `make cli-link` is global and run once.
@@ -142,19 +143,37 @@ Source types for `-s`: `kdb_changelog`, `kdb_session`, `kdb_component`,
 
 ### From Claude Code (MCP)
 
-Register once:
+Register once for **all** projects (user scope):
 
 ```bash
-claude mcp add --transport http atlas http://127.0.0.1:8711/mcp
+claude mcp add --scope user --transport http atlas http://127.0.0.1:8711/mcp
 ```
 
 Then just ask Claude things like *"use atlas to find how the qdrant retry
 logic evolved"*. It has ten tools; the useful flow is `atlas_search` → take an
 `entryId` → `atlas_entry` for the full record. `atlas_ask` gives a cited answer,
 `atlas_timeline` / `atlas_component_history` / `atlas_session` widen the context.
+The server sends usage instructions to the agent at connect time, including the
+beta caveat (verify answers against cited sources) and a duty to report Atlas
+usage + issues in its summaries.
 
 This repo also ships `.mcp.json`, so a Claude Code session started **inside this
 directory** picks the server up with no setup.
+
+**Disable / re-enable whenever needed:**
+
+```bash
+claude mcp remove --scope user atlas       # disable everywhere
+claude mcp add --scope user --transport http atlas http://127.0.0.1:8711/mcp   # re-enable
+claude mcp list                            # see what is registered + connection state
+```
+
+Inside a running session, `/mcp` shows the server and lets you toggle it without
+touching the config. If the Atlas stack is simply stopped (`make down`), the
+tools fail fast and Claude carries on without them — deregistering is optional.
+
+Watch what agents actually do with it: `atlas usage` (or
+`GET /api/admin/usage`).
 
 ---
 
