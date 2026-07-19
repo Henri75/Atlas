@@ -155,3 +155,11 @@
 
 **AI Response Summary:**
 > Audited + live-stress-tested concurrency (140+ simultaneous requests during a reindex: 0 failures, 0 dup keys, 0 errors); confirmed corruption is structurally impossible (stateless reads, dedup_key UNIQUE + ON CONFLICT DO NOTHING, collision-free job ids, lone-append telemetry). Added 8 regression tests (test/core/insertEntries.test.ts) and documented concurrency in architecture.md + operations.md incl. the single-instance api/mcp rule. 457 tests green, committed + pushed.
+---
+### [2026-07-19 01:40 UTC]
+
+**User Prompt Summary:**
+> A Claude Code agent reported failing to use Atlas on a question about recorded history, and separately that Atlas disconnected mid-session. Investigate both properly - do not guess, do not patch - then fix the Makefile, write the KDB entries, and confirm nothing is left broken for Atlas or Assessor.
+
+**AI Response Summary:**
+> Traced the failure to a deploy: `make restart` recreated the mcp container mid-session, dropping the atlas_* tools permanently because the stateless server cannot push tools/list_changed. Corrected the instruction that promised a recovery which cannot occur (d9cd46f, pushed, deployed and verified over MCP), removed mcp from the default restart target and added a warned `restart-mcp`. Retracted two of my own wrong conclusions along the way. Left the trigger prose untouched deliberately - it has never been tested with an agent that had the tools.

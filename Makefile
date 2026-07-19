@@ -32,8 +32,19 @@ up: env ## build images and start the full stack
 down: ## stop the stack (data volumes are kept)
 	$(COMPOSE) down
 
-restart: ## restart app services (keeps infra running)
-	$(COMPOSE) restart indexer api mcp ui
+# `mcp` is deliberately NOT here. Restarting it drops the atlas_* tools from
+# every running Claude Code session and they never come back (the server is
+# stateless, so it cannot push tools/list_changed — see packages/mcp/src/main.ts).
+# The mcp service is a thin stateless proxy to `api`, so it only needs a restart
+# when packages/mcp itself changes: use `make restart-mcp` for that.
+restart: ## restart app services (keeps infra running; leaves mcp connected)
+	$(COMPOSE) restart indexer api ui
+
+restart-mcp: ## restart the MCP server (WARNING: drops atlas_* tools from live agent sessions)
+	@echo "⚠️  This drops the atlas_* tools from every running Claude Code session."
+	@echo "   They do NOT return without restarting the session. Ctrl-C to abort."
+	@sleep 3
+	$(COMPOSE) up -d --no-deps --force-recreate mcp
 
 logs: ## follow service logs
 	$(COMPOSE) logs -f --tail 100 indexer api mcp

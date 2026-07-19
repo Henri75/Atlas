@@ -582,3 +582,32 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-19] - Deploy-induced permanent loss of atlas_* tools in live agent sessions
+
+**Objective:**
+- Find out why an agent reported it "should have called Atlas" on a history question, and fix the real cause.
+
+**Summary of Work:**
+- An agent's self-report blamed itself for not calling Atlas during a session about recorded history. Investigation showed it could not: `make restart` recreated the mcp container ~80 min into its session, the atlas_* tools were dropped, and nothing re-listed them. Its transcript has 0 atlas tool_use blocks and 16 occurrences of the instruction text, i.e. instructions delivered, tools absent.
+- Root cause of the no-recovery half is packages/mcp/src/main.ts: `sessionIdGenerator: undefined` makes the server stateless, building a throwaway McpServer per request and tearing it down on res.close. It holds no client reference, so it cannot push tools/list_changed. The `listChanged: true` in the initialize response is an SDK default that is never implemented (grep finds no references in our source).
+- Fixed the instruction that told agents to wait for a recovery that cannot happen, and removed mcp from the default restart path so ordinary deploys stop breaking live sessions.
+
+**Key Decisions & Rationale:**
+- Did NOT make the server stateful to support tools/list_changed. Statelessness is deliberate (main.ts:8-10, chosen so `claude mcp add --transport http` works cleanly); session lifecycle management is a large cost to fix a problem that deploy hygiene fixes for free.
+- Did NOT revise the trigger prose again. Three revisions landed in one night (2f96e1d, b20486a) and none has been tested with an agent that actually had the tools. The feedback prompting this came from a toolless session, so it carries no signal about whether the triggers work. Let the skip-reporting duty produce real evidence first.
+- `restart-mcp` uses `up -d --no-deps --force-recreate`, not `compose restart`: the latter reuses the old image, so it would not pick up a rebuild.
+- Assessor shares the disconnect behaviour but is a single container, so its `make restart` cannot avoid restarting the MCP server. No Makefile fix is possible there; the corrected disconnect guidance is the portable part.
+
+**Code/Files Modified:**
+- packages/mcp/src/tools.ts
+- test/mcp/tools.test.ts
+- Makefile
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Container lifecycle evidence (StartedAt, RestartCount, image timestamps) against the session transcript. Parsing tool_use blocks rather than grepping tool names — the grep counted tool-listing metadata and suggested calls that never happened.
+- **What Failed:** Two of my own conclusions, both from inferring cause from a single artifact. (1) "The agent never attempted Atlas" — 0 tool_use meant the tools were not callable, not that it declined. (2) "The prose layer has failed twice, stop iterating" — the prose was never fairly tested, as the tools were gone for 80 of 81 minutes. Both corrections came from evidence outside the artifact I was reading. Docker had already discarded events from the incident window, so the deploy attribution rests on strong circumstantial evidence, not a directly observed event.
+- An agent's account of its own failure is itself a reconstruction and must be verified like any other historical claim; this one misattributed a capability loss to a motivational lapse.
+
+**Status:**
+- Completed
