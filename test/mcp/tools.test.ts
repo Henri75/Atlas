@@ -213,6 +213,24 @@ describe('server instructions', () => {
     expect(SERVER_INSTRUCTIONS).toMatch(/unreachable mid-task/i);
     expect(SERVER_INSTRUCTIONS).toMatch(/UNVERIFIED/);
   });
+
+  /**
+   * Observed 2026-07-19: an agent lost the atlas_* tools when `make restart`
+   * recreated the mcp container mid-session, and they never returned — the
+   * server is stateless (sessionIdGenerator: undefined in main.ts), so it holds
+   * no client reference to push tools/list_changed down. The instructions used
+   * to say "if it comes back, revisit what you deferred", which promises a
+   * recovery that cannot happen and leaves the agent waiting instead of using
+   * the HTTP API. Pin the correction: no self-recovery, name the fallback.
+   */
+  it('state that dropped tools do not return, and give the fallback', () => {
+    expect(SERVER_INSTRUCTIONS).toMatch(/do NOT come back on their own/);
+    expect(SERVER_INSTRUCTIONS).toMatch(/stateless/i);
+    // The actionable half: an agent without tools still has the REST API.
+    expect(SERVER_INSTRUCTIONS).toMatch(/query the HTTP API directly/i);
+    // The false promise must not creep back in a rewrite.
+    expect(SERVER_INSTRUCTIONS).not.toMatch(/If it comes back, revisit/);
+  });
 });
 
 /** The user wants every agent to report its Atlas usage; pin the duty. */

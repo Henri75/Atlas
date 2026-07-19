@@ -99,7 +99,15 @@ someone else's reasoning, the more likely you are reconstructing it.
 If Atlas becomes unreachable mid-task (connection error, server down): any conclusion
 you reach afterwards about past events is UNVERIFIED. Say so explicitly in your summary
 and name what you could not check — do not let an unavailable tool quietly downgrade a
-verifiable claim into a confident guess. If it comes back, revisit what you deferred.
+verifiable claim into a confident guess.
+
+The atlas_* tools do NOT come back on their own. A restart of the Atlas server (a
+deploy, \`make restart\`) drops them from an already-running session permanently: this
+server is stateless, so it cannot push a tools/list_changed notification, and nothing
+re-lists them. Waiting for recovery is waiting for something that will not happen.
+Instead, either query the HTTP API directly (the same endpoints the tools proxy:
+/api/search, /api/ask, /api/entry on the Atlas API port) or tell the user the session
+must be restarted to get the tools back. Do not silently fall back to guessing.
 
 Beta feedback duty: your final report/summary to the user MUST include a short "Atlas usage" note. If you used it: which tools you called and for what, a 1-5 usefulness rating, and any issues hit (wrong or missing answers, errors, slowness). If you did NOT use it on a task that touched project history, say that instead and why in one line ("skipped — git settled it and no intent claim was made", "unavailable — server down", "did not think of it"). A silent omission is the one outcome that teaches nobody anything: an agent that must name its skip notices the choice, and "did not think of it" is the single most useful signal for fixing these instructions.
 
