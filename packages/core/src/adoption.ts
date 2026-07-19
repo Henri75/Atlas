@@ -295,10 +295,141 @@ export interface AdoptionOptions {
   root?: string;
   /** Only sessions starting on/after this ISO date. */
   since?: string;
+  /** Only sessions starting BEFORE this ISO date (exclusive upper bound). */
+  until?: string;
   /** Substring filter on the project directory name. */
   project?: string;
   /** Ignore sessions below this many assistant turns (trivial one-shot runs). */
   minTurns?: number;
+}
+
+/** Per-tool before/after movement, with the sample size that produced it. */
+export interface ToolDelta {
+  before: ToolAdoption;
+  after: ToolAdoption;
+  /** after.fireRate - before.fireRate; null if either window had no opportunity. */
+  fireRateDelta: number | null;
+  /** Qualifying sessions (used + missed) per window — the n behind the rates. */
+  beforeN: number;
+  afterN: number;
+  /**
+   * False when either window is too small for the delta to mean anything.
+   * A jump from 0/1 to 3/3 is not evidence, and a comparison that reports it
+   * as +100% invites exactly the over-reading this tool exists to prevent.
+   */
+  significant: boolean;
+}
+
+export interface AdoptionComparison {
+  generatedAt: string;
+  before: { since?: string; until: string; report: AdoptionReport };
+  after: { since: string; until?: string; report: AdoptionReport };
+  assessor: ToolDelta;
+  atlas: ToolDelta;
+  /** Rules that got worse, best-to-worst by increase in miss count. */
+  regressedRules: { rule: string; before: number; after: number }[];
+  /** Rules that improved. */
+  improvedRules: { rule: string; before: number; after: number }[];
+  /** Plain-language caveats that must accompany any reading of this. */
+  caveats: string[];
+}
+
+/** Below this many qualifying sessions in a window, a rate delta is noise. */
+export const MIN_SAMPLE_FOR_SIGNIFICANCE = 10;
+
+/**
+ * Compare two time windows, split at `at`. Used to check whether an instruction
+ * change moved the needle: run the same command either side of the edit date.
+ *
+ * Deliberately conservative about significance. These are small samples from one
+ * machine, and fire rate is a ratio over a handful of sessions — it swings wildly
+ * at low n. The comparison therefore reports the raw movement AND whether the
+ * sample supports reading anything into it, so a 3-session window cannot be
+ * mistaken for a result.
+ */
+export async function compareAdoption(
+  at: string,
+  opts: AdoptionOptions = {},
+): Promise<AdoptionComparison> {
+  const [before, after] = await Promise.all([
+    analyzeAdoption({ ...opts, until: at }),
+    analyzeAdoption({ ...opts, since: at }),
+  ]);
+
+  const delta = (which: 'assessor' | 'atlas'): ToolDelta => {
+    const b = before[which];
+    const a = after[which];
+    const beforeN = b.sessionsUsed + b.sessionsMissed;
+    const afterN = a.sessionsUsed + a.sessionsMissed;
+    return {
+      before: b,
+      after: a,
+      fireRateDelta:
+        b.fireRate === null || a.fireRate === null
+          ? null
+          : Number((a.fireRate - b.fireRate).toFixed(3)),
+      beforeN,
+      afterN,
+      significant:
+        beforeN >= MIN_SAMPLE_FOR_SIGNIFICANCE && afterN >= MIN_SAMPLE_FOR_SIGNIFICANCE,
+    };
+  };
+
+  const rulesOf = (r: AdoptionReport) => {
+    const m = new Map<string, number>();
+    for (const t of [...r.assessor.topMissedRules, ...r.atlas.topMissedRules]) {
+      m.set(t.rule, (m.get(t.rule) ?? 0) + t.count);
+    }
+    return m;
+  };
+  const rb = rulesOf(before);
+  const ra = rulesOf(after);
+  const moved = [...new Set([...rb.keys(), ...ra.keys()])].map((rule) => ({
+    rule,
+    before: rb.get(rule) ?? 0,
+    after: ra.get(rule) ?? 0,
+  }));
+
+  const caveats: string[] = [];
+  const assessor = delta('assessor');
+  const atlas = delta('atlas');
+  if (!assessor.significant || !atlas.significant) {
+    caveats.push(
+      `Sample too small for a reliable rate comparison (need >= ${MIN_SAMPLE_FOR_SIGNIFICANCE} ` +
+        'qualifying sessions per window). Read the raw counts, not the percentage.',
+    );
+  }
+  if (before.sessionsScanned === 0 || after.sessionsScanned === 0) {
+    caveats.push('One window contains no sessions at all — nothing to compare.');
+  }
+  // Miss counts scale with volume, so a window with far more sessions will show
+  // more misses even at an identical rate. Say so rather than let the raw
+  // rule deltas be read as behavior change.
+  const ratio =
+    before.sessionsScanned && after.sessionsScanned
+      ? after.sessionsScanned / before.sessionsScanned
+      : null;
+  if (ratio !== null && (ratio > 2 || ratio < 0.5)) {
+    caveats.push(
+      `Windows differ a lot in size (${before.sessionsScanned} vs ${after.sessionsScanned} ` +
+        'sessions); rule counts are absolute, so compare rates rather than counts.',
+    );
+  }
+  caveats.push(
+    'Tier-2 hits are heuristic candidates; a rate change can reflect changed phrasing ' +
+      'rather than changed behavior.',
+  );
+
+  return {
+    generatedAt: new Date().toISOString(),
+    before: { since: opts.since, until: at, report: before },
+    after: { since: at, until: opts.until, report: after },
+    assessor,
+    atlas,
+    regressedRules: moved.filter((r) => r.after > r.before).sort((a, b) => b.after - b.before - (a.after - a.before)),
+    improvedRules: moved.filter((r) => r.after < r.before).sort((a, b) => a.after - a.before - (b.after - b.before)),
+    caveats,
+  };
 }
 
 export async function analyzeAdoption(opts: AdoptionOptions = {}): Promise<AdoptionReport> {
@@ -316,6 +447,9 @@ export async function analyzeAdoption(opts: AdoptionOptions = {}): Promise<Adopt
     }
     if (!s || s.turns < minTurns) continue;
     if (opts.since && (s.startedAt ?? '') < opts.since) continue;
+    // Exclusive upper bound so `until: X` and `since: X` partition cleanly with
+    // no session counted in both windows of a comparison.
+    if (opts.until && (s.startedAt ?? '') >= opts.until) continue;
     sessions.push(s);
   }
 

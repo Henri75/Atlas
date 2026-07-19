@@ -358,18 +358,85 @@ program
   .command('adoption')
   .description('Are agents calling Assessor/Atlas when they should? (reads Claude Code transcripts)')
   .option('--since <date>', 'Only sessions on/after this ISO date')
+  .option('--until <date>', 'Only sessions before this ISO date (exclusive)')
+  .option(
+    '--compare <date>',
+    'Split at this date and diff the two windows — did an instruction change move the needle?',
+  )
   .option('--project <substr>', 'Filter by project directory name')
   .option('--min-turns <n>', 'Ignore sessions below N assistant turns', '5')
   .option('--limit <n>', 'Max sessions to detail', '15')
   // --json is a global option on `program`; declaring it again here would shadow
   // it and silently never bind. Read it through the shared out() helper instead.
   .action(async (o) => {
-    const { analyzeAdoption } = await import('@atlas/core');
-    const r = await analyzeAdoption({
+    const { analyzeAdoption, compareAdoption } = await import('@atlas/core');
+    const base = {
       since: o.since,
+      until: o.until,
       project: o.project,
       minTurns: Number(o.minTurns) || 5,
-    });
+    };
+
+    if (o.compare) {
+      const c = await compareAdoption(o.compare, base);
+      out(c, () => {
+        console.log(bold(`\nAdoption before vs after ${o.compare}`));
+        console.log(
+          dim(
+            `${num(c.before.report.sessionsScanned)} sessions before · ` +
+              `${num(c.after.report.sessionsScanned)} after\n`,
+          ),
+        );
+        for (const [name, d] of [
+          ['assessor', c.assessor],
+          ['atlas', c.atlas],
+        ] as const) {
+          const pct = (v: number | null) => (v === null ? 'n/a' : `${(v * 100).toFixed(0)}%`);
+          // Raw counts always shown: at these sample sizes they are the honest
+          // signal and the percentage is the misleading one.
+          const arrow =
+            d.fireRateDelta === null
+              ? dim('—')
+              : d.fireRateDelta > 0
+                ? green(`+${(d.fireRateDelta * 100).toFixed(0)}pp`)
+                : d.fireRateDelta < 0
+                  ? red(`${(d.fireRateDelta * 100).toFixed(0)}pp`)
+                  : dim('0pp');
+          console.log(
+            `${bold(name.padEnd(9))} ${pct(d.before.fireRate)} → ${pct(d.after.fireRate)}  ${arrow}` +
+              dim(`   (n=${d.beforeN} → ${d.afterN})`) +
+              (d.significant ? '' : yellow('  ⚠ small sample')),
+          );
+          console.log(
+            dim(
+              `          used ${d.before.sessionsUsed}→${d.after.sessionsUsed} · ` +
+                `missed ${d.before.sessionsMissed}→${d.after.sessionsMissed} · ` +
+                `calls ${d.before.totalCalls}→${d.after.totalCalls}`,
+            ),
+          );
+        }
+
+        if (c.regressedRules.length) {
+          console.log(bold('\nGot worse:'));
+          for (const r of c.regressedRules.slice(0, 5)) {
+            console.log(`  ${red('▲')} ${r.rule.padEnd(30)} ${r.before} → ${r.after}`);
+          }
+        }
+        if (c.improvedRules.length) {
+          console.log(bold('\nImproved:'));
+          for (const r of c.improvedRules.slice(0, 5)) {
+            console.log(`  ${green('▼')} ${r.rule.padEnd(30)} ${r.before} → ${r.after}`);
+          }
+        }
+
+        console.log(hr());
+        for (const caveat of c.caveats) console.log(yellow(`! ${caveat}`));
+        console.log();
+      });
+      return;
+    }
+
+    const r = await analyzeAdoption(base);
     out(r, () => {
     console.log(bold(`\nTool adoption — ${num(r.sessionsScanned)} sessions scanned`));
     console.log(dim(`${num(r.sessionsWithTriggers)} contained at least one trigger\n`));

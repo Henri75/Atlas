@@ -2,7 +2,13 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { DETECTORS, analyzeAdoption, analyzeTranscript } from '../../packages/core/src/adoption.js';
+import {
+  DETECTORS,
+  MIN_SAMPLE_FOR_SIGNIFICANCE,
+  analyzeAdoption,
+  analyzeTranscript,
+  compareAdoption,
+} from '../../packages/core/src/adoption.js';
 
 /**
  * These pin the measurement itself. The whole point of reading transcripts rather
@@ -299,5 +305,112 @@ describe('detector precision (from real-transcript tuning)', () => {
     expect((await analyzeTranscript(f))!.triggers.map((t) => t.rule)).toContain(
       'rejected-alternative',
     );
+  });
+});
+
+/**
+ * --compare exists to answer "did that instruction edit work?". The danger is
+ * that fire rate is a ratio over a handful of sessions and swings wildly at low
+ * n — a comparison that reports +100% off 3 sessions would manufacture exactly
+ * the false confidence this tool is supposed to remove. These pin the guard.
+ */
+describe('compareAdoption', () => {
+  const dated = (text: string, ts: string) =>
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: ts,
+      cwd: '/repo',
+      message: { content: [{ type: 'text', text }] },
+    });
+  const datedTool = (name: string, ts: string) =>
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: ts,
+      cwd: '/repo',
+      message: { content: [{ type: 'tool_use', name, input: {} }] },
+    });
+  const pad = (ts: string, n = 6) => Array.from({ length: n }, () => dated('routine', ts));
+
+  it('splits cleanly at the boundary — no session in both windows', async () => {
+    const proj = '-repo-cmp-split';
+    await writeSession(proj, 'old', [
+      ...pad('2026-06-01T10:00:00Z'),
+      dated('I considered X but rejected it.', '2026-06-01T10:00:00Z'),
+    ]);
+    await writeSession(proj, 'new', [
+      ...pad('2026-08-01T10:00:00Z'),
+      dated('I considered Y but rejected it.', '2026-08-01T10:00:00Z'),
+    ]);
+    const c = await compareAdoption('2026-07-01', { root, project: proj });
+    expect(c.before.report.sessionsScanned).toBe(1);
+    expect(c.after.report.sessionsScanned).toBe(1);
+  });
+
+  it('flags a small sample instead of reporting a confident swing', async () => {
+    const proj = '-repo-cmp-small';
+    await writeSession(proj, 'b1', [
+      ...pad('2026-06-01T10:00:00Z'),
+      dated('I considered X but rejected it.', '2026-06-01T10:00:00Z'),
+    ]);
+    await writeSession(proj, 'a1', [
+      ...pad('2026-08-01T10:00:00Z'),
+      dated('I considered Y but rejected it.', '2026-08-01T10:00:00Z'),
+      datedTool('mcp__assessor__assess', '2026-08-01T10:00:00Z'),
+    ]);
+    const c = await compareAdoption('2026-07-01', { root, project: proj });
+    // The movement is real (0% -> 100%) but rests on one session per window.
+    expect(c.assessor.fireRateDelta).toBe(1);
+    expect(c.assessor.significant).toBe(false);
+    expect(c.caveats.join(' ')).toMatch(/Sample too small/);
+  });
+
+  it('marks a comparison significant once both windows are big enough', async () => {
+    const proj = '-repo-cmp-big';
+    for (let i = 0; i < MIN_SAMPLE_FOR_SIGNIFICANCE; i++) {
+      await writeSession(proj, `b${i}`, [
+        ...pad('2026-06-01T10:00:00Z'),
+        dated('I considered X but rejected it.', '2026-06-01T10:00:00Z'),
+      ]);
+      await writeSession(proj, `a${i}`, [
+        ...pad('2026-08-01T10:00:00Z'),
+        dated('I considered Y but rejected it.', '2026-08-01T10:00:00Z'),
+        datedTool('mcp__assessor__assess', '2026-08-01T10:00:00Z'),
+      ]);
+    }
+    const c = await compareAdoption('2026-07-01', { root, project: proj });
+    expect(c.assessor.beforeN).toBeGreaterThanOrEqual(MIN_SAMPLE_FOR_SIGNIFICANCE);
+    expect(c.assessor.significant).toBe(true);
+    expect(c.assessor.before.fireRate).toBe(0);
+    expect(c.assessor.after.fireRate).toBe(1);
+  });
+
+  it('reports which rules moved in each direction', async () => {
+    const proj = '-repo-cmp-rules';
+    await writeSession(proj, 'old1', [
+      ...pad('2026-06-01T10:00:00Z'),
+      dated('The test was wrong, not the code.', '2026-06-01T10:00:00Z'),
+    ]);
+    await writeSession(proj, 'new1', [
+      ...pad('2026-08-01T10:00:00Z'),
+      dated('I considered Y but rejected it.', '2026-08-01T10:00:00Z'),
+    ]);
+    const c = await compareAdoption('2026-07-01', { root, project: proj });
+    expect(c.improvedRules.map((r) => r.rule)).toContain('failure-signal-talked-past');
+    expect(c.regressedRules.map((r) => r.rule)).toContain('rejected-alternative');
+  });
+
+  it('warns when the windows differ wildly in size', async () => {
+    const proj = '-repo-cmp-lop';
+    await writeSession(proj, 'b', pad('2026-06-01T10:00:00Z'));
+    for (let i = 0; i < 5; i++) {
+      await writeSession(proj, `a${i}`, pad('2026-08-01T10:00:00Z'));
+    }
+    const c = await compareAdoption('2026-07-01', { root, project: proj });
+    expect(c.caveats.join(' ')).toMatch(/differ a lot in size/);
+  });
+
+  it('always carries the heuristic caveat', async () => {
+    const c = await compareAdoption('2026-07-01', { root, project: '-repo-cmp-split' });
+    expect(c.caveats.join(' ')).toMatch(/heuristic candidates/);
   });
 });
