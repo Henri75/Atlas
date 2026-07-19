@@ -1,4 +1,6 @@
-<!-- GENERATED VIEW — do not edit. Rebuilt from atlas.log by bin/kdb_rebuild.mjs -->
+# KDB Component: atlas
+
+> Generated from `kdb/components/atlas.log`. Do not edit directly.
 
 ---
 ### [2026-07-08] - KDBScope v0.1.0 — cross-project knowledge indexer built end-to-end
@@ -608,6 +610,38 @@
 - **What Worked:** Container lifecycle evidence (StartedAt, RestartCount, image timestamps) against the session transcript. Parsing tool_use blocks rather than grepping tool names — the grep counted tool-listing metadata and suggested calls that never happened.
 - **What Failed:** Two of my own conclusions, both from inferring cause from a single artifact. (1) "The agent never attempted Atlas" — 0 tool_use meant the tools were not callable, not that it declined. (2) "The prose layer has failed twice, stop iterating" — the prose was never fairly tested, as the tools were gone for 80 of 81 minutes. Both corrections came from evidence outside the artifact I was reading. Docker had already discarded events from the incident window, so the deploy attribution rests on strong circumstantial evidence, not a directly observed event.
 - An agent's account of its own failure is itself a reconstruction and must be verified like any other historical claim; this one misattributed a capability loss to a motivational lapse.
+
+**Status:**
+- Completed
+
+---
+### [2026-07-19] - Tool-adoption measurement (atlas adoption)
+
+**Objective:**
+- Replace agents' self-reported tool use with a measurement taken from evidence, so MCP instruction tuning has a real feedback loop.
+
+**Summary of Work:**
+- New packages/core/src/adoption.ts: streams Claude Code transcripts (~/.claude/projects/**/*.jsonl), counts assessor/atlas calls (Tier 1) and matches assistant prose against the documented triggers (Tier 2).
+- New `atlas adoption` CLI command (--since/--project/--min-turns/--limit, --json via the shared out() helper).
+- 21 tests in test/core/adoption.test.ts; docs in docs/mcp.md ("Measuring adoption") and docs/cli.md.
+
+**Key Decisions & Rationale:**
+- Transcripts, not a Stop hook. A hook only sees sessions after install; transcripts are retrospective over all 3,760 existing sessions, so we get a baseline immediately and cannot silently stop collecting.
+- Direct HTTP calls to :8710/:8711/:8770 count as use — the MCP tools drop out of a running session when a server restarts and agents fall back to curl. Counting only mcp__* would misread that as a miss.
+- fireRate is null (not 0) when nothing qualified: "no opportunity" and "never fired" are different findings and must not render identically.
+- Detectors mirror SERVER_INSTRUCTIONS triggers. Documented in docs/mcp.md that adding a trigger without adding a detector makes it invisible to measurement.
+
+**Code/Files Modified:**
+- packages/core/src/adoption.ts (new), packages/core/src/index.ts
+- packages/cli/src/main.ts
+- test/core/adoption.test.ts (new)
+- docs/mcp.md, docs/cli.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** First real run over 3,760 sessions — assessor fireRate 16%, atlas 5%, with 38 and 142 calls respectively. First hard evidence that under-use is systemic rather than two anecdotes, and that it is under-use rather than non-use.
+- **What Failed:** Three detectors were badly noisy on real data and only running them exposed it: a bare /regressed/ matched the routine "nothing regressed" after every test run (175 hits, ~all noise); /update the test to/ matched ordinary test-writing; /rejected it/ matched "the strict schema rejected it", where the system rejects, not the agent. All three narrowed with the noise cases pinned as non-matches.
+- **Also failed, opposite direction:** {3,60} in rejected-alternative silently missed "I considered X but rejected it" (2-char subject). Under-matching is the more dangerous bug here — it yields a clean report that reads as "no misses found". Tests now pin both directions.
+- **Third bug:** declaring a local --json shadowed the program-level global and never bound, so --json printed human output. Fixed by using the existing out() helper.
 
 **Status:**
 - Completed

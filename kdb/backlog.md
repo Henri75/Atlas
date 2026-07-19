@@ -1,4 +1,6 @@
-<!-- GENERATED VIEW — do not edit. Rebuilt from backlog.log by bin/kdb_rebuild.mjs -->
+# KDB Backlog
+
+> Generated from `kdb/backlog.log`. Do not edit directly.
 
 - [2026-07-09] [kdbscope] Ask mode: stream the LLM answer token-by-token (SSE) instead of waiting for the full completion
 - [2026-07-09] [kdbscope] Embeddings: prefer Ollama by default; auto-pull nomic-embed-text; document the speedup

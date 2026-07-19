@@ -163,3 +163,12 @@
 
 **AI Response Summary:**
 > Traced the failure to a deploy: `make restart` recreated the mcp container mid-session, dropping the atlas_* tools permanently because the stateless server cannot push tools/list_changed. Corrected the instruction that promised a recovery which cannot occur (d9cd46f, pushed, deployed and verified over MCP), removed mcp from the default restart target and added a warned `restart-mcp`. Retracted two of my own wrong conclusions along the way. Left the trigger prose untouched deliberately - it has never been tested with an agent that had the tools.
+
+---
+### [2026-07-19 03:40 UTC]
+
+**User Prompt Summary:**
+> Asked whether Claude Code could be forced to answer a survey about Assessor/Atlas use and log it somewhere, and whether that would help improve the services; then asked to implement tiers 1 and 2.
+
+**AI Response Summary:**
+> Explained that forcing a reply is not possible and would manufacture confabulated answers, but that the logging half is fully solvable from transcripts — which record both tool calls and the surrounding reasoning. Built `atlas adoption` (Tier 1 usage counting + Tier 2 trigger detection), tuned the detectors against 3,760 real sessions after the first pass proved noisy, and documented it.

@@ -1,4 +1,6 @@
-<!-- GENERATED VIEW — do not edit. Rebuilt from changelog.log by bin/kdb_rebuild.mjs -->
+# KDB Changelog
+
+> Generated from `kdb/changelog.log`. Do not edit directly.
 
 - [IN-PROGRESS] - [2026-07-08 22:40 UTC] - [Feature] - [kdbscope] - [Design + build KDBScope: cross-project knowledge indexer (kdb logs + claude sessions + git + docs) with UI/CLI/REST/MCP]
 - [COMPLETED] - [2026-07-08 23:20 UTC] - [Feature] - [kdbscope] - [v0.1.0 built and deployed: 7-service docker stack live, 63 unit tests green, smoke 6/6, first index running (90 projects discovered); fixed pg18 volume path, migration race (advisory lock), fractional mtimeMs vs BIGINT]
@@ -38,3 +40,4 @@
 - [COMPLETED] - [2026-07-17 15:52 UTC] - [Improvement] - [atlas] - [Beta hardening shipped: MCP instructions + bounded session/component results + 404 on unknown slugs, Ask prompt rework for mid-size models, agent usage telemetry (usage_log + atlas usage), user-scope Claude Code registration + CLAUDE.md guidance; 449 tests, smoke 7/7]
 - [COMPLETED] - [2026-07-17 16:35 UTC] - [Improvement] - [atlas] - [Concurrency safety: audited multi-agent + reindex path (no corruption possible — stateless reads, idempotent ON CONFLICT writes, collision-free job ids), added 8 insertEntries/logUsage regression tests, documented concurrency + the single-instance api/mcp rule; 449 -> 457 tests, live-verified 140+ concurrent reqs]
 - [COMPLETED] - 2026-07-19 01:34 UTC - Bugfix - mcp/build - Stop deploys silently and permanently dropping atlas_* tools from live agent sessions
+- [COMPLETED] - [2026-07-19 03:40 UTC] - [Feature] - [atlas] - atlas adoption: transcript-based measurement of whether agents call Assessor/Atlas when documented triggers apply (Tier 1 usage + Tier 2 candidate misses). First run over 3760 sessions: assessor 16%, atlas 5% fire rate. 489 tests green
