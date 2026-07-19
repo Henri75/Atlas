@@ -641,3 +641,30 @@
 
 **Status:**
 - Completed
+
+---
+### [2026-07-19] - adoption --compare (before/after windows)
+
+**Objective:**
+- Close the tuning loop: after changing MCP instructions, check in one command whether the change moved anything.
+
+**Summary of Work:**
+- `compareAdoption(at, opts)` in packages/core/src/adoption.ts: splits history at a date, diffs both windows, returns per-tool ToolDelta + moved rules + caveats.
+- `--compare <date>` and `--until <date>` on the CLI; `until` is exclusive so windows partition cleanly.
+- 6 new tests (27 total in the file); docs/mcp.md gains a "Before/after an instruction change" section.
+
+**Key Decisions & Rationale:**
+- The guard is the feature, not the diff. Fire rate is a ratio over few sessions and swings hard at low n: comparing across the 2026-07-19 rewrite yields "+84pp, all rules improved" off a ONE-session after-window. Output therefore always carries n, marks <10 qualifying sessions as small, and emits caveats for thin samples, empty windows, and >2x size mismatch.
+- Rule deltas are absolute counts, so unequal windows inflate them. Documented and caveated rather than normalised — a normalised count would look authoritative and hide the same problem.
+- MIN_SAMPLE_FOR_SIGNIFICANCE exported so the threshold is visible and testable rather than a magic number.
+
+**Code/Files Modified:**
+- packages/core/src/adoption.ts, packages/cli/src/main.ts
+- test/core/adoption.test.ts, docs/mcp.md, docs/cli.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Running it on a balanced window (compare 2026-06-01, n=16→39 and 137→111, no small-sample warning) surfaced a real finding: both tools had 0 calls across 2,257 sessions before June 2026 because they did not exist yet. The all-time 16%/5% figures are therefore diluted by months with no tool to call, and the honest baseline for judging the rewrite is June-onward.
+- **What Failed:** Nothing broke, but the first real run is a good example of why the guard was needed — without the caveats the output reads as proof the instruction rewrite worked, when the after-window is a single session in which the agent was actively building these tools.
+
+**Status:**
+- Completed

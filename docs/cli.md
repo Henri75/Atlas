@@ -3,6 +3,7 @@
 # CLI — `atlas`
 
 ## Revision History
+- 2026-07-19 04:15 UTC — `atlas adoption --compare <date>` / `--until <date>`: before-vs-after comparison for instruction changes, with small-sample guards.
 - 2026-07-19 03:35 UTC — New `atlas adoption`: measures whether agents call Assessor/Atlas when the documented triggers apply, by reading Claude Code transcripts (usage counts + candidate missed triggers). Read-only and local.
 - 2026-07-17 15:49 UTC — New `atlas usage [-d days]`: agent-usage telemetry (calls, latency, errors per tool/day; MCP + CLI traffic is labeled via `x-atlas-client`). Beta caveat added to `--help`. Unknown project slugs now error loudly (API 404) instead of printing nothing.
 - 2026-07-12 13:50 UTC — Renamed the product to **Atlas**: the command is now `atlas` (was `kdbs`). Re-run `make cli-link` to install it. Source-type **values** (`kdb_changelog`, `kdb_component`, …) are unchanged — they name kinds of indexed content, not the tool.
@@ -48,6 +49,7 @@ sessions where a trigger fired but the tool was never called.
 ```bash
 atlas adoption --since 2026-07-01 --project DeepCast --limit 20
 atlas adoption --json | jq '.assessor.fireRate'
+atlas adoption --compare 2026-07-19        # before vs after an instruction change
 ```
 
 `fireRate` is the tuning metric — used ÷ (used + missed), or `null` when nothing

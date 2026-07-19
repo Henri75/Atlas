@@ -3,6 +3,7 @@
 # MCP Server
 
 ## Revision History
+- 2026-07-19 04:15 UTC — `atlas adoption --compare <date>` diffs two windows (plus `--until` for bounded ranges), reporting fire-rate movement with the sample size behind it and caveats when the sample can't support a conclusion.
 - 2026-07-19 03:35 UTC — Added **`atlas adoption`**: measures whether agents actually call Assessor/Atlas at the moments the instructions say they should, by reading Claude Code transcripts rather than asking the agent. See *Measuring adoption* below.
 - 2026-07-17 15:49 UTC — Agent-readiness batch: the server now sends **initialize-time instructions** (what Atlas is, that it is **beta** — verify answers against cited sources, prefer unscoped queries, ghost-slug warning, and the *Atlas usage* reporting duty for agent summaries). `atlas_session` is **paginated by default** (limit 50, max_body 1500, returns `totalEntries`; a 71k-char response previously landed in one tool result) and `atlas_component_history` bounded (limit 20, max_body 2000); truncated bodies carry `bodyTruncated: true` — read them in full with `atlas_entry`. Unknown project slugs now surface as API 404s instead of empty results. Every tool call is recorded in the usage log (`atlas usage`).
 - 2026-07-12 13:50 UTC — Renamed the product to **Atlas**. The MCP server id is now `atlas` (was `kdbscope`) and every tool is `atlas_*` (was `kdb_*`): `kdb_search` → `atlas_search`, and so on for all ten. The `source` **values** are unchanged — `kdb_changelog`, `kdb_session`, `kdb_component`, `kdb_backlog`, `kdb_report` name kinds of indexed content (KDB logs), not the server, and keep their `kdb_` prefix. Re-register the server (see below); no reindex.
@@ -77,7 +78,9 @@ and no call happened — and those leave no trace in the usage log.
 ```bash
 atlas adoption                          # all projects, all time
 atlas adoption --since 2026-07-01       # recent only
+atlas adoption --since A --until B      # a bounded window
 atlas adoption --project DeepCast       # one project
+atlas adoption --compare 2026-07-19     # did an instruction change help?
 atlas adoption --json                   # raw report for scripting
 ```
 
@@ -107,6 +110,37 @@ to reconstruct. Self-reports are still collected, but as weak evidence: their
 one unique signal is *"did not think of it"* (surfaced as
 `admittedNotThoughtOf`), which no transcript scan can infer. Where the two
 disagree, the transcript wins.
+
+### Before/after an instruction change
+
+`--compare <date>` splits the history at that date and diffs the two windows —
+the intended loop for "I rewrote the triggers, did it work?":
+
+```bash
+atlas adoption --compare 2026-07-19            # the day the triggers changed
+atlas adoption --compare 2026-07-19 --project DeepCast
+```
+
+It prints the fire-rate movement, which rules got better or worse, and — the
+part that matters — **the sample size behind each rate**, plus caveats when that
+sample cannot support a conclusion:
+
+```
+assessor  16% → 100%  +84pp   (n=55 → 1)  ⚠ small sample
+          used 9→1 · missed 46→0 · calls 38→1
+! Sample too small for a reliable rate comparison (need >= 10 qualifying
+  sessions per window). Read the raw counts, not the percentage.
+```
+
+That example looks like a triumph and means nothing: the after-window holds one
+session. Fire rate is a ratio over a handful of sessions and swings hard at low
+n, and rule counts are **absolute**, so a window with 10× the sessions shows 10×
+the misses at an identical rate. Rules of thumb:
+
+- Below **10 qualifying sessions** per window, read the raw counts only.
+- If the windows differ in size by more than 2×, compare rates, never counts.
+- A rate change can reflect changed *phrasing* rather than changed behavior —
+  the detectors match prose.
 
 ### Treat Tier 2 as candidates, not verdicts
 
