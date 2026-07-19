@@ -128,10 +128,61 @@ describe('server instructions', () => {
   it('warn about wrong project scoping, the main false-negative source', () => {
     expect(SERVER_INSTRUCTIONS).toMatch(/UNSCOPED/);
   });
+
+  /**
+   * Observed failure (2026-07-19): an agent investigating why a tool had been
+   * rated poorly — a question about recorded past behavior — inferred a root
+   * cause from the current code and never queried Atlas, then flagged its own
+   * conclusion as unverified. "Use it before re-deriving history" described a
+   * state the agent had to notice it was in; these lines describe observable
+   * conditions instead. Pin them so a rewrite can't quietly revert to the
+   * softer phrasing.
+   */
+  it('tell agents to query history BEFORE inferring it from code', () => {
+    expect(SERVER_INSTRUCTIONS).toMatch(/CALL ATLAS FIRST/);
+    // \s+ not a literal space: the phrase wraps across a line break in the
+    // template literal, and a rewrap must not fail the test.
+    expect(SERVER_INSTRUCTIONS).toMatch(/before\s+reading code to infer/i);
+    // The distinction that makes the rule stick, not just the instruction.
+    expect(SERVER_INSTRUCTIONS).toMatch(/cannot tell you why/i);
+  });
+
+  it('name the hedging phrases that signal a missing Atlas call', () => {
+    for (const tell of ['presumably', 'likely because', 'could not verify']) {
+      expect(SERVER_INSTRUCTIONS).toContain(tell);
+    }
+  });
+
+  /** An unreachable tool must not silently downgrade a claim to a guess. */
+  it('handle mid-task disconnection explicitly', () => {
+    expect(SERVER_INSTRUCTIONS).toMatch(/unreachable mid-task/i);
+    expect(SERVER_INSTRUCTIONS).toMatch(/UNVERIFIED/);
+  });
 });
 
 /** The user wants every agent to report its Atlas usage; pin the duty. */
 it('server instructions require an Atlas-usage note in agent reports', () => {
   expect(SERVER_INSTRUCTIONS).toContain('Atlas usage');
   expect(SERVER_INSTRUCTIONS).toMatch(/1-5 usefulness rating/);
+});
+
+/**
+ * The duty used to fire only "if you used Atlas", so not using it was the one
+ * outcome that produced no signal — and silence is indistinguishable from
+ * "correctly skipped". Reporting the skip is what surfaces "did not think of
+ * it", the case these instructions exist to fix.
+ */
+it('server instructions require reporting a SKIP, not just a use', () => {
+  expect(SERVER_INSTRUCTIONS).toMatch(/did NOT use it/);
+  expect(SERVER_INSTRUCTIONS).toMatch(/did not think of it/);
+  expect(SERVER_INSTRUCTIONS).toMatch(/silent omission/i);
+});
+
+/** atlas_ask is the right first call for "why/what happened" questions. */
+it('atlas_ask description points agents at it before code-reading', () => {
+  const ask = TOOLS.find((t) => t.name === 'atlas_ask')!;
+  expect(ask.description).toMatch(/START HERE/);
+  expect(ask.description).toMatch(/before reading code to infer/i);
+  // scopeFallback results are not from the requested project; agents must say so.
+  expect(ask.description).toMatch(/NOT from the project you asked for/);
 });

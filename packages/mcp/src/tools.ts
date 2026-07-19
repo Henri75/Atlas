@@ -49,6 +49,26 @@ export const SOURCE_TYPES = [
  */
 export const SERVER_INSTRUCTIONS = `Atlas indexes the recorded history of all this machine's software projects — kdb logs (append-only project journals), Claude Code session transcripts, git commits and docs — and answers questions about what happened, when, and why. Indexing is near-real-time (within ~5 minutes).
 
+CALL ATLAS FIRST when the task involves what happened BEFORE. These are observable
+conditions in your own work, not judgment calls — if one is true, query Atlas before
+reading code to infer the answer:
+- You are about to state why a change was made, why a bug happened, or why something
+  was built a certain way.
+- You are about to explain or reconstruct what a past session did or concluded.
+- You are investigating a report about past behavior ("X was rated poorly", "this
+  regressed", "we tried this before").
+- You are about to write "presumably", "likely because", "this was probably", or
+  "I could not verify" about anything historical.
+
+Code shows you the current state. It cannot tell you why someone made a decision, what
+was tried and abandoned, or why a tool behaved a way someone reacted to. Inferring
+history from a current snapshot produces confident, plausible, unverifiable answers —
+exactly the failure Atlas exists to prevent. Reading the code first and calling Atlas
+only to confirm is backwards: by then you have already anchored on a guess.
+
+Not every task needs Atlas. But deciding to skip it must be a decision you make
+visibly, not one you drift past — see the reporting duty below.
+
 Atlas is BETA. Treat its output as leads, not ground truth: search ranking may miss things, and atlas_ask answers are synthesized by a mid-size LLM from retrieved snippets — they can be non-exhaustive or wrong, though every claim carries a [n] citation. Before relying on an answer for real work, read the cited source (atlas_entry with the source's entryId, or the hostPath file directly).
 
 How to use it well:
@@ -59,7 +79,12 @@ How to use it well:
 - Slugs that look like flattened absolute paths (e.g. "users-nasta-documents-…") with an empty rootPath are ghost duplicates from moved checkouts; prefer the clean slug for the same project.
 - Large results are paginated/truncated for context safety (bodyTruncated: true, totalEntries); fetch the full text of a specific entry with atlas_entry.
 
-Beta feedback duty: if you used Atlas during a task, your final report/summary to the user MUST include a short "Atlas usage" note — which tools you called and for what, a 1-5 usefulness rating, and any issues hit (wrong or missing answers, errors, slowness). This feedback is how Atlas gets fixed.`;
+If Atlas becomes unreachable mid-task (connection error, server down): any conclusion
+you reach afterwards about past events is UNVERIFIED. Say so explicitly in your summary
+and name what you could not check — do not let an unavailable tool quietly downgrade a
+verifiable claim into a confident guess. If it comes back, revisit what you deferred.
+
+Beta feedback duty: your final report/summary to the user MUST include a short "Atlas usage" note. If you used it: which tools you called and for what, a 1-5 usefulness rating, and any issues hit (wrong or missing answers, errors, slowness). If you did NOT use it on a task that touched project history, say that instead and why in one line ("skipped — the answer was in the working diff", "unavailable — server down", "did not think of it"). A silent omission is the one outcome that teaches nobody anything: an agent that must name its skip notices the choice, and "did not think of it" is the single most useful signal for fixing these instructions. This feedback is how Atlas gets fixed.`;
 
 export const TOOLS: ToolDef[] = [
   {
@@ -90,7 +115,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'atlas_ask',
     description:
-      'Ask a question about what happened across projects ("what were the bug fixes in the video import microservice?"). Retrieves relevant history and synthesizes a cited answer with a mid-size LLM (beta: answers can be non-exhaustive or wrong — verify important claims via the cited sources, e.g. atlas_entry on a source\'s entryId). Prefer leaving `project` unset: a feature may be indexed under a different slug than you expect (e.g. G2P lives under "google-gemini-pool", not "deepcast"), and a wrong scope is the main reason a real answer looks missing. When `project` is set but nothing matches there, the search widens to all projects and the response carries a `scopeFallback` marker naming the scope that was empty.',
+      'Ask a question about what happened across projects ("what were the bug fixes in the video import microservice?", "why was this built this way?", "what did the last session conclude?"). Retrieves relevant history and synthesizes a cited answer with a mid-size LLM (beta: answers can be non-exhaustive or wrong — verify important claims via the cited sources, e.g. atlas_entry on a source\'s entryId). START HERE for any "why/what happened/when did" question about past work — before reading code to infer it. Code shows the current state; only the recorded history explains the reasoning behind it, and a guess reconstructed from a snapshot reads exactly like a real answer. Prefer leaving `project` unset: a feature may be indexed under a different slug than you expect (e.g. G2P lives under "google-gemini-pool", not "deepcast"), and a wrong scope is the main reason a real answer looks missing. When `project` is set but nothing matches there, the search widens to all projects and the response carries a `scopeFallback` marker naming the scope that was empty — if you see it, the results are NOT from the project you asked for, so say so rather than presenting them as scoped.',
     schema: {
       question: z.string(),
       project: z
