@@ -3,6 +3,7 @@
 # MCP Server
 
 ## Revision History
+- 2026-07-19 03:35 UTC — Added **`atlas adoption`**: measures whether agents actually call Assessor/Atlas at the moments the instructions say they should, by reading Claude Code transcripts rather than asking the agent. See *Measuring adoption* below.
 - 2026-07-17 15:49 UTC — Agent-readiness batch: the server now sends **initialize-time instructions** (what Atlas is, that it is **beta** — verify answers against cited sources, prefer unscoped queries, ghost-slug warning, and the *Atlas usage* reporting duty for agent summaries). `atlas_session` is **paginated by default** (limit 50, max_body 1500, returns `totalEntries`; a 71k-char response previously landed in one tool result) and `atlas_component_history` bounded (limit 20, max_body 2000); truncated bodies carry `bodyTruncated: true` — read them in full with `atlas_entry`. Unknown project slugs now surface as API 404s instead of empty results. Every tool call is recorded in the usage log (`atlas usage`).
 - 2026-07-12 13:50 UTC — Renamed the product to **Atlas**. The MCP server id is now `atlas` (was `kdbscope`) and every tool is `atlas_*` (was `kdb_*`): `kdb_search` → `atlas_search`, and so on for all ten. The `source` **values** are unchanged — `kdb_changelog`, `kdb_session`, `kdb_component`, `kdb_backlog`, `kdb_report` name kinds of indexed content (KDB logs), not the server, and keep their `kdb_` prefix. Re-register the server (see below); no reindex.
 - 2026-07-11 04:35 UTC — `kdb_ask` steers callers away from over-scoping (a wrong `project` slug hides answers in sibling projects) and auto-widens to all projects on an empty scope, returning `scopeFallback`; `kdb_search` `source` accepts a comma-separated subset.
@@ -65,6 +66,61 @@ tool and per day.
 
 `atlas_ask` is non-streaming by design: a tool call returns one result. The
 streaming endpoint (`POST /api/ask/stream`) serves the UI and CLI.
+
+## Measuring adoption
+
+`usage_log` answers "how often was Atlas called". It cannot answer the question
+that actually drives instruction tuning: **how often should it have been called
+and wasn't?** For that you need the sessions where a documented trigger applied
+and no call happened — and those leave no trace in the usage log.
+
+```bash
+atlas adoption                          # all projects, all time
+atlas adoption --since 2026-07-01       # recent only
+atlas adoption --project DeepCast       # one project
+atlas adoption --json                   # raw report for scripting
+```
+
+It reads Claude Code transcripts (`~/.claude/projects/**/*.jsonl`) directly and
+reports two things:
+
+- **Tier 1 — usage.** Calls to `mcp__atlas__*` / `mcp__assessor__*` per session,
+  plus direct HTTP calls to either API (agents fall back to `curl` when a server
+  restart drops the MCP tools mid-session; that still counts as use).
+- **Tier 2 — candidate missed triggers.** Assistant prose matched against the
+  same conditions the server instructions document: asserting *why* something
+  changed after a `git`/`grep` lookup, blaming a failing test, hedging about
+  history. A hit with no matching call is a candidate miss.
+
+**`fireRate` = sessionsUsed / (sessionsUsed + sessionsMissed)** — the number to
+watch when tuning instructions. It is `null`, not `0`, when nothing qualified:
+"no opportunity" and "never fired" are different findings.
+
+### Why transcripts and not a survey
+
+Asking the agent to self-report non-use does not work, and cannot be made to
+work by asking harder. An agent that never noticed a trigger will, when
+prompted, produce a fluent justification indistinguishable from a real decision
+— the exact confabulation the *"report the skip you ACTUALLY made"* instruction
+exists to counter. Transcripts record what happened; they do not have a memory
+to reconstruct. Self-reports are still collected, but as weak evidence: their
+one unique signal is *"did not think of it"* (surfaced as
+`admittedNotThoughtOf`), which no transcript scan can infer. Where the two
+disagree, the transcript wins.
+
+### Treat Tier 2 as candidates, not verdicts
+
+The detectors are regexes over prose and will produce false positives — tuning
+them against 3,760 real sessions cut three noisy rules that were matching
+routine phrasing (`nothing regressed` after a test run, `update the test to…`
+while writing tests, `the schema rejected it` where the system does the
+rejecting, not the agent). Every hit carries an excerpt precisely so a human can
+check it in one glance. Under-matching is the more dangerous failure: it yields
+a clean report that reads as "no misses found", so detector changes are pinned
+by tests in `test/core/adoption.test.ts` in both directions.
+
+Detectors mirror the triggers in each server's `SERVER_INSTRUCTIONS`. **Adding a
+trigger there without adding a detector here makes it invisible to measurement.**
 
 `atlas_ask` reranks its retrieved context for source-type diversity — authoritative
 docs and component logs are boosted and session transcripts are capped at half the
