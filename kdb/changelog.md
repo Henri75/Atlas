@@ -1,6 +1,4 @@
-# KDB Changelog
-
-> Generated from `kdb/changelog.log`. Do not edit directly.
+<!-- GENERATED VIEW — do not edit. Rebuilt from changelog.log by bin/kdb_rebuild.mjs -->
 
 - [IN-PROGRESS] - [2026-07-08 22:40 UTC] - [Feature] - [kdbscope] - [Design + build KDBScope: cross-project knowledge indexer (kdb logs + claude sessions + git + docs) with UI/CLI/REST/MCP]
 - [COMPLETED] - [2026-07-08 23:20 UTC] - [Feature] - [kdbscope] - [v0.1.0 built and deployed: 7-service docker stack live, 63 unit tests green, smoke 6/6, first index running (90 projects discovered); fixed pg18 volume path, migration race (advisory lock), fractional mtimeMs vs BIGINT]
@@ -44,3 +42,5 @@
 - [COMPLETED] - [2026-07-19 04:20 UTC] - [Feature] - [atlas] - atlas adoption --compare/--until: before-vs-after windows for instruction changes, with sample-size guards and caveats. Found both tools at 0 calls before June 2026 (did not exist), so all-time rates are diluted. 495 tests green
 - [COMPLETED] - 2026-07-19 15:09 UTC - Feature - atlas - Send X-G2P-Client-Id on all outbound LLM/embedding calls for G2P per-client stats
 - [COMPLETED] - 2026-07-19 15:30 UTC - Feature - core/llm+embeddings - Send X-G2P-Client-Id (default Atlas) on all LLM and embedding calls for G2P stats attribution
+- [COMPLETED] - 2026-07-25 23:15 UTC - Bugfix - atlas/indexer - Healed 39 catalog entries that had no vectors in Qdrant (2 whole documents, incl. an ops runbook, were unsearchable); verified via live atlas_search
+- [IN-PROGRESS] - 2026-07-25 23:40 UTC - Feature - atlas - Trust hardening: 2 ADRs + 4-phase plan to stop silent vector loss and stop Ask asserting unmeasured index coverage

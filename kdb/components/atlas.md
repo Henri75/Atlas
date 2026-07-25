@@ -1,6 +1,4 @@
-# KDB Component: atlas
-
-> Generated from `kdb/components/atlas.log`. Do not edit directly.
+<!-- GENERATED VIEW — do not edit. Rebuilt from atlas.log by bin/kdb_rebuild.mjs -->
 
 ---
 ### [2026-07-08] - KDBScope v0.1.0 — cross-project knowledge indexer built end-to-end
@@ -767,3 +765,35 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-25] - Silent vector loss + Ask asserting unmeasured coverage (investigation, heal, ADRs)
+
+**Objective:**
+- Find why an agent was told "Atlas's index stops at 2026-07-15" and fix the class of problem, not the instance.
+
+**Summary of Work:**
+- Reproduced from the agent's own transcript: one atlas_ask (k=14, gemini-2.5-flash) answered "The indexed history for July 2026 concludes on 2026-07-15 [1, 13]". False — the index held 34,825 entries newer than that and had run 2 min earlier. All 14 retrieved blocks happened to max out at 07-15; the model reported its sample as the corpus.
+- While tracing it, found worse: entries can be committed to Postgres and never embedded. Census of 323,176 entries vs 361,941 Qdrant points found 39 orphans — including ALL 13 sections of docs/operations/worker-pool-resize.md and ALL 11 of the 2026-07-25 worker-allocation design spec. Invisible to every semantic search; atlas_status said recentErrors: 0.
+- Healed all 39 by re-embedding through the real indexEntries(); verified by re-scroll and by live atlas_search returning the previously-missing runbook top-ranked.
+- Wrote 2 ADRs + a 4-phase plan, then self-reviewed and fixed 4 defects in my own design.
+
+**Key Decisions & Rationale:**
+- Coverage tracked as `vectorized_in` (collection name), NOT `vectorized_at` (timestamp). Self-review caught that a timestamp reports full coverage against a new empty collection after a model switch, breaking the one case needsBackfill exists for. The collection name encodes provider/model/dim, so a switch invalidates every row for free.
+- Backfill and reconciliation unified into one path; the column replaces backfill_cursor, so the operation is resumable by construction.
+- Migration performs an audit instead of blanket-marking rows: Phase 0 verified coverage now, but Phase 1 ships later, and any outage between would be blessed as covered.
+- Ask coverage reported per project, not index-wide: unscoped ask is the default, and "index current to 07-25" says nothing about whether DeepCast is covered.
+- Window counts padded with a neighbourhood count: "0 entries dated 07-21" is true but an incident on the 21st is usually written up on the 22nd.
+- Principle for the whole service: measure, or say nothing.
+
+**Code/Files Modified:**
+- docs/adr/20260725-vector-catalog-reconciliation.md (new)
+- docs/adr/20260725-ask-answer-trust-contract.md (new)
+- docs/superpowers/plans/2026-07-25-atlas-trust-hardening.md (new)
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Reading the agent's own transcript to get the exact failing call instead of guessing at the symptom. Reusing the real indexEntries() for the heal, so point ids/payloads provably match the pipeline.
+- **What Failed:** Two of my own hypotheses, both killed by measurement. (1) Suspected the occurred_at range filter was broken because the field has no payload index — it works, returning 34,865 points, just 36x slower (3.11s vs 0.087s). (2) Suspected a random sample would reveal orphans — 600/600 had vectors; only sampling the outage window (recent entries) exposed the 39. Sampling strategy, not sample size, was what mattered.
+- **Lesson:** needsBackfill compared chunks (361,941) to entries (323,176) — different units, so it could never fire. A safety net with a unit bug reads as protection while providing none.
+
+**Status:**
+- In-Progress

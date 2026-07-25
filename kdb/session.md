@@ -1,6 +1,4 @@
-# KDB Session Log
-
-> Generated from `kdb/session.log`. Do not edit directly.
+<!-- GENERATED VIEW — do not edit. Rebuilt from session.log by bin/kdb_rebuild.mjs -->
 
 ---
 ### [2026-07-08 23:20 UTC]
@@ -184,3 +182,11 @@
 
 **AI Response Summary:**
 > Added g2pHeaders.ts as the single source for outbound caller identity and wired X-G2P-Client-Id into chatComplete, chatStream and the OpenAI-compatible embeddings client via a new KDB_G2P_CLIENT_ID config (default Atlas). Verified end-to-end against the live G2P instance (client_id recorded in its stats JSONL), added 4 header tests (499 passing), and documented the knob.
+---
+### [2026-07-25 23:45 UTC]
+
+**User Prompt Summary:**
+> An agent reported that Atlas's index stops at 2026-07-15 and so could not explain a 07-21 spike. Fix it properly — no guessing, no patching — then think deeply about every improvement Atlas needs, since agents act on what it returns.
+
+**AI Response Summary:**
+> Proved the index was current (34,825 entries newer than 07-15) and traced the claim to one atlas_ask whose 14 retrieved blocks maxed out at 07-15; found underneath it that transient embed failures orphan entries permanently — 39 found, including two whole documents. Healed and verified them, then wrote 2 ADRs plus a 4-phase plan and self-reviewed it, fixing 4 design defects including a vectorized_at scheme that would have broken the model-switch backfill.
