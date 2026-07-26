@@ -6,6 +6,7 @@
 | Date (UTC) | Change |
 |---|---|
 | 2026-07-25 23:20 | Initial plan. Phase 0 (heal) already executed and verified. |
+| 2026-07-26 01:35 | Phase 2 complete and verified: the exact incident question now answers correctly — "based on the retrieved sources… 11,227 entries in the surrounding period, 0 timestamped 2026-07-21" — and goes on to name a real mechanism instead of stopping. |
 | 2026-07-26 01:10 | Phase 1 complete and verified live: coverage column, delta-only audit, unified reconciler, periodic reconcile job, `unsearchableEntries` in status. A4 withdrawn — already fixed on 2026-07-09. |
 | 2026-07-25 23:35 | Self-review pass. Four defects found and fixed: `vectorized_at` → `vectorized_in` (a timestamp column breaks the model-switch backfill); migration audits instead of blanket-marking; coverage reported per project; window counts padded. Backfill and reconciler unified. |
 
@@ -173,7 +174,7 @@ that caused the incident being fixed, reading a sample as the present.
 - Reconciliation runs as a queued BullMQ job, not inline in the cron tick — the
   tick holds a 55s scheduler lock while a reconcile can take minutes.
 
-## Phase 2 — Stop the lying
+## Phase 2 — Stop the lying (DONE, verified in production)
 
 **Coverage block**
 - Catalog helper: newest/oldest `occurred_at` + entry count, **per project** —
@@ -229,6 +230,24 @@ claim. They pin the deterministic layer — the coverage block is present, corre
 and uncitable; `degraded` propagates. The prompt rule is defence in depth; the
 coverage block is the fix. The old design relied entirely on instructing the
 model, which is the layer that failed.
+
+**Verified live** (2026-07-26) — the same question that produced the incident:
+
+> Before: *"The indexed history for July 2026 concludes on **2026-07-15**."*
+>
+> After: *"Based on **the retrieved sources**, there is no record… the INDEX
+> COVERAGE indicates that while **11,227 entries were indexed in the surrounding
+> period**, exactly **0 entries** carry a timestamp for July 21, 2026."*
+
+It then produced an actual hypothesis — the stuck-job monitor failing jobs, the
+failed-job drain reviving them 24h later, back into the starved
+`videoinsight_low` lane — which is exactly the shape that yields a spike on an
+arbitrary day. The structured report carried `mode: hybrid`, `degraded: false`
+and `newest: 2026-07-26`, flatly contradicting the old coverage claim.
+
+**Note for Phase 4:** the coverage block surfaced the ghost slug
+`volumes-cloudbox-coding-deepcast` alongside `deepcast`, which is finding D1
+made visible — useful confirmation that those 6,912 entries are real history.
 
 ## Phase 3 — Retrieval quality
 

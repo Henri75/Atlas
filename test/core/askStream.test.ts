@@ -101,7 +101,11 @@ describe('AskService.askStream', () => {
     const svc = makeService([]);
     const events = await collect(svc.askStream('nothing'));
 
-    expect(events[0]).toEqual({ type: 'sources', sources: [] });
+    expect(events[0]).toMatchObject({ type: 'sources', sources: [] });
+    // Even a total miss reports how retrieval ran: "found nothing on hybrid" and
+    // "found nothing because the embedder was down" are different answers, and a
+    // consuming agent must be able to tell them apart.
+    expect((events[0] as any).retrieval).toMatchObject({ mode: 'hybrid', degraded: false });
     expect((events[1] as any).text).toMatch(/No indexed content matched/);
     expect(events.at(-1)).toMatchObject({ type: 'done', degraded: false });
     // Retrieval found nothing, so the LLM must not be called at all.

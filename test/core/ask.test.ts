@@ -66,3 +66,57 @@ describe('buildAskPrompt staleness labels', () => {
     expect(prompt.split('\n\n---\n\n')[2]).not.toContain('[A');
   });
 });
+
+/**
+ * The 2026-07-15 regression. Ask told an agent "the indexed history for July
+ * 2026 concludes on 2026-07-15" because its 14 retrieved blocks stopped there —
+ * while 34,825 newer entries sat in the catalog. The agent believed it and
+ * abandoned a correct line of investigation.
+ *
+ * The fix is not to instruct the model harder; it is to put the measurement in
+ * front of it so it never has to infer coverage from its sample.
+ */
+describe('buildAskPrompt coverage block', () => {
+  const coverage = [
+    { projectSlug: 'deepcast', entries: 151368, oldest: '2025-11-17T19:33:13Z', newest: '2026-07-25T22:49:16Z' },
+  ];
+
+  it('states measured coverage per project, not for the index as a whole', () => {
+    const prompt = buildAskPrompt('what happened on 2026-07-21?', hits, new Map(), { coverage });
+    expect(prompt).toContain('deepcast');
+    expect(prompt).toContain('2026-07-25'); // newest, contradicting the retrieved sample
+    expect(prompt).toContain('151,368');
+  });
+
+  it('reports the asked window AND its neighbourhood', () => {
+    const prompt = buildAskPrompt('what happened on 2026-07-21?', hits, new Map(), {
+      coverage,
+      window: {
+        since: '2026-07-21T00:00:00.000Z',
+        until: '2026-07-21T23:59:59.999Z',
+        exact: 0,
+        paddedSince: '2026-07-18T00:00:00.000Z',
+        paddedUntil: '2026-07-24T23:59:59.999Z',
+        padded: 412,
+      },
+    });
+    // Both numbers must be present: "0 on the day" alone reads as "nothing
+    // happened", which is the dead end being fixed.
+    expect(prompt).toMatch(/2026-07-21/);
+    expect(prompt).toMatch(/\b0\b/);
+    expect(prompt).toContain('412');
+  });
+
+  it('marks the coverage block as uncitable so it cannot masquerade as a source', () => {
+    const prompt = buildAskPrompt('q', hits, new Map(), { coverage });
+    const before = prompt.slice(0, prompt.indexOf('Context blocks:'));
+    // Numbered citations are reserved for real sources.
+    expect(before).not.toMatch(/^\[\d+\]/m);
+  });
+
+  it('omits the block entirely when nothing was measured', () => {
+    const prompt = buildAskPrompt('q', hits, new Map());
+    expect(prompt).not.toContain('INDEX COVERAGE');
+    expect(prompt.startsWith('Context blocks:')).toBe(true);
+  });
+});

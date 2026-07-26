@@ -861,3 +861,33 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-26] - Phase 2: Ask states coverage only from measurement
+
+**Objective:**
+- Make it impossible for Ask to assert what the index contains based on its retrieved sample.
+
+**Summary of Work:**
+- questionDates.ts: conservative extraction of explicit dates/ranges from a question (ISO, "21 July 2026", "July 21, 2026", bare "July 2026"), rejecting version strings, entry ids and clock times. Used ONLY to add a measured count, never to filter retrieval — so a miss degrades to old behaviour rather than hiding results.
+- Catalog.coverage(projects) and countInWindow(): per-project entry counts and occurred_at span.
+- buildCoverageBlock(): an INDEX COVERAGE preamble, explicitly labelled uncitable so it cannot masquerade as evidence about the subject.
+- SYSTEM_PROMPT rule 2 rescoped to "the retrieved sources don't say X"; new rule 2b forbids any claim about what the index as a whole holds except by quoting the coverage block, and names the distinction between "retrieval didn't surface it" and "it isn't indexed".
+- AskService.retrieve() now carries mode/degraded out instead of discarding them; ask()/askStream() return a structured RetrievalReport { mode, degraded, coverage, window }.
+
+**Key Decisions & Rationale:**
+- Coverage per project, not index-wide: unscoped ask is the recommended default, and "the index is current to 07-25" says nothing about whether DeepCast is covered.
+- Window counts always paired with a padded +/-3d neighbourhood: an incident on the 21st is usually written up on the 22nd, so a bare "0 entries on the 21st" is true and still a dead end.
+- The coverage block is deliberately NOT a numbered [n] block: a model that could cite it would start attributing claims about the world to a row count.
+- The measurement failure path now LOGS instead of swallowing — see below.
+
+**Code/Files Modified:**
+- packages/core/src/questionDates.ts (new), ask.ts, catalog.ts, types.ts
+- test/core/{questionDates,askRetrievalReport}.test.ts (new), ask.test.ts, askStream.test.ts
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Verified against the live stack with the EXACT question from the incident. Before: "The indexed history for July 2026 concludes on 2026-07-15." After: "Based on the retrieved sources... while 11,227 entries were indexed in the surrounding period, exactly 0 entries carry a timestamp for July 21, 2026" — and it then produced a real hypothesis (the fail -> drain-revives -> re-queue-into-starved-lane ping-pong) instead of stopping.
+- **What Failed:** A python edit to add the questionDates import silently did not match (the import block had been reformatted multi-line), so extractDateWindow was undefined at runtime. The try/catch around measurement swallowed the ReferenceError and coverage vanished from every answer while everything still looked healthy. Caught only because a test asserted the happy path.
+- **Lesson:** That near-miss is the same shape as the bug being fixed — a silent failure presenting as health. The catch now warns rather than swallowing. A best-effort path still has to be an observable one.
+
+**Status:**
+- Completed

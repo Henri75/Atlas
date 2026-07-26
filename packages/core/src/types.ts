@@ -184,6 +184,61 @@ export function selectedProjects(filters: SearchFilters): string[] {
   return filters.project ? [filters.project] : [];
 }
 
+/**
+ * What the index actually holds for one project — measured, never inferred.
+ *
+ * Exists because a model can only observe the k blocks it was handed, yet the
+ * old prompt invited it to describe what the *index* lacks. On 2026-07-25 it
+ * answered "the indexed history for July 2026 concludes on 2026-07-15" purely
+ * because its 14 retrieved blocks stopped there, while 34,825 newer entries sat
+ * in the catalog. Coverage is reported per project because the recommended
+ * default is an unscoped ask, and an index-wide "current to 2026-07-25" says
+ * nothing about whether *this* project is covered.
+ */
+export interface ProjectCoverage {
+  projectSlug: string;
+  entries: number;
+  /** Oldest/newest entry timestamps; absent if the project has no dated entries. */
+  oldest?: string;
+  newest?: string;
+}
+
+/**
+ * Entry counts for a date range the question named.
+ *
+ * `padded` matters as much as `exact`: people record events after they happen,
+ * so an incident on the 21st is usually written up on the 22nd. A bare
+ * "0 entries on 2026-07-21" is true and still sends the reader to a dead end.
+ */
+export interface WindowCoverage {
+  since: string;
+  until: string;
+  exact: number;
+  paddedSince: string;
+  paddedUntil: string;
+  padded: number;
+}
+
+/**
+ * The conditions an answer was produced under, as data rather than prose.
+ *
+ * A consuming agent must be able to check whether retrieval was degraded or the
+ * window was empty without parsing hedges out of English.
+ */
+export interface RetrievalReport {
+  /** 'hybrid' | 'sparse-only' | 'fts' — how retrieval actually ran. */
+  mode: string;
+  /**
+   * True when retrieval ran without dense vectors (embedder or Qdrant down).
+   * Previously discarded, so Ask could answer from materially worse retrieval
+   * and still report itself healthy.
+   */
+  degraded: boolean;
+  coverage: ProjectCoverage[];
+  /** Present only when the question named a date or range. */
+  window?: WindowCoverage;
+}
+
 export interface AskResult {
   answer: string;
   sources: AskSource[];
@@ -191,6 +246,8 @@ export interface AskResult {
   degraded: boolean;
   /** Present only when the project scope was widened to find any answer. */
   scopeFallback?: ScopeFallback;
+  /** What was measured and how retrieval ran; absent only on a total miss. */
+  retrieval?: RetrievalReport;
 }
 
 export interface TimelineItem {

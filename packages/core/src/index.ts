@@ -17,5 +17,6 @@ export * from './qdrant.js';
 export * from './embeddings/index.js';
 export * from './search.js';
 export * from './llm.js';
+export * from './questionDates.js';
 export * from './ask.js';
 export * from './adoption.js';

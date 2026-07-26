@@ -2,7 +2,18 @@ import type { AppConfig } from './config.js';
 import { chatComplete, chatStream, type ChatMessage, type StreamMeta } from './llm.js';
 import type { SearchService } from './search.js';
 import type { Catalog } from './catalog.js';
-import { selectedProjects, type AskResult, type AskSource, type ScopeFallback, type SearchFilters, type SearchHit } from './types.js';
+import { extractDateWindow, paddedWindow } from './questionDates.js';
+import {
+  selectedProjects,
+  type AskResult,
+  type AskSource,
+  type ProjectCoverage,
+  type RetrievalReport,
+  type ScopeFallback,
+  type SearchFilters,
+  type SearchHit,
+  type WindowCoverage,
+} from './types.js';
 
 /**
  * Ask mode: retrieve → synthesize with citations. The LLM sees numbered
@@ -20,7 +31,8 @@ const SYSTEM_PROMPT = `You are Atlas, an assistant that answers questions about 
 
 Rules, in priority order:
 1. Ground every claim in the context blocks and cite the supporting block inline as [n] immediately after the claim. Never invent facts, file names, dates, version numbers or events that are not in a block, and never cite a block for something it does not say.
-2. If the blocks do not answer the question, say so plainly and name exactly what is missing. A short honest "the indexed history doesn't cover X" beats a padded guess.
+2. If the blocks do not answer the question, say so plainly and name exactly what is missing — but scope that statement to THE BLOCKS: "the retrieved sources don't say X". A short honest answer beats a padded guess.
+2b. NEVER state or imply what the index as a whole does or does not contain — no claim about coverage, date ranges, or "history ending" — except by repeating a figure from the INDEX COVERAGE block. You see only a handful of retrieved blocks out of hundreds of thousands of entries, so the newest date among them tells you NOTHING about the newest date indexed. "Retrieval didn't surface it" and "it isn't indexed" are different claims; you can only ever support the first.
 3. Lead with the direct answer. If the question is "what is X", the first sentence must define X and what it does — background, history and caveats come after.
 4. Be concrete: name components, dates, files and root causes rather than paraphrasing around them.
 5. Prefer blocks that describe the subject (docs, kdb component logs, changelogs) over session transcripts that merely mention it in passing.
@@ -109,11 +121,59 @@ export function rerankForContext(pool: SearchHit[], k: number): SearchHit[] {
 const NO_MATCH =
   'No indexed content matched this question. Try a broader query or trigger a reindex.';
 
-export function buildAskPrompt(question: string, hits: SearchHit[], bodies: Map<number, string>): string {
+/** The measured facts injected ahead of the retrieved blocks. */
+export interface CoverageContext {
+  coverage: ProjectCoverage[];
+  window?: WindowCoverage;
+}
+
+const day = (iso?: string) => iso?.slice(0, 10) ?? '?';
+
+/**
+ * Render what the index actually holds, as a labelled, uncitable preamble.
+ *
+ * Deliberately *not* a numbered `[n]` block: those are evidence about the
+ * subject, and a model that can cite this would start attributing claims about
+ * the world to a row count. It answers exactly one question — "what does Atlas
+ * have?" — which the model previously answered by guessing from its sample.
+ */
+export function buildCoverageBlock(ctx: CoverageContext): string {
+  const lines = ctx.coverage.map(
+    (c) =>
+      `- ${c.projectSlug}: ${c.entries.toLocaleString('en-US')} entries indexed, ` +
+      `spanning ${day(c.oldest)} to ${day(c.newest)}`,
+  );
+
+  let windowLine = '';
+  if (ctx.window) {
+    const w = ctx.window;
+    // Both counts, always. "0 on the day" alone reads as "nothing happened",
+    // when the write-up of a 21st incident is usually dated the 22nd or later.
+    windowLine =
+      `\nEntries timestamped in the range you asked about (${day(w.since)} to ${day(w.until)}): ${w.exact}.\n` +
+      `Entries timestamped in the surrounding period (${day(w.paddedSince)} to ${day(w.paddedUntil)}): ${w.padded}.\n` +
+      'A count of 0 means nothing carries a timestamp in that range — it does NOT mean the ' +
+      'event did not happen, because activity is usually recorded after the fact.';
+  }
+
+  return (
+    'INDEX COVERAGE (measured just now, not retrieved — do NOT cite this as a source):\n' +
+    `${lines.join('\n')}${windowLine}\n`
+  );
+}
+
+export function buildAskPrompt(
+  question: string,
+  hits: SearchHit[],
+  bodies: Map<number, string>,
+  ctx?: CoverageContext,
+): string {
+  const coverageBlock = ctx?.coverage.length ? `${buildCoverageBlock(ctx)}\n` : '';
   // A follow-up may retrieve nothing; say so plainly rather than handing the
-  // model an empty "Context blocks:" header it might try to fill in.
+  // model an empty "Context blocks:" header it might try to fill in. Coverage
+  // still goes in: "nothing matched" plus a measured span is a real answer.
   if (!hits.length) {
-    return `No new context was retrieved for this question; rely on the conversation above.\n\nQuestion: ${question}`;
+    return `${coverageBlock}No new context was retrieved for this question; rely on the conversation above.\n\nQuestion: ${question}`;
   }
   const blocks = hits
     .map((h, i) => {
@@ -129,7 +189,7 @@ export function buildAskPrompt(question: string, hits: SearchHit[], bodies: Map<
       return `[${i + 1}] ${h.projectSlug} / ${h.sourceType}${h.component ? ` / ${h.component}` : ''}${date}${stale}\n${h.title}\n${body}`;
     })
     .join('\n\n---\n\n');
-  return `Context blocks:\n\n${blocks}\n\nQuestion: ${question}`;
+  return `${coverageBlock}Context blocks:\n\n${blocks}\n\nQuestion: ${question}`;
 }
 
 /**
@@ -159,7 +219,12 @@ export interface AskMetrics {
 
 /** Events emitted by the streaming Ask pipeline, in order. */
 export type AskEvent =
-  | { type: 'sources'; sources: AskSource[]; scopeFallback?: ScopeFallback }
+  | {
+      type: 'sources';
+      sources: AskSource[];
+      scopeFallback?: ScopeFallback;
+      retrieval?: RetrievalReport;
+    }
   | { type: 'delta'; text: string }
   | { type: 'done'; model: string; degraded: boolean; metrics?: AskMetrics }
   | { type: 'error'; message: string };
@@ -213,7 +278,17 @@ interface Prepared {
   sources: AskSource[];
   messages: ChatMessage[] | null;
   scopeFallback?: ScopeFallback;
+  retrieval?: RetrievalReport;
 }
+
+/**
+ * Days either side of an asked-about date to also count.
+ *
+ * Three covers "it happened Friday, someone wrote it up Monday", which is the
+ * common shape, without widening so far that the neighbourhood count stops
+ * meaning anything.
+ */
+const WINDOW_PAD_DAYS = 3;
 
 export class AskService {
   constructor(
@@ -244,21 +319,30 @@ export class AskService {
     question: string,
     filters: SearchFilters,
     k: number,
-  ): Promise<{ hits: SearchHit[]; scopeFallback?: ScopeFallback }> {
+  ): Promise<{ hits: SearchHit[]; scopeFallback?: ScopeFallback; mode: string; degraded: boolean }> {
     // Over-fetch so rerankForContext has authoritative hits to promote into the
     // window; the raw top-k is often all sessions.
     const pool = Math.min(Math.max(k * 3, 24), 60);
-    const { hits } = await this.searchService.search(question, filters, pool);
+    // `mode`/`degraded` are carried out of here rather than dropped: search
+    // silently falls back (hybrid → sparse-only when the embedder is down → FTS
+    // when Qdrant is down), and an answer built on degraded retrieval that
+    // reports itself healthy is exactly the kind of unearned confidence this
+    // service must not project.
+    const { hits, mode, degraded } = await this.searchService.search(question, filters, pool);
     // Any hit at all means the scope worked. With several projects selected, the
     // ones that returned nothing simply had nothing to say — that is a *partial
     // match*, not an empty scope, and widening it would be wrong. Only a total
     // miss across every selected project is a scope problem.
-    if (hits.length) return { hits: rerankForContext(hits, k) };
+    if (hits.length) return { hits: rerankForContext(hits, k), mode, degraded };
 
     const requested = selectedProjects(filters);
-    if (!requested.length) return { hits };
+    if (!requested.length) return { hits, mode, degraded };
 
-    const { hits: wide } = await this.searchService.search(
+    const {
+      hits: wide,
+      mode: wideMode,
+      degraded: wideDegraded,
+    } = await this.searchService.search(
       question,
       // BOTH must be cleared. Dropping only `project` would leave `projects`
       // in place and the "widened" search would still be scoped — a silent no-op.
@@ -267,11 +351,69 @@ export class AskService {
     );
     // Only report a fallback if widening actually surfaced something; an
     // all-projects miss is a genuine dead end, not a scope problem.
-    if (!wide.length) return { hits };
+    if (!wide.length) return { hits, mode, degraded };
     return {
       hits: rerankForContext(wide, k),
       scopeFallback: { requested, usedAllProjects: true },
+      mode: wideMode,
+      degraded: wideDegraded,
     };
+  }
+
+  /**
+   * Measure what the index holds for the scope actually searched.
+   *
+   * Per project, never index-wide: an unscoped ask is the recommended default,
+   * and "the index is current to 2026-07-25" says nothing about whether the
+   * project in question is covered. Best-effort — a failed count must not cost
+   * the user their answer, it only costs the preamble.
+   */
+  private async measure(
+    question: string,
+    filters: SearchFilters,
+    hits: SearchHit[],
+    scopeFallback?: ScopeFallback,
+  ): Promise<CoverageContext | undefined> {
+    const requested = selectedProjects(filters);
+    // After a widening the requested scope is not what was searched, so describe
+    // where the answer actually came from.
+    const projects =
+      !scopeFallback && requested.length
+        ? requested
+        : [...new Set(hits.map((h) => h.projectSlug))];
+    if (!projects.length) return undefined;
+
+    try {
+      const coverage = await this.catalog.coverage(projects);
+      if (!coverage.length) return undefined;
+
+      const asked = extractDateWindow(question);
+      if (!asked) return { coverage };
+
+      const around = paddedWindow(asked, WINDOW_PAD_DAYS);
+      const [exact, padded] = await Promise.all([
+        this.catalog.countInWindow(projects, asked.since, asked.until),
+        this.catalog.countInWindow(projects, around.since, around.until),
+      ]);
+      return {
+        coverage,
+        window: {
+          since: asked.since,
+          until: asked.until,
+          exact,
+          paddedSince: around.since,
+          paddedUntil: around.until,
+          padded,
+        },
+      };
+    } catch (e) {
+      // Best-effort, but never silent. Swallowing this hid a missing import
+      // during development: coverage simply vanished from every answer while
+      // everything still looked healthy — the same shape of failure this whole
+      // service is being hardened against.
+      console.warn(`[ask] coverage measurement failed: ${(e as Error).message}`);
+      return undefined;
+    }
   }
 
   /** Shared retrieval: both ask() and askStream() build their prompt here. */
@@ -281,7 +423,14 @@ export class AskService {
     k: number,
     history: AskTurn[] = [],
   ): Promise<Prepared> {
-    const { hits, scopeFallback } = await this.retrieve(question, filters, k);
+    const { hits, scopeFallback, mode, degraded } = await this.retrieve(question, filters, k);
+    const measured = await this.measure(question, filters, hits, scopeFallback);
+    const retrieval: RetrievalReport = {
+      mode,
+      degraded,
+      coverage: measured?.coverage ?? [],
+      ...(measured?.window ? { window: measured.window } : {}),
+    };
     const sources: AskSource[] = hits.map((h, i) => ({
       n: i + 1,
       entryId: h.entryId,
@@ -295,7 +444,7 @@ export class AskService {
     // A follow-up like "why?" carries no search signal and retrieves nothing —
     // but the conversation above it holds the answer. Only a *first* question
     // with no hits is a genuine dead end.
-    if (!hits.length && !history.length) return { sources: [], messages: null };
+    if (!hits.length && !history.length) return { sources: [], messages: null, retrieval };
 
     const rows = await this.catalog.getEntries(hits.map((h) => h.entryId));
     const bodies = new Map<number, string>(
@@ -318,10 +467,11 @@ export class AskService {
     return {
       sources,
       scopeFallback,
+      retrieval,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         ...recent.map((t) => ({ role: t.role, content: t.content }) as ChatMessage),
-        { role: 'user', content: buildAskPrompt(question, hits, bodies) + scopeNote },
+        { role: 'user', content: buildAskPrompt(question, hits, bodies, measured) + scopeNote },
       ],
     };
   }
@@ -332,15 +482,26 @@ export class AskService {
     k = 12,
     history: AskTurn[] = [],
   ): Promise<AskResult> {
-    const { sources, messages, scopeFallback } = await this.prepare(question, filters, k, history);
+    const { sources, messages, scopeFallback, retrieval } = await this.prepare(
+      question,
+      filters,
+      k,
+      history,
+    );
     if (!messages) {
-      return { answer: NO_MATCH, sources: [], model: this.llmConfig.model, degraded: false };
+      return {
+        answer: NO_MATCH,
+        sources: [],
+        model: this.llmConfig.model,
+        degraded: false,
+        ...(retrieval ? { retrieval } : {}),
+      };
     }
     try {
       const answer = await chatComplete(this.llmConfig, messages, {
         clientId: this.g2pClientId,
       });
-      return { answer, sources, model: this.llmConfig.model, degraded: false, scopeFallback };
+      return { answer, sources, model: this.llmConfig.model, degraded: false, scopeFallback, retrieval };
     } catch (e) {
       // LLM down: still useful — return the retrieved sources with an explanation.
       return {
@@ -351,6 +512,7 @@ export class AskService {
         model: this.llmConfig.model,
         degraded: true,
         scopeFallback,
+        retrieval,
       };
     }
   }
@@ -377,6 +539,7 @@ export class AskService {
       type: 'sources',
       sources: prepared.sources,
       ...(prepared.scopeFallback ? { scopeFallback: prepared.scopeFallback } : {}),
+      ...(prepared.retrieval ? { retrieval: prepared.retrieval } : {}),
     };
 
     if (!prepared.messages) {

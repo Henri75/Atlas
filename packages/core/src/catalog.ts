@@ -4,6 +4,7 @@ import {
   type Entry,
   type IndexStats,
   type Project,
+  type ProjectCoverage,
   type SearchFilters,
   type SearchHit,
   type SessionMeta,
@@ -422,6 +423,43 @@ export class Catalog {
    * indexEntries. Marking earlier would recreate the failure this column
    * exists to prevent.
    */
+  /**
+   * What the index holds for each named project: entry count and the span of
+   * `occurred_at`. Empty list means every project.
+   *
+   * This is the measurement that replaces the model guessing at coverage from
+   * its retrieved sample. Cheap: one grouped aggregate over an indexed column.
+   */
+  async coverage(projects: string[] = []): Promise<ProjectCoverage[]> {
+    const scoped = projects.length > 0;
+    const r = await this.pool.query(
+      `SELECT p.slug, count(*)::int AS n, min(e.occurred_at) AS oldest, max(e.occurred_at) AS newest
+         FROM entries e JOIN projects p ON p.id = e.project_id
+        ${scoped ? 'WHERE p.slug = ANY($1)' : ''}
+        GROUP BY p.slug ORDER BY n DESC`,
+      scoped ? [projects] : [],
+    );
+    return r.rows.map((row) => ({
+      projectSlug: row.slug,
+      entries: row.n,
+      oldest: row.oldest?.toISOString(),
+      newest: row.newest?.toISOString(),
+    }));
+  }
+
+  /** How many entries are timestamped inside a window, for the named projects. */
+  async countInWindow(projects: string[], since: string, until: string): Promise<number> {
+    const scoped = projects.length > 0;
+    const r = await this.pool.query(
+      `SELECT count(*)::int AS n
+         FROM entries e JOIN projects p ON p.id = e.project_id
+        WHERE e.occurred_at >= $1 AND e.occurred_at <= $2
+        ${scoped ? 'AND p.slug = ANY($3)' : ''}`,
+      scoped ? [since, until, projects] : [since, until],
+    );
+    return r.rows[0].n;
+  }
+
   async markVectorized(ids: number[], collection: string): Promise<void> {
     if (!ids.length) return;
     await this.pool.query('UPDATE entries SET vectorized_in = $2 WHERE id = ANY($1)', [
