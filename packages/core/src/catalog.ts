@@ -781,7 +781,7 @@ export class Catalog {
   }
 
   async stats(): Promise<IndexStats> {
-    const [proj, ent, err, recentErr, run, bySource] = await Promise.all([
+    const [proj, ent, err, recentErr, run, bySource, unsearchable] = await Promise.all([
       this.pool.query('SELECT count(*)::int AS c FROM projects'),
       this.pool.query('SELECT count(*)::int AS c FROM entries'),
       this.pool.query('SELECT count(*)::int AS c FROM index_errors'),
@@ -791,6 +791,14 @@ export class Catalog {
       ),
       this.pool.query('SELECT max(finished_at) AS t FROM index_runs'),
       this.pool.query('SELECT source_type, count(*)::int AS c FROM entries GROUP BY source_type'),
+      // Guarded on the setting existing: with no active collection published
+      // yet, every row would compare unequal and this would report the whole
+      // catalog as unsearchable on a fresh install.
+      this.pool.query(
+        `SELECT count(*)::int AS c
+           FROM entries e, (SELECT value FROM settings WHERE key = 'active_collection') s
+          WHERE e.vectorized_in IS DISTINCT FROM s.value`,
+      ),
     ]);
     return {
       projects: proj.rows[0].c,
@@ -798,6 +806,8 @@ export class Catalog {
       chunks: 0, // filled in by the API layer from Qdrant
       errors: err.rows[0].c,
       recentErrors: recentErr.rows[0].c,
+      // The cross join yields no row when active_collection is unset.
+      unsearchableEntries: unsearchable.rows[0]?.c ?? 0,
       lastRunAt: run.rows[0].t?.toISOString(),
       bySource: Object.fromEntries(bySource.rows.map((r2) => [r2.source_type, r2.c])),
     };

@@ -280,6 +280,16 @@ program
         `${bold('errors')}    ${r.recentErrors > 0 ? red(`${num(r.recentErrors)} in the last hour`) : green('none in the last hour')}` +
           dim(` (${num(r.errors)} lifetime)`),
       );
+      // Called out separately from `errors` because it is a different failure:
+      // nothing errored *now*, yet this much of the catalog cannot be found by
+      // search. It stays quiet at zero rather than adding a permanently-green
+      // line nobody reads.
+      if (r.unsearchableEntries > 0) {
+        console.log(
+          `${bold('coverage')}  ${red(`${num(r.unsearchableEntries)} entries not searchable`)}` +
+            dim(' (awaiting re-embed)'),
+        );
+      }
       console.log(`${bold('embedder')}  ${r.embedder} → ${dim(r.collection)}`);
       console.log(`${bold('last run')}  ${date(r.lastRunAt) || dim('never')}`);
       if (Array.isArray(r.activity) && r.activity.length) {

@@ -25,6 +25,17 @@ import { SCAN_QUEUE, scheduleScans, withSchedulerLock } from './scheduler.js';
  * Indexer entrypoint: migrate catalog, resolve the embedding provider,
  * ensure the Qdrant collection, then run scheduler + BullMQ workers.
  */
+/**
+ * How much routine reconciliation may embed per tick. Sized so a repair pass
+ * cannot monopolise a single-threaded local embedder: at ~1.9s per entry this
+ * is a couple of minutes, and whatever is left is picked up next tick.
+ */
+const RECONCILE_MAX_ENTRIES = 100;
+
+/** How often the deep (scroll-based) coverage audit runs. */
+const AUDIT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const COVERAGE_AUDIT_KEY = 'coverage_audit_at';
+
 async function main() {
   const cfg = getConfig();
   const catalog = new Catalog(cfg.databaseUrl);
@@ -200,6 +211,46 @@ async function main() {
     async (job) => {
       // Manual trigger from the API: expand into per-project scan jobs.
       const data = job.data as ScanJobData & { trigger?: string; project?: string };
+      /**
+       * Continuous repair. Runs as a queued job rather than inline in the cron
+       * tick because it embeds: the tick holds a 55s scheduler lock, while a
+       * reconcile can take minutes. As a job it gets BullMQ's lock renewal and
+       * competes for the worker slot like any other embedding work.
+       */
+      if (data.trigger === 'reconcile') {
+        // The deep audit is the only thing that can see vectors lost on the
+        // Qdrant side, where the column still claims coverage is complete — so
+        // it must run on its own schedule, not merely when something looks off.
+        const lastAudit = Number(await catalog.getSetting(COVERAGE_AUDIT_KEY).catch(() => null)) || 0;
+        if (Date.now() - lastAudit > AUDIT_INTERVAL_MS) {
+          const { adopted, cleared } = await auditVectorCoverage(deps);
+          await catalog.setSetting(COVERAGE_AUDIT_KEY, String(Date.now())).catch(() => {});
+          if (adopted || cleared) {
+            console.warn(
+              `[indexer] coverage audit corrected the catalog: adopted ${adopted}, cleared ${cleared}`,
+            );
+          }
+        }
+
+        const uncovered = await catalog.countUncovered(vectors.collection);
+        if (!uncovered) return { reconciled: 0 };
+        // Loud: entries in this state are invisible to search, which is exactly
+        // the failure that went unnoticed on 2026-07-25. A status field nobody
+        // reads is not detection.
+        console.warn(
+          `[indexer] ${uncovered} entries are not searchable in ${vectors.collection} — reconciling`,
+        );
+        const reconciled = await backfillVectors(deps, {
+          maxEntries: RECONCILE_MAX_ENTRIES,
+          onPage: async (done) => {
+            await job.updateProgress({ file: 'reconcile', chunks: done }).catch(() => {});
+          },
+        });
+        console.log(
+          `[indexer] reconciled ${reconciled} entries (${Math.max(0, uncovered - reconciled)} left)`,
+        );
+        return { reconciled };
+      }
       if (data.trigger === 'manual') {
         const runId = await catalog.startRun('manual');
         const enqueued = await scheduleScans(cfg, catalog, queue, {
@@ -240,6 +291,17 @@ async function main() {
     await withSchedulerLock(connection, async () => {
       const runId = await catalog.startRun(kind);
       const enqueued = await scheduleScans(cfg, catalog, queue);
+      // Always enqueued: the job itself decides whether there is anything to do.
+      // Deciding here would mean the cheap `countUncovered` check gates the deep
+      // audit too, and the audit exists precisely for the case where the column
+      // wrongly reports full coverage.
+      await queue.add(
+        'reconcile',
+        { trigger: 'reconcile' } as unknown as ScanJobData,
+        // A fixed id collapses duplicates while one is still pending, so a slow
+        // reconcile cannot accumulate a queue of copies of itself.
+        { jobId: 'reconcile', removeOnComplete: true, removeOnFail: 50, attempts: 1 },
+      );
       await catalog.finishRun(runId, { enqueued });
       console.log(`[indexer] ${kind} tick: ${enqueued} scan jobs enqueued`);
     });

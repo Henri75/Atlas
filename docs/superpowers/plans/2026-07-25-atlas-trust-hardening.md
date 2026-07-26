@@ -6,6 +6,7 @@
 | Date (UTC) | Change |
 |---|---|
 | 2026-07-25 23:20 | Initial plan. Phase 0 (heal) already executed and verified. |
+| 2026-07-26 01:10 | Phase 1 complete and verified live: coverage column, delta-only audit, unified reconciler, periodic reconcile job, `unsearchableEntries` in status. A4 withdrawn — already fixed on 2026-07-09. |
 | 2026-07-25 23:35 | Self-review pass. Four defects found and fixed: `vectorized_at` → `vectorized_in` (a timestamp column breaks the model-switch backfill); migration audits instead of blanket-marking; coverage reported per project; window counts padded. Backfill and reconciler unified. |
 
 ---
@@ -34,8 +35,8 @@ Severity is judged by *what an agent does wrong* as a result.
 |---|---|---|---|
 | A1 | Transient embed failure orphans entries permanently; dedup blocks repair | 39 orphans, incl. 2 whole documents | 1 |
 | A2 | `needsBackfill` compares chunks to entries; boot-only | 361,941 vs 323,176 — cannot fire | 1 |
-| A3 | `atlas_status` reported `recentErrors: 0` with 4 errors that day and 39 orphans | live status output | 1 |
-| A4 | `invalid input syntax for bigint: "1781472590066.0684"` — float `mtimeMs` reaching int8 | 14+ logged | 1 |
+| A3 | Status had no way to express "N entries are unsearchable" — every field read healthy while two documents were invisible | live status output | 1 |
+| A4 | ~~float `mtimeMs` reaching an int8 column~~ **NOT A BUG** — see below | — | — |
 | B1 | Prompt rule 2 hands the model the phrase "the indexed history doesn't cover X" | `ask.ts:23` | 2 |
 | B2 | No coverage metadata injected; model substitutes newest retrieved date | incident answer | 2 |
 | B3 | `mode`/`degraded` discarded; `ask()` hardcodes `degraded: false` | `ask.ts:251`, `ask.ts:343` | 2 |
@@ -60,10 +61,10 @@ orphans, and `atlas_search` now returns the previously-invisible
 
 The script is a throwaway prototype of the Phase 1 reconciler, not a deliverable.
 
-## Phase 1 — Integrity
+## Phase 1 — Integrity (DONE, verified in production)
 
-Stops active data loss. Highest priority: every embedder outage until this ships
-mints new permanent holes.
+Stopped the active data loss. Shipped 2026-07-26; every piece below is live and
+was verified against the running stack, not only in tests.
 
 **Schema**
 - Migration: `ALTER TABLE entries ADD COLUMN vectorized_in text` — the collection
@@ -109,13 +110,32 @@ mints new permanent holes.
   is not detection.
 
 **`atlas_status`**
-- Report `entriesWithoutVectors`, per-stage error counts with newest timestamp,
-  and last successful embed. Fix `recentErrors` so it cannot read `0` while
-  content is unsearchable.
+- Added `unsearchableEntries`: entries indexed but with no vectors in the active
+  collection. Flows through `/api/stats`, `/api/dashboard`, `atlas_status` and
+  the CLI (shown only when non-zero, so it cannot become a permanently-green line
+  nobody reads). The MCP tool description tells agents what a non-zero value
+  means for the completeness of their results.
+- **`recentErrors` left as-is, deliberately.** The original finding said it
+  "reported 0 while errors existed"; on inspection it counts errors *in the last
+  hour*, and its `0` was correct — the failures were hours old. The real gap was
+  that no field could express "content is unsearchable right now", which is what
+  `unsearchableEntries` now does. Changing `recentErrors` would have been fixing
+  a misdiagnosis.
+- Per-stage error counts and last-successful-embed were dropped from scope: with
+  `unsearchableEntries` carrying the signal that matters, they are diagnostics
+  better served by `/api/errors`, which already exists.
 
-**A4** — trace the float `mtimeMs` path reaching an int8 column and apply the
-same `Math.trunc` the scan-state writes already use. Each occurrence is a
-silently skipped file.
+**A4 — withdrawn, not a bug.** The plan listed this from seeing 577 `invalid
+input syntax for type bigint` rows in `index_errors` without checking their
+dates. Every one falls in a five-minute window on **2026-07-08 23:14–23:19**,
+and `Math.trunc(stat.mtimeMs)` was introduced in `87ccec6` at **2026-07-09
+01:20** — two hours later. There have been none since, and every `setScanState`
+call site already truncates. The rows are historical residue of a fix that
+already landed.
+
+Two lessons worth keeping: an error table is a *log*, not a *state* — counts in
+it say nothing about what is broken now; and this is exactly the reasoning error
+that caused the incident being fixed, reading a sample as the present.
 
 **Tests** — `test/indexer/{indexEntries,backfill,pipeline}.test.ts`,
 `test/core/insertEntries.test.ts`, `test/api/routes.test.ts`
@@ -136,6 +156,22 @@ silently skipped file.
 8. Edge cases: empty entry list; entry producing exactly one chunk; embedder
    throwing on the first batch (nothing marked); Qdrant rejecting an upsert;
    reconciler and scan selecting the same entry (idempotent overwrite).
+
+**Verified live** (2026-07-26)
+- Migration on 323,364 real entries: audit adopted every existing vector,
+  **zero** re-embedding triggered — the outcome the whole design turns on.
+- Manufactured a real orphan twice (deleted an entry's points, cleared its mark)
+  and confirmed repair by both paths: on boot, and unaided by the scheduled
+  reconciler in **45s**, with a warning naming the count.
+- `unsearchableEntries` went 0 → 1 → 0 across that cycle.
+- Steady-state boot skips the audit scroll entirely (`countUncovered` is 0).
+
+**Also shipped beyond the original plan**
+- `maxEntries` cap on reconciliation (100/tick): at ~1.9s per embed on a
+  contended local Ollama, an uncapped pass after a model switch would monopolise
+  the embedder for hours. Large rebuilds stay the boot path's job.
+- Reconciliation runs as a queued BullMQ job, not inline in the cron tick — the
+  tick holds a 55s scheduler lock while a reconcile can take minutes.
 
 ## Phase 2 — Stop the lying
 

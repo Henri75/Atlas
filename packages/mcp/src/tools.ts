@@ -226,7 +226,10 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'atlas_status',
-    description: 'Index health: project/entry/chunk counts, per-source breakdown, last run time, recent errors count.',
+    description:
+      'Index health: project/entry/chunk counts, per-source breakdown, last run time, recent errors count, ' +
+      'and unsearchableEntries — entries that are indexed but have no vectors yet, so search cannot return them. ' +
+      'A non-zero unsearchableEntries that is not falling means results may be incomplete for reasons unrelated to your query.',
     schema: {},
     request: () => ({ path: '/api/stats' }),
   },

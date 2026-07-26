@@ -828,3 +828,34 @@
 
 **Status:**
 - In-Progress
+---
+### [2026-07-26] - Phase 1 finish: continuous reconciliation + an honest health signal
+
+**Objective:**
+- Close Phase 1: make repair continuous rather than boot-only, and give status a field that can say "search cannot see this".
+
+**Summary of Work:**
+- Reconciliation now runs every scheduler tick as a QUEUED BullMQ job, not inline in the cron tick: the tick holds a 55s scheduler lock while a reconcile can take minutes, and as a job it gets lock renewal and competes for the worker slot like other embedding work. Fixed jobId collapses duplicates so a slow pass cannot pile up copies of itself.
+- backfillVectors gained maxEntries (100/tick). At ~1.9s per embed on a contended local Ollama an uncapped pass after a model switch would monopolise the embedder for hours; large rebuilds stay the boot path's job where nothing competes.
+- Deep audit on its own 24h schedule via coverage_audit_at, NOT gated on uncovered > 0 — it is the only thing that can see vectors lost on the Qdrant side, where the column still claims coverage is complete.
+- IndexStats.unsearchableEntries: entries with no vectors in the active collection. Flows to /api/stats, /api/dashboard, atlas_status and the CLI. Shown only when non-zero so it never becomes a permanently-green line nobody reads. MCP description tells agents what non-zero means for result completeness.
+
+**Key Decisions & Rationale:**
+- A4 WITHDRAWN. The plan listed a float-mtimeMs-to-bigint bug from seeing 577 such rows in index_errors. All fall in 2026-07-08 23:14-23:19; Math.trunc landed in 87ccec6 at 2026-07-09 01:20, two hours later. Already fixed; the rows are residue.
+- recentErrors left alone. The original finding claimed it read 0 while errors existed — it counts the last HOUR and its 0 was correct. Changing it would have been fixing a misdiagnosis; the real gap was having no field for "unsearchable right now".
+- Dropped per-stage error counts / last-successful-embed from status: /api/errors already serves diagnostics, and unsearchableEntries carries the signal that matters.
+
+**Code/Files Modified:**
+- packages/indexer/src/main.ts (reconcile job, RECONCILE_MAX_ENTRIES, AUDIT_INTERVAL_MS)
+- packages/indexer/src/pipeline.ts (backfillVectors maxEntries)
+- packages/core/src/{catalog.ts,types.ts} (unsearchableEntries)
+- packages/cli/src/main.ts, packages/mcp/src/tools.ts
+- test/indexer/backfill.test.ts
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Verified the scheduled path specifically, not just boot — deleted a live entry's points, cleared its mark, and watched unsearchableEntries go 0 -> 1 -> 0 with the reconciler repairing it unaided in 45s and logging the count.
+- **What Failed:** Nothing broke, but two plan items turned out to be misdiagnoses (A4, recentErrors). Both came from reading counts in an error table as present-tense state.
+- **Lesson:** An error table is a log, not a state. Counting rows in index_errors says nothing about what is broken now — the same reasoning error (sample read as present) that produced the 07-15 incident this whole effort exists to fix.
+
+**Status:**
+- Completed

@@ -467,6 +467,15 @@ export async function backfillVectors(
      * progress separately need no change.
      */
     onPage?: (done: number, total: number, embedded: number) => void | Promise<void>;
+    /**
+     * Stop after this many entries, leaving the rest for the next run.
+     *
+     * Routine reconciliation shares the embedder with live scanning, and a local
+     * Ollama serves one request at a time (~1.9s each, measured), so an uncapped
+     * pass after a model switch would monopolise it for hours. Large rebuilds
+     * stay the boot path's job, where nothing else is competing.
+     */
+    maxEntries?: number;
   } = {},
 ): Promise<number> {
   const pageSize = opts.pageSize ?? 200;
@@ -480,7 +489,16 @@ export async function backfillVectors(
   let embedded = 0;
 
   for (;;) {
-    const rows = await deps.catalog.uncoveredEntriesAfter(collection, cursor, pageSize);
+    // Narrow the last page so a cap that is not a multiple of pageSize does not
+    // overshoot — the cap exists to bound embedder time, so approximating it
+    // upward would defeat it.
+    const room = opts.maxEntries ? opts.maxEntries - embedded : pageSize;
+    if (room <= 0) break;
+    const rows = await deps.catalog.uncoveredEntriesAfter(
+      collection,
+      cursor,
+      Math.min(pageSize, room),
+    );
     if (!rows.length) break;
     // Advance past the page even if it fails, or a permanently bad row would
     // re-select forever. Its entries stay uncovered, so the next run retries

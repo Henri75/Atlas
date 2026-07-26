@@ -213,6 +213,16 @@ export interface IndexStats {
   errors: number;
   /** Errors in the last hour — the number that answers "is it failing now?". */
   recentErrors: number;
+  /**
+   * Entries in the catalog with no vectors in the active collection: indexed,
+   * but invisible to search until the reconciler reaches them.
+   *
+   * The signal that was missing on 2026-07-25, when two whole documents sat
+   * unsearchable while every other field here read healthy. Non-zero is not
+   * necessarily alarming (a fresh entry is briefly uncovered); non-zero and
+   * *not falling* means search is lying by omission.
+   */
+  unsearchableEntries: number;
   lastRunAt?: string;
   bySource: Record<string, number>;
 }

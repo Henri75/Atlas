@@ -177,6 +177,36 @@ describe('backfillVectors', () => {
     expect(upserted).toHaveLength(20);
   });
 
+  /**
+   * The periodic reconciler shares the embedder with live scanning, and a local
+   * Ollama serves one request at a time (~1.9s each, measured). An uncapped run
+   * after a model switch would occupy it for hours, so routine reconciliation is
+   * bounded and large rebuilds stay the boot path's job.
+   */
+  it('stops at maxEntries and leaves the rest for the next run', async () => {
+    const { deps, upserted, covered } = makeDeps(100);
+
+    const n = await backfillVectors(deps, { pageSize: 10, maxEntries: 25 });
+
+    expect(n).toBe(25);
+    expect(upserted).toHaveLength(25);
+    // The remainder is untouched and still selectable next time.
+    expect(await deps.catalog.countUncovered('kdbscope_ollama_nomic_768')).toBe(75);
+    expect(covered.size).toBe(25);
+  });
+
+  it('does not overshoot maxEntries when it is not a multiple of the page size', async () => {
+    const { deps, upserted } = makeDeps(100);
+    const n = await backfillVectors(deps, { pageSize: 30, maxEntries: 25 });
+    expect(n).toBe(25);
+    expect(upserted).toHaveLength(25);
+  });
+
+  it('treats maxEntries larger than the backlog as no cap', async () => {
+    const { deps } = makeDeps(20);
+    expect(await backfillVectors(deps, { pageSize: 10, maxEntries: 500 })).toBe(20);
+  });
+
   it('leaves a failed page uncovered so the next run retries it', async () => {
     const { deps, covered } = makeDeps(30);
     let call = 0;
