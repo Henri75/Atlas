@@ -6,6 +6,7 @@
 | Date (UTC) | Change |
 |---|---|
 | 2026-07-25 23:20 | Initial plan. Phase 0 (heal) already executed and verified. |
+| 2026-07-26 01:55 | Phase 3 complete and verified: `since`/`until` on MCP, `occurred_at` datetime index (3.11s → 0.004s), recency term, near-duplicate collapse (14/14 distinct titles, was 11/14), age labels beyond docs. B4 deferred with reasoning. |
 | 2026-07-26 01:35 | Phase 2 complete and verified: the exact incident question now answers correctly — "based on the retrieved sources… 11,227 entries in the surrounding period, 0 timestamped 2026-07-21" — and goes on to name a real mechanism instead of stopping. |
 | 2026-07-26 01:10 | Phase 1 complete and verified live: coverage column, delta-only audit, unified reconciler, periodic reconcile job, `unsearchableEntries` in status. A4 withdrawn — already fixed on 2026-07-09. |
 | 2026-07-25 23:35 | Self-review pass. Four defects found and fixed: `vectorized_at` → `vectorized_in` (a timestamp column breaks the model-switch backfill); migration audits instead of blanket-marking; coverage reported per project; window counts padded. Backfill and reconciler unified. |
@@ -249,7 +250,7 @@ and `newest: 2026-07-26`, flatly contradicting the old coverage claim.
 `volumes-cloudbox-coding-deepcast` alongside `deepcast`, which is finding D1
 made visible — useful confirmation that those 6,912 entries are real history.
 
-## Phase 3 — Retrieval quality
+## Phase 3 — Retrieval quality (DONE, verified in production)
 
 - **C1** Expose `since`/`until` on `atlas_search`/`atlas_ask` → API → core.
 - **C3** Add the `occurred_at` datetime payload index; verify the 36× gap closes.
@@ -272,6 +273,29 @@ made visible — useful confirmation that those 6,912 entries are real history.
 **Tests** — `test/core/{rerankForContext,search,qdrantFilter}.test.ts`
 Recency ordering; date filters reaching Qdrant; near-duplicate collapse;
 non-doc aging; and a guard that recency does not starve authoritative sources.
+
+**Verified live** (2026-07-26)
+- `occurred_at` datetime payload index created (362,715 points). Range filter
+  **3.11s → 0.004s** warm — far past the 36× the plan set out to close.
+- Date-scoped search returns only in-window hits; the same query unscoped now
+  surfaces 07-25/07-26 material first, showing the recency term working.
+- Re-ran the incident question: **14 distinct titles out of 14 sources**, against
+  11/14 before. The 2025-11-25 triplet collapsed to one and the freed slots went
+  to genuinely different material.
+
+**B4 — deferred, deliberately.** Fusion is server-side RRF (`qdrant.ts`,
+`query: { fusion: 'rrf' }`), so scores are rank-based and carry no absolute
+relevance; there is still no "found nothing *relevant*" state. A calibrated
+signal needs a separate dense-only cosine probe plus threshold calibration
+against real queries. Shipping an uncalibrated confidence number would be exactly
+the unearned confidence this work exists to remove, so it is logged to the
+backlog for its own ADR rather than half-built.
+
+**Scope note.** The session cap (`MAX_SESSION_FRACTION`) was left at 0.5. The
+recency term addresses the underlying complaint — recent material is
+session-dense and was being out-ranked — without weakening the structural
+guarantee that keeps explanatory sources in the window. Changing both at once
+would have made neither effect measurable.
 
 ## Phase 4 — Catalog hygiene
 

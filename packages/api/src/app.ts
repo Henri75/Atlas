@@ -220,7 +220,7 @@ export function buildApp(deps: ApiDeps): Hono {
     if (!question) return c.json({ error: 'question is required' }, 400);
     const result = await deps.ask.ask(
       question,
-      { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, docStatus: body.docStatus },
+      { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, since: body.since, until: body.until, docStatus: body.docStatus },
       Math.min(Number(body.k ?? 12), 30),
       sanitizeHistory(body.history),
     );
@@ -240,7 +240,7 @@ export function buildApp(deps: ApiDeps): Hono {
 
     const events = deps.ask.askStream(
       question,
-      { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, docStatus: body.docStatus },
+      { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, since: body.since, until: body.until, docStatus: body.docStatus },
       Math.min(Number(body.k ?? 12), 30),
       sanitizeHistory(body.history),
     );

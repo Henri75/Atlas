@@ -163,7 +163,7 @@ export class VectorStore {
     // Runs on existing collections too: payload fields added after a
     // collection was created (doc_status, entry_id) still need their index.
     // Re-creating an existing index is a cheap no-op for Qdrant.
-    const fields: [string, 'keyword' | 'integer'][] = [
+    const fields: [string, 'keyword' | 'integer' | 'datetime'][] = [
       ['project', 'keyword'],
       ['source_type', 'keyword'],
       ['component', 'keyword'],
@@ -172,6 +172,11 @@ export class VectorStore {
       ['doc_status', 'keyword'],
       // Integer index so setDocStatus can address points by entry id.
       ['entry_id', 'integer'],
+      // Range filtering on occurred_at works without this — Qdrant falls back to
+      // a full scan — but at a measured 3.11s vs 0.087s (36x) it was far too slow
+      // to expose date scoping as a normal filter. Every point already carries
+      // the RFC-3339 value; only the index was missing.
+      ['occurred_at', 'datetime'],
     ];
     for (const [field, schema] of fields) {
       await this.client

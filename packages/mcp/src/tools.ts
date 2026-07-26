@@ -133,10 +133,22 @@ export const TOOLS: ToolDef[] = [
         .enum(['active', 'archived'])
         .optional()
         .describe('active = exclude archived docs entirely; archived = only them'),
+      since: z
+        .string()
+        .optional()
+        .describe(
+          'Only entries timestamped at or after this ISO date/datetime, e.g. "2026-07-18". Ranking is semantic and has no notion of time, so a question about a specific day will otherwise return whatever is most similar regardless of when it happened.',
+        ),
+      until: z
+        .string()
+        .optional()
+        .describe(
+          'Only entries timestamped at or before this ISO date/datetime. Pair with `since` to scope to a window. Prefer a few days either side of the date you care about: work is usually recorded after it happens, so an incident on the 21st is often written up on the 22nd or later.',
+        ),
       limit: z.number().int().min(1).max(100).optional(),
     },
     request: (a) => ({
-      path: `/api/search${qs({ q: a.query, project: a.project, source: a.source, component: a.component, kind: a.kind, docStatus: a.doc_status, limit: a.limit })}`,
+      path: `/api/search${qs({ q: a.query, project: a.project, source: a.source, component: a.component, kind: a.kind, docStatus: a.doc_status, since: a.since, until: a.until, limit: a.limit })}`,
     }),
   },
   {
@@ -149,6 +161,18 @@ export const TOOLS: ToolDef[] = [
         .string()
         .optional()
         .describe('Optional project slug. Omit unless you are sure of the slug; a wrong scope hides answers that live in a sibling project.'),
+      since: z
+        .string()
+        .optional()
+        .describe(
+          'Restrict retrieval to entries timestamped at or after this ISO date. Use for a question about a particular period — ranking is semantic and time-blind, so without this the context blocks may all come from a different era than the one you asked about.',
+        ),
+      until: z
+        .string()
+        .optional()
+        .describe(
+          'Restrict retrieval to entries timestamped at or before this ISO date. Leave both unset unless the question is genuinely period-specific: the answer already reports measured coverage and per-window entry counts, so scoping is rarely needed to establish what exists.',
+        ),
       k: z.number().int().min(1).max(30).optional().describe('Context blocks to retrieve (default 12)'),
     },
     request: (a) => ({ path: '/api/ask', init: jsonPost(a) }),

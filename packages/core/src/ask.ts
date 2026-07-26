@@ -84,14 +84,68 @@ const SOURCE_WEIGHT: Partial<Record<string, number>> = {
 const MAX_SESSION_FRACTION = 0.5;
 
 /**
- * Rerank an over-fetched pool into the final k, applying the source weights and
- * the session cap. Weighting alone is not enough — near-duplicate sessions can
- * still crowd the window on raw score — so the cap is enforced structurally.
+ * Gentle recency multiplier, by age in days.
+ *
+ * Ranking had no time term at all, so "what broke last week" competed against
+ * two years of history on similarity alone. The range is deliberately narrow —
+ * a ~12% spread end to end — because `20260710-docs-staleness-query-time.md`
+ * decided that old-but-current docs must keep ranking well ("an old runbook that
+ * simply never needed edits must not be buried"), and a strong recency boost
+ * would silently reverse that. This breaks near-ties toward fresh material and
+ * nothing more; a clearly better old match still wins.
+ */
+const RECENCY_HALF_LIFE_DAYS = 180;
+const RECENCY_MAX_BOOST = 0.12;
+
+function recencyFactor(occurredAt: string | undefined, nowMs: number): number {
+  // Undated entries sit at the floor of the curve — factor 1.0, the limit a very
+  // old entry approaches — so they rank as maximally old rather than being
+  // docked for the missing timestamp. Absence of a date says nothing about age,
+  // and several source types routinely lack one.
+  if (!occurredAt) return 1;
+  const ageMs = nowMs - Date.parse(occurredAt);
+  if (!Number.isFinite(ageMs)) return 1;
+  const days = Math.max(0, ageMs / 864e5);
+  return 1 + RECENCY_MAX_BOOST * Math.exp(-days / RECENCY_HALF_LIFE_DAYS);
+}
+
+/**
+ * Collapse entries that are the same content recorded more than once.
+ *
+ * Distinct entry ids, identical title and timestamp: in the 2026-07-15 incident
+ * three of fourteen context blocks were the same session summary, eating a fifth
+ * of the window to say one thing. Keyed on title+timestamp rather than body
+ * similarity — cheap, and it targets the actual duplication mechanism (the same
+ * event distilled into several rows) without risking the collapse of two
+ * genuinely different entries that merely discuss the same subject.
+ */
+function dedupeKey(h: SearchHit): string {
+  return `${h.projectSlug}|${h.sourceType}|${h.title}|${h.occurredAt ?? ''}`;
+}
+
+/**
+ * Rerank an over-fetched pool into the final k: source weight × recency, then
+ * near-duplicate collapse, then the session cap. Weighting alone is not enough —
+ * near-duplicate sessions can still crowd the window on raw score — so both the
+ * dedupe and the cap are enforced structurally.
  */
 export function rerankForContext(pool: SearchHit[], k: number): SearchHit[] {
+  const nowMs = Date.now();
+  const seen = new Set<string>();
   const weighted = pool
-    .map((h) => ({ h, s: h.score * (SOURCE_WEIGHT[h.sourceType] ?? 1) }))
-    .sort((a, b) => b.s - a.s);
+    .map((h) => ({
+      h,
+      s: h.score * (SOURCE_WEIGHT[h.sourceType] ?? 1) * recencyFactor(h.occurredAt, nowMs),
+    }))
+    .sort((a, b) => b.s - a.s)
+    // After sorting, so the survivor of a duplicate group is its best-scoring
+    // member rather than whichever happened to arrive first.
+    .filter(({ h }) => {
+      const key = dedupeKey(h);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 
   const maxSessions = Math.max(1, Math.floor(k * MAX_SESSION_FRACTION));
   const picked: SearchHit[] = [];
@@ -117,6 +171,13 @@ export function rerankForContext(pool: SearchHit[], k: number): SearchHit[] {
   }
   return picked;
 }
+
+/**
+ * Age past which a non-doc block is labelled in the prompt. Below this, the
+ * header date is enough; above it, the model needs telling that "recent" and
+ * "in the context" are not the same thing.
+ */
+const OLD_BLOCK_MONTHS = 6;
 
 const NO_MATCH =
   'No indexed content matched this question. Try a broader query or trigger a reindex.';
@@ -185,7 +246,16 @@ export function buildAskPrompt(
       // In-band staleness signal: retrieval already downranked archived docs,
       // but whatever still lands in context must arrive labeled.
       const age = h.ageMonths != null ? ` — ${h.ageMonths} mo old` : '';
-      const stale = h.docStatus ? ` [${h.docStatus.toUpperCase()}${age}]` : '';
+      // Docs carry a status word (ARCHIVED/AGING); everything else gets a bare
+      // age once it is genuinely old. The date is already in the header, but a
+      // mid-size model reasons about "14 mo old" far more reliably than it
+      // subtracts one date from another — and getting that wrong is how a 2025
+      // transcript ends up quoted as current.
+      const stale = h.docStatus
+        ? ` [${h.docStatus.toUpperCase()}${age}]`
+        : h.ageMonths != null && h.ageMonths >= OLD_BLOCK_MONTHS
+          ? ` [${h.ageMonths} mo old]`
+          : '';
       return `[${i + 1}] ${h.projectSlug} / ${h.sourceType}${h.component ? ` / ${h.component}` : ''}${date}${stale}\n${h.title}\n${body}`;
     })
     .join('\n\n---\n\n');

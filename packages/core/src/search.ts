@@ -101,12 +101,23 @@ export class SearchService {
     const nowMs = Date.now();
     return hits
       .map((h): SearchHit => {
-        if (h.sourceType !== 'doc') return h;
         const { status, ageMonths } = deriveDocAge(h.occurredAt, agingMonths, nowMs);
-        if (h.docStatus === 'archived') {
-          return { ...h, score: h.score * penalty, ...(ageMonths != null ? { ageMonths } : {}) };
+
+        // Archiving and the aging *label* are doc conventions: `archived` comes
+        // from a doc's path, and calling a two-year-old commit "aging" would be
+        // noise — commits are historical by nature, not stale.
+        if (h.sourceType === 'doc') {
+          if (h.docStatus === 'archived') {
+            return { ...h, score: h.score * penalty, ...(ageMonths != null ? { ageMonths } : {}) };
+          }
+          if (status === 'aging') return { ...h, docStatus: 'aging', ageMonths };
+          return ageMonths != null ? { ...h, ageMonths } : h;
         }
-        if (status === 'aging') return { ...h, docStatus: 'aging', ageMonths };
+
+        // Every other source type still gets its age *measured* and carried, so
+        // callers can reason about it. Previously only docs did, which is why
+        // Ask received session and kdb blocks with no indication of how old they
+        // were and treated a 2025 transcript exactly like last week's.
         return ageMonths != null ? { ...h, ageMonths } : h;
       })
       .sort((a, b) => b.score - a.score)

@@ -120,3 +120,22 @@ describe('buildAskPrompt coverage block', () => {
     expect(prompt.startsWith('Context blocks:')).toBe(true);
   });
 });
+
+describe('buildAskPrompt age labels for non-doc blocks', () => {
+  it('labels an old session/commit block so the model can discount it', () => {
+    const old: SearchHit = { ...hits[0]!, entryId: 7, sourceType: 'claude_session', ageMonths: 14 };
+    expect(buildAskPrompt('q', [old], new Map())).toContain('[14 mo old]');
+  });
+
+  it('leaves recent blocks unlabelled — the header date already says enough', () => {
+    const recent: SearchHit = { ...hits[0]!, entryId: 8, sourceType: 'claude_session', ageMonths: 1 };
+    expect(buildAskPrompt('q', [recent], new Map())).not.toContain('mo old');
+  });
+
+  it('keeps the doc status word rather than replacing it with a bare age', () => {
+    const doc: SearchHit = {
+      ...hits[0]!, entryId: 9, sourceType: 'doc', docStatus: 'aging', ageMonths: 20,
+    };
+    expect(buildAskPrompt('q', [doc], new Map())).toContain('[AGING — 20 mo old]');
+  });
+});

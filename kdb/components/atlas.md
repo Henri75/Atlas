@@ -891,3 +891,36 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-26] - Phase 3: make retrieval aware of time and stop it wasting the window
+
+**Objective:**
+- Give a date-anchored question a way to reach its date, and stop duplicates and time-blind ranking from filling the context window.
+
+**Summary of Work:**
+- C1: since/until exposed on atlas_search and atlas_ask, and threaded through /api/ask + /api/ask/stream (the API already accepted them on /api/search; the ask routes dropped them silently). Tool descriptions frame the WHY — ranking is semantic and time-blind, and work is usually recorded after it happens, so scope a few days either side.
+- C3: occurred_at added to the Qdrant payload index list as a `datetime` field. Range filtering already worked via full scan; it was just too slow to expose as a normal filter.
+- C2: gentle recency multiplier in rerankForContext — exp decay, 180d half-life, 12% max boost. A tie-breaker, not a ranking axis.
+- C4: near-duplicate collapse keyed on project|sourceType|title|occurredAt, applied AFTER sorting so the survivor is the best-scoring member of its group.
+- C5: finalize() now measures ageMonths for every source type, not just docs; buildAskPrompt labels non-doc blocks older than 6 months as "[N mo old]".
+
+**Key Decisions & Rationale:**
+- Recency kept deliberately weak (12% spread). ADR 20260710 decided old-but-current docs must keep ranking well ("an old runbook that simply never needed edits must not be buried"); a strong boost would silently reverse an accepted decision.
+- Undated entries get factor 1.0 — the floor of the curve, i.e. ranked as maximally old rather than penalised. Absence of a date says nothing about age and several source types routinely lack one.
+- Dedupe keyed on title+timestamp, not body similarity: cheap, and it targets the actual duplication mechanism (one event distilled into several rows) without risking the collapse of two genuinely different entries about the same subject.
+- Age LABEL stays doc-only (ARCHIVED/AGING); other types get a bare "N mo old". Calling a two-year-old commit "aging" is noise — commits are historical by nature, not stale.
+- MAX_SESSION_FRACTION left at 0.5. The recency term addresses the real complaint (recent material is session-dense and was out-ranked) without weakening the structural guarantee. Changing both at once would make neither measurable.
+- B4 DEFERRED, not dropped: RRF scores are rank-based and carry no absolute relevance. A calibrated confidence signal needs a dense-only cosine probe plus threshold calibration; shipping an uncalibrated number would be the exact unearned confidence this work removes. Logged to backlog for its own ADR.
+
+**Code/Files Modified:**
+- packages/core/src/{qdrant.ts,ask.ts,search.ts}
+- packages/api/src/app.ts, packages/mcp/src/tools.ts
+- test/core/{rerankForContext,ask}.test.ts
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** occurred_at datetime index took the range filter from 3.11s to 0.004s warm — far past the 36x the plan aimed at. Re-running the incident question gave 14 distinct titles of 14 sources (was 11/14); the 2025-11-25 triplet collapsed to one and the freed slots went to genuinely different material.
+- **What Failed:** My first recency test asserted an undated entry should beat a 400-day-old one scoring 1.25% lower. It does not — every dated entry gets a factor strictly above 1.0, so undated is the infimum, losing by 0.05%. The implementation was right and the test overclaimed; corrected the test to assert what is actually guaranteed rather than weakening the design to match a bad assertion.
+- **Lesson:** When a test fails, decide which of the two is wrong before changing either. Here the honest fix was a weaker, true assertion — not a stronger, convenient implementation.
+
+**Status:**
+- Completed
