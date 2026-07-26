@@ -48,3 +48,4 @@
 - [COMPLETED] - 2026-07-26 01:55 UTC - Feature - atlas/core - Phase 3: since/until on MCP search+ask, occurred_at datetime payload index (3.11s -> 0.004s), gentle recency term, near-duplicate collapse, age labels for non-doc blocks. 552 tests green
 - [COMPLETED] - 2026-07-26 02:10 UTC - Docs - atlas - Spec for the two Phase 3 deferrals (B4 relevance confidence, session-cap tuning); both blocked on a missing retrieval eval harness, which the spec makes deliverable 0
 - [COMPLETED] - 2026-07-26 04:25 UTC - Feature - atlas/core - Phase 4: moved-checkout aliasing recovers 27,300 entries for scoped search; MCP guidance corrected to stop telling agents to discard them. D2 withdrawn (source idle, not broken). 559 tests green
+- [COMPLETED] - 2026-07-26 02:35 UTC - Bugfix - atlas/ui - Surface unsearchableEntries in the sidebar + dashboard; UI container was 9 days stale and had never been rebuilt this session

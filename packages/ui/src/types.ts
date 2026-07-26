@@ -187,6 +187,13 @@ export interface Stats {
   chunks: number;
   errors: number;
   recentErrors: number;
+  /**
+   * Entries indexed but with no vectors in the active collection — present in
+   * the catalog, invisible to search until the reconciler reaches them.
+   * Non-zero briefly is normal; non-zero and not falling means search is
+   * incomplete for reasons a query cannot reveal.
+   */
+  unsearchableEntries: number;
   lastRunAt?: string;
   bySource: Record<string, number>;
   embedder: string;

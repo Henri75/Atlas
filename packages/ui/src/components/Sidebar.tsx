@@ -111,6 +111,14 @@ export function Sidebar({
                 <span title={`${exact(stats.errors)} lifetime`}>no recent errors</span>
               )}
             </div>
+            {stats.unsearchableEntries > 0 && (
+              <div
+                style={{ color: 'var(--color-report)' }}
+                title="Indexed but not yet embedded — search cannot return these until the reconciler catches up"
+              >
+                {compact(stats.unsearchableEntries)} not searchable
+              </div>
+            )}
             <div title={stats.lastRunAt ?? undefined}>
               indexed {relativeTime(stats.lastRunAt)}
               {stats.pending ? ` · ${compact(stats.pending)} queued` : ''}

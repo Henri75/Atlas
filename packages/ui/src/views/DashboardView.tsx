@@ -107,6 +107,16 @@ export function DashboardView({ onGoTo }: { onGoTo: (view: 'search') => void }) 
               danger={data.recentErrors > 0}
               title={`${exact(data.errors)} lifetime`}
             />
+            <Row
+              k="coverage"
+              v={
+                data.unsearchableEntries > 0
+                  ? `${exact(data.unsearchableEntries)} not searchable`
+                  : 'all entries searchable'
+              }
+              danger={data.unsearchableEntries > 0}
+              title="Entries present in the catalog but with no vectors in the active collection"
+            />
           </div>
         </section>
 
