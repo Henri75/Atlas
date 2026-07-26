@@ -126,8 +126,12 @@ the session-cap question survived three phases unanswered.
 - Negative: the harness needs the live stack, Ollama and the LLM gateway, so it
   cannot run in CI as configured. Its unit tests do run in `make test`; the
   measurement does not.
-- Negative: a judging pass costs LLM calls and takes minutes. Mitigated by
-  separating it from `eval run` and by `--top-up`.
+- Negative: the two LLM steps are slow, measured rather than guessed — building
+  Pools B and N took ~45 minutes and a full judging pass ~50, because the judge is
+  a reasoning model answering sequentially and each Postgres FTS probe costs ~12s.
+  Mitigated by keeping both out of `eval run` (which stays at ~45s and free) and
+  by `--top-up`. Sequential on purpose: the gateway and the embedder are shared
+  with the indexer, and a fixture built once does not justify saturating them.
 - Negative: one more workspace to build and type-check.
 - Operational: the fixtures embed project-identifying text — real queries name
   real systems — so the repository must remain private.

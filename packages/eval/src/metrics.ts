@@ -172,7 +172,21 @@ export function paired(
     else if (d < -1e-9) losses++;
     else ties++;
   }
-  return { wins, losses, ties, n: deltas.length, ...(bootstrapCI(deltas, seed) ?? {}) };
+  // The mean delta is defined for a single pair; only the interval needs two.
+  // Folding both into the CI meant a one-query comparison reported no mean at
+  // all, and `decisionHolds` skipped it — returning "the verdict holds" when the
+  // truth was "there was nothing to check". Absence of a check must never read as
+  // a passed check.
+  const ci = bootstrapCI(deltas, seed);
+  const avg = mean(deltas);
+  return {
+    wins,
+    losses,
+    ties,
+    n: deltas.length,
+    ...(avg != null ? { mean: avg } : {}),
+    ...(ci ?? {}),
+  };
 }
 
 export interface AgreementReport {

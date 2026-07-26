@@ -1,0 +1,1036 @@
+{
+  "version": 1,
+  "generatedAt": "2026-07-26T05:33:08.154Z",
+  "primaryJudge": "cline-pass/kimi-k3",
+  "secondJudge": "cline-pass/glm-5.2",
+  "shuffleSeed": 20260726,
+  "labels": [
+    {
+      "queryId": "0220b73c",
+      "entryId": 6556,
+      "grade": 0,
+      "why": "Patroni connection exhaustion incident, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 24830,
+      "grade": 0,
+      "why": "ADR about row-level locks, unrelated",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 24830,
+      "grade": 0,
+      "why": "About row-lock queue ADR, unrelated to autovacuum parameters",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 24921,
+      "grade": 0,
+      "why": "History doc about Phase 1, unrelated",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 24921,
+      "grade": 0,
+      "why": "Nov 2025 history phase, unrelated to autovacuum tuning",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 30432,
+      "grade": 0,
+      "why": "Plan to split videos table, autovacuum not discussed",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 30869,
+      "grade": 1,
+      "why": "Audit mentions videos dead weight, no asked parameters or finding",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 40759,
+      "grade": 1,
+      "why": "Says autovacuum healthy, different time period",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 40759,
+      "grade": 1,
+      "why": "Reports autovacuum healthy on Lycos videos, not parameter-setting date or stale-stats finding",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 44691,
+      "grade": 0,
+      "why": "Migration 032 safety question, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 47802,
+      "grade": 0,
+      "why": "Stuck workers/BM25 corruption, unrelated subject",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 48852,
+      "grade": 1,
+      "why": "Earlier never-autovacuumed observation, different numbers and instance",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 48856,
+      "grade": 2,
+      "why": "Finding autovacuum never ran, pg_stat 529 live vs 4.18M rows; numbers differ from question",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 48880,
+      "grade": 1,
+      "why": "Same table performance analysis but different finding, no answer",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 48951,
+      "grade": 2,
+      "why": "Lycos session finding autovacuum never firing plus implementation, ~2026-03-08",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 50120,
+      "grade": 1,
+      "why": "Earlier never-autovacuumed observation, different numbers and instance",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 50125,
+      "grade": 1,
+      "why": "Earlier finding of no autovacuum, different numbers",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 50125,
+      "grade": 1,
+      "why": "Earlier never-autovacuumed observation, different numbers and instance",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 50181,
+      "grade": 1,
+      "why": "Lycos PG analysis but excerpt lacks asked parameters or n_live_tup finding",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 50293,
+      "grade": 1,
+      "why": "Session summary, mentions subject but no specifics",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 50293,
+      "grade": 1,
+      "why": "Session summary of Lycos DB investigation, no specific answer",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 57132,
+      "grade": 1,
+      "why": "Manual VACUUM of videos and index migrations, no storage parameters",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 80797,
+      "grade": 0,
+      "why": "Row counts and status breakdown, nothing about autovacuum",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 94147,
+      "grade": 0,
+      "why": "qdrant_indexed phantom updates diagnosis, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 94195,
+      "grade": 0,
+      "why": "Deepcast videos_new reloptions, different table and parameters",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 136432,
+      "grade": 0,
+      "why": "Different table videos_new with different values (0.1/0.05), not asked params",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 136558,
+      "grade": 1,
+      "why": "Autovacuum overrides on deepcast's videos table, not Lycos; no date set",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 139767,
+      "grade": 0,
+      "why": "About search indexes on videos_new, not autovacuum parameters or finding",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 407596,
+      "grade": 0,
+      "why": "Qdrant chunking design doc, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 511563,
+      "grade": 3,
+      "why": "Directly states n_live_tup=925 vs 5.48M real rows, dated 2026-07-20",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 511622,
+      "grade": 0,
+      "why": "Security review of Makefile, unrelated",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 511622,
+      "grade": 0,
+      "why": "Security review of ms6 scripts, irrelevant",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 511623,
+      "grade": 0,
+      "why": "Security review of Makefile, unrelated",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 511623,
+      "grade": 0,
+      "why": "Security review of ms6 scripts, irrelevant",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 511639,
+      "grade": 0,
+      "why": "About ms6-status make target, unrelated",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 511639,
+      "grade": 0,
+      "why": "Qdrant progress status work, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 511661,
+      "grade": 0,
+      "why": "Command-injection review, irrelevant",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 520290,
+      "grade": 0,
+      "why": "Library duration estimator doc, unrelated to autovacuum",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 538971,
+      "grade": 2,
+      "why": "Confirms prior session reported the 925 vs 5.48M finding",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 538980,
+      "grade": 3,
+      "why": "Directly analyzes the never-autovacuumed 925 vs 5.48M finding",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 538982,
+      "grade": 2,
+      "why": "Confirms parameters exist but not when they were set",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 538982,
+      "grade": 3,
+      "why": "Names exact asked parameters already set, contradicting prior finding",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 539559,
+      "grade": 0,
+      "why": "OrbStack stoppage, unrelated to autovacuum parameters",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 540585,
+      "grade": 1,
+      "why": "About TOAST autovacuum evidence, not per-table settings",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 540585,
+      "grade": 1,
+      "why": "Different finding: TOAST never autovacuumed, not heap n_live_tup 925",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 544884,
+      "grade": 0,
+      "why": "Different database/table (videos_new) and different cause: stats zeroed",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 544888,
+      "grade": 0,
+      "why": "Deepcast videos_new stats wipe, different database and table",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 545338,
+      "grade": 1,
+      "why": "Commit for mig 055 TOAST tuning, different parameter set",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 546135,
+      "grade": 3,
+      "why": "Records finding with exact figures and pre-existing per-table settings",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 546144,
+      "grade": 3,
+      "why": "Names finding as stale and settings origin in migs 028/030",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 546145,
+      "grade": 1,
+      "why": "Migration 055 is TOAST tuning, not the asked 028/030 parameters",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 546148,
+      "grade": 3,
+      "why": "Names migrations 028/030 as source; quotes 925 vs 5.48M finding",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 546148,
+      "grade": 2,
+      "why": "User prompt quoting stale finding and 028/030 settings origin",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 546157,
+      "grade": 1,
+      "why": "Same as 1: 055 TOAST review, not the asked parameters",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 546248,
+      "grade": 3,
+      "why": "Names migrations 028/030; quotes 925 vs 5.48M finding",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 546248,
+      "grade": 3,
+      "why": "States finding was stale; settings came from migrations 028/030",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 546249,
+      "grade": 1,
+      "why": "055 diff covers TOAST params, different from asked heap settings",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 548312,
+      "grade": 1,
+      "why": "Migration 056 about TOAST, not per-table videos settings",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 548312,
+      "grade": 1,
+      "why": "056 sets TOAST autovacuum params, different values/relation than asked",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 548775,
+      "grade": 1,
+      "why": "Migration 056 TOAST trigger gap, related topic but different parameters",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0220b73c",
+      "entryId": 548837,
+      "grade": 1,
+      "why": "Discusses 055 TOAST cost_delay 2ms, different parameters and relation",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 3559,
+      "grade": 0,
+      "why": "Old 2025 worker status report, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 3857,
+      "grade": 1,
+      "why": "Mentions videoinsight_low but only re monitoring stats, not starvation fix",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 6152,
+      "grade": 0,
+      "why": "Worker death investigation, unrelated to videoinsight_low starvation",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 6152,
+      "grade": 0,
+      "why": "Unrelated 2025 worker-death investigation",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 6365,
+      "grade": 0,
+      "why": "Dead routes cleanup, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 7366,
+      "grade": 0,
+      "why": "Worker-pool fork migration for memory, unrelated to low-lane starvation",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 10897,
+      "grade": 0,
+      "why": "About videoinsight main queue backup, not videoinsight_low",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 10897,
+      "grade": 0,
+      "why": "Different instance: videoinsight queue backlog, July 8",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 13788,
+      "grade": 0,
+      "why": "Orphaned-jobs ops runbook, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 16430,
+      "grade": 1,
+      "why": "General troubleshooting, mentions videoinsight queue generically",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 16430,
+      "grade": 0,
+      "why": "Troubleshooting worker attrition, different issue",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 28771,
+      "grade": 0,
+      "why": "Different incident: normal videoinsight lane not draining, July 5",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 49468,
+      "grade": 0,
+      "why": "Queues empty, no backlog — different situation entirely",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 49468,
+      "grade": 0,
+      "why": "Unrelated: empty queues, upstream bottleneck",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 57766,
+      "grade": 0,
+      "why": "About matview refresh latch fix, unrelated",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 57766,
+      "grade": 0,
+      "why": "Matview latch fix, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 57908,
+      "grade": 1,
+      "why": "Lane-split deployment that later caused starvation, not the fix",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 58040,
+      "grade": 1,
+      "why": "Earlier priority-inversion fix creating lanes, precursor not starvation fix",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 58111,
+      "grade": 0,
+      "why": "About matview refresh latch bug, unrelated",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 58111,
+      "grade": 0,
+      "why": "Matview refresh status, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 70068,
+      "grade": 0,
+      "why": "About videoinsight main queue worker count, not videoinsight_low",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 70068,
+      "grade": 0,
+      "why": "Different incident: videoinsight queue worker-count discrepancy, not low lane",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 99445,
+      "grade": 0,
+      "why": "Newsletter queue planning, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 108239,
+      "grade": 0,
+      "why": "Unrelated backfill queue processing",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 111271,
+      "grade": 0,
+      "why": "Translation worker batch path, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 126039,
+      "grade": 1,
+      "why": "Worker-idle starvation symptom but queue unnamed, likely different incident",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 133876,
+      "grade": 0,
+      "why": "Different incident: jobs failing on missing database",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 135617,
+      "grade": 0,
+      "why": "Different incident: no new videos, workers stuck",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 136586,
+      "grade": 0,
+      "why": "Routine pipeline check, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 138688,
+      "grade": 1,
+      "why": "Queue wait time mentioned, not specifically videoinsight_low",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 138688,
+      "grade": 1,
+      "why": "Queue wait-time incident, no videoinsight_low mention, likely different instance",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 138755,
+      "grade": 0,
+      "why": "Different stuck-jobs check, March",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 172931,
+      "grade": 0,
+      "why": "PANN thresholds and Docker infra, unrelated",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 172931,
+      "grade": 0,
+      "why": "Unrelated beyondverse PANN audio project",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 174732,
+      "grade": 0,
+      "why": "Different queue (vidsight), not videoinsight_low",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 197808,
+      "grade": 0,
+      "why": "Different incident: videoinsight main queue zero workers, Feb 2026",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 212880,
+      "grade": 0,
+      "why": "Different event: VidSight queue clearing, January",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 213175,
+      "grade": 0,
+      "why": "Different subject: GIL CPU starvation, not queue workers",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 213191,
+      "grade": 0,
+      "why": "VidSight GPU backfill summary, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 221216,
+      "grade": 0,
+      "why": "Different incident: stalled import, transcript service",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 260687,
+      "grade": 0,
+      "why": "Different stuck-queue incident, January",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 293042,
+      "grade": 1,
+      "why": "Queue throughput problem but about innertube failures, not videoinsight_low starvation",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 302760,
+      "grade": 0,
+      "why": "Duplicate of above, unrelated CPU/duplicate-key bugs",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 303498,
+      "grade": 0,
+      "why": "Different bugs: CPU spike and duplicate key errors",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 311477,
+      "grade": 1,
+      "why": "Mentions queue draining after fix, not videoinsight_low specifically",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 311477,
+      "grade": 0,
+      "why": "Unrelated 2025 queue-drain check, different incident",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 311499,
+      "grade": 0,
+      "why": "Different event: stale queue drained, Nov 2025",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 311675,
+      "grade": 0,
+      "why": "Different incident: VidSight crashes and stale queue, Nov 2025",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 325234,
+      "grade": 0,
+      "why": "Too vague, not about videoinsight_low starvation",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 325234,
+      "grade": 1,
+      "why": "Mentions queued video jobs vaguely, no starvation answer",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 325354,
+      "grade": 0,
+      "why": "Same unrelated worker-attrition doc",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 340239,
+      "grade": 1,
+      "why": "Earlier priority-inversion fix that created lanes, not starvation fix",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 346320,
+      "grade": 2,
+      "why": "Explains videoinsight_low priority-lane mechanics and LOW drain design",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 352258,
+      "grade": 0,
+      "why": "Translation timeout review, unrelated",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 354664,
+      "grade": 2,
+      "why": "Starvation fix confirmed in production with before/after metrics",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 354730,
+      "grade": 0,
+      "why": "Different starvation event (enqueue starvation), July 11",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 391258,
+      "grade": 3,
+      "why": "Directly states fix: dedicated video-low pool giving starved lane consumer",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 391611,
+      "grade": 3,
+      "why": "Direct answer: low lane starved, no consumer; fix adds video-low role",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 391619,
+      "grade": 3,
+      "why": "Directly states root cause and deployed fix: dedicated video-low-pool",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 464574,
+      "grade": 1,
+      "why": "Same lane but different issue: recycling failed jobs, not starvation fix",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 469118,
+      "grade": 3,
+      "why": "Directly describes fix for videoinsight_low zombie requeue loop",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 469118,
+      "grade": 2,
+      "why": "Fixes LOW-lane zombie requeue loop, part of same starvation hazard",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 608992,
+      "grade": 2,
+      "why": "Identifies videoinsight_low starvation: 2308 queued, 0-1 working",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 608992,
+      "grade": 2,
+      "why": "Diagnoses videoinsight_low starvation: queued but zero consumers",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 608999,
+      "grade": 2,
+      "why": "Directly examines videoinsight_low workers, names dedicated video-low-pool mechanism",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 610107,
+      "grade": 1,
+      "why": "Explains monitoring omits videoinsight_low, not the starvation fix",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 616547,
+      "grade": 0,
+      "why": "Different incident: worker capacity collapse on normal lane",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 623941,
+      "grade": 0,
+      "why": "Different starvation incident: LLM timeout bottleneck, not videoinsight_low",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 625830,
+      "grade": 0,
+      "why": "DNS timeout in gemini pool, unrelated",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 625830,
+      "grade": 0,
+      "why": "Unrelated DNS timeout discussion in gemini-pool project",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 637606,
+      "grade": 2,
+      "why": "Shows video-low-pool has only 1 worker, explains starvation mechanism",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 637606,
+      "grade": 3,
+      "why": "States worker pool layout including dedicated video-low pool consuming low lane",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 637731,
+      "grade": 0,
+      "why": "Worker-pool control design doc, not starvation incident",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 640101,
+      "grade": 1,
+      "why": "Worker-pool resize tooling, related but not starvation fix",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 640158,
+      "grade": 1,
+      "why": "Maps videoinsight_low to worker pools, nothing on starvation fix",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 640693,
+      "grade": 2,
+      "why": "Discusses fixing video-low mismatch and worker pool control",
+      "judge": "cline-pass/glm-5.2"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 640693,
+      "grade": 1,
+      "why": "User requesting video-low fix refinement; contains no answer",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 640715,
+      "grade": 2,
+      "why": "Confirms videoinsight_low starvation fix landed 07-15",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 641323,
+      "grade": 0,
+      "why": "About embed fleet concurrency, not starvation fix",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 642957,
+      "grade": 2,
+      "why": "States videoinsight_low starvation fix landed 07-15, no fix details",
+      "judge": "cline-pass/kimi-k3"
+    },
+    {
+      "queryId": "0ca5960d",
+      "entryId": 643993,
+      "grade": 0,
+      "why": "Different incident: saturation outage, pages restored",
+      "judge": "cline-pass/kimi-k3"
+    }
+  ],
+  "agreement": {
+    "kappa": 0.8628841607565012,
+    "matrix": [
+      [
+        13,
+        2,
+        0,
+        0
+      ],
+      [
+        1,
+        6,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        1,
+        2
+      ],
+      [
+        0,
+        0,
+        2,
+        1
+      ]
+    ],
+    "n": 29,
+    "exact": 0.7241379310344828,
+    "subsampleFraction": 0.25
+  },
+  "unjudged": []
+}

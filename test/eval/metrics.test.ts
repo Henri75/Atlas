@@ -167,6 +167,19 @@ describe('paired', () => {
   it('reports n=0 rather than throwing when nothing is comparable', () => {
     expect(paired([null], [null], 1)).toMatchObject({ n: 0, wins: 0 });
   });
+
+  /**
+   * A single pair still has a mean delta; only the interval needs two. Folding
+   * both into the bootstrap left a one-query comparison with no mean at all, and
+   * the caller that checks whether a verdict survives both unjudged bounds
+   * skipped it — reporting "the verdict holds" when nothing had been checked.
+   */
+  it('reports a mean delta even when there is too little data for an interval', () => {
+    const r = paired([0.5], [0.7], 1);
+    expect(r.mean).toBeCloseTo(0.2, 10);
+    expect(r.lo).toBeUndefined();
+    expect(r.n).toBe(1);
+  });
 });
 
 describe('quadraticWeightedKappa', () => {

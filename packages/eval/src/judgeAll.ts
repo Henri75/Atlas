@@ -4,7 +4,7 @@ import { judgeQuery, stratifiedSubsample, type Candidate } from './judge.js';
 import { quadraticWeightedKappa, type Grade } from './metrics.js';
 import { loadQueries, saveJudgements } from './pools.js';
 import { candidatePool } from './retrieve.js';
-import { connect } from './services.js';
+import { connect, mapLimit } from './services.js';
 import { readJudgements } from './run.js';
 import type { EvalQuery, JudgeLabel, JudgementFile, QueryClass } from './types.js';
 
@@ -56,9 +56,14 @@ export async function judgeAll(cfg: EvalConfig, opts: JudgeAllOptions): Promise<
       existing.labels.filter((l) => l.judge !== cfg.judge.second).map((l) => `${l.queryId}:${l.entryId}`),
     );
 
-    // Pool A needs grades. Pool N needs its *absence* confirmed, which is the
-    // same operation — grade the candidates and check that none is relevant.
-    let targets = queries.filter((q) => q.pool === 'A' || q.pool === 'N');
+    // Pool A only.
+    //
+    // Pool B needs no judge — its gold set is the entry each question was written
+    // from. Pool N was absence-verified when it was generated, and contributes no
+    // ranking metric, so re-grading it here buys a few documentary labels for
+    // roughly 40 minutes of judging. Anything promoted out of Pool N by that
+    // verification became a Pool A query and is judged as one.
+    let targets = queries.filter((q) => q.pool === 'A');
     if (opts.limit) targets = targets.slice(0, opts.limit);
 
     const labels: JudgeLabel[] = [...existing.labels];
@@ -67,16 +72,23 @@ export async function judgeAll(cfg: EvalConfig, opts: JudgeAllOptions): Promise<
     let graded = 0;
     let skipped = 0;
 
-    for (const [i, q] of targets.entries()) {
+    // Queries are independent, so they run concurrently. Sequentially this took
+    // ~3.6 min per query — a full pass measured in hours, dominated by waiting on
+    // a reasoning model. Bounded by the same concurrency as the rest of the
+    // harness, because the LLM gateway and the embedder are shared with the
+    // indexer and saturating either is how a "measurement" starts measuring
+    // contention.
+    let done = 0;
+    await mapLimit(targets, cfg.concurrency, async (q) => {
       const { ids, sources } = await candidatePool(stack, cfg, q);
       const pending = opts.topUp ? ids.filter((id) => !alreadyLabelled.has(`${q.id}:${id}`)) : ids;
       if (!pending.length) {
         skipped++;
-        continue;
+        return;
       }
       const candidates = await toCandidates(stack.catalog, pending);
       process.stderr.write(
-        `[${i + 1}/${targets.length}] ${q.pool} ${q.class} — ${candidates.length} candidates ` +
+        `[${++done}/${targets.length}] ${q.class} — ${candidates.length} candidates ` +
           `(hybrid ${sources.hybrid.length}, fts ${sources.fts.length}, dense ${sources.dense.length})\n`,
       );
 
@@ -99,7 +111,11 @@ export async function judgeAll(cfg: EvalConfig, opts: JudgeAllOptions): Promise<
         }
         for (const u of r.unjudged) unjudged.push({ queryId: q.id, entryId: u.entryId, reason: u.reason });
       }
-    }
+    });
+    // Concurrency makes arrival order nondeterministic, and the κ subsample is
+    // drawn from this list — so sort before sampling, or the same seed would pick
+    // a different subsample on every run and κ would stop being reproducible.
+    forKappa.sort((a, b) => a.queryId.localeCompare(b.queryId) || a.entryId - b.entryId);
 
     // Agreement over a grade-stratified subsample, re-judged by a second model.
     let agreement: JudgementFile['agreement'];
