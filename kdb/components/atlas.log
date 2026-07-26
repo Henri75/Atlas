@@ -795,3 +795,36 @@
 
 **Status:**
 - In-Progress
+---
+### [2026-07-26] - Phase 1: per-entry vector coverage tracking + unified reconciler
+
+**Objective:**
+- Make it impossible for an entry to sit in Postgres, unsearchable, with nothing detecting or repairing it.
+
+**Summary of Work:**
+- entries.vectorized_in TEXT: the collection an entry's vectors live in. NULL or != active means "not searchable now".
+- indexEntries marks an entry only after its FINAL chunk upserts. batchChunks now yields {items, completed} because chunk order (and therefore "this entry is finished") is only knowable inside the generator.
+- auditVectorCoverage: scrolls the collection's entry_ids and writes only the DELTA against the column. Adopts present-but-unmarked rows, clears marked-but-missing rows.
+- backfillVectors re-pointed from "page all entries by id" to "page entries not covered in the active collection". Backfill and repair are now one path; backfill_cursor retired since the column is the progress record.
+- needsBackfill(uncoveredEntries) replaces needsBackfill(points, entries).
+- Boot runs the audit only when countUncovered > 0, so a healthy boot skips the scroll entirely.
+
+**Key Decisions & Rationale:**
+- Collection-valued, not a timestamp: a model switch changes the collection name, so every row goes stale for free. Self-review caught that vectorized_at would report full coverage against a new empty collection and silently skip the rebuild.
+- Audit writes only the delta. First implementation re-marked all 323k rows every run — measured 13 minutes, which makes periodic auditing impossible, and periodic is the whole point.
+- Audit gated on uncovered > 0 rather than a settings marker: it runs exactly when something needs explaining, and it is what stops the column's introduction from triggering a full re-embed.
+
+**Code/Files Modified:**
+- packages/core/src/catalog.ts (schema + markVectorized/clearVectorized/countUncovered/uncoveredEntriesAfter/entryCoverage, shared rowToEntry)
+- packages/core/src/qdrant.ts (allEntryIds)
+- packages/indexer/src/pipeline.ts (batchChunks, indexEntries, auditVectorCoverage, needsBackfill, backfillVectors)
+- packages/indexer/src/main.ts (audit + reconcile on boot)
+- test/indexer/{indexEntries,backfill,scanDocs}.test.ts
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Verified in production, not just in unit tests — manufactured a real orphan (deleted an entry's points, cleared its mark), restarted, and watched the audit compute a correct zero delta, needsBackfill(1) fire, and the reconciler re-embed exactly that entry. Migration on 323,364 live entries adopted every existing vector and triggered zero re-embedding.
+- **What Failed:** (1) Backticks inside the SQL comment terminated the SCHEMA template literal. (2) A test using 'fetch failed' matched a transient pattern and burned 15s of retry backoff before timing out; a non-transient message tests the same path in 1s. (3) The first audit was O(all entries) in writes, not O(delta) — only visible because the migration took 13 minutes.
+- **Lesson:** A safety net measured in the wrong unit is worse than none: needsBackfill compared chunks to entries and read as protection for months while 39 entries sat unsearchable.
+
+**Status:**
+- In-Progress

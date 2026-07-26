@@ -3,20 +3,20 @@ import { HttpError } from '@atlas/core';
 import { backfillVectors, needsBackfill } from '../../packages/indexer/src/pipeline.js';
 
 /**
- * Regression: the trigger originally required an *empty* collection, so a
- * backfill that died partway (leaving 1,886 of 70,135 vectors) was never
- * retried — the collection stayed permanently under-populated.
+ * Regression: this used to compare Qdrant points to catalog entries — different
+ * units — so it could never fire. On 2026-07-25 the collection held 361,941
+ * points for 323,176 entries while 39 entries, including two whole documents,
+ * had no vectors at all and were silently unsearchable.
  */
 describe('needsBackfill', () => {
-  it('fires when the collection has fewer vectors than the catalog has entries', () => {
-    expect(needsBackfill(0, 70135)).toBe(true);
-    expect(needsBackfill(1886, 70135)).toBe(true); // resumed after a crash
+  it('fires whenever any entry is not searchable in the active collection', () => {
+    expect(needsBackfill(1)).toBe(true);
+    expect(needsBackfill(39)).toBe(true); // the 2026-07-25 incident
+    expect(needsBackfill(70135)).toBe(true); // fresh collection after a model switch
   });
 
-  it('does not fire for a fresh install or a fully populated collection', () => {
-    expect(needsBackfill(0, 0)).toBe(false);
-    expect(needsBackfill(94744, 70135)).toBe(false); // chunks >= entries
-    expect(needsBackfill(70135, 70135)).toBe(false);
+  it('does not fire when coverage is complete', () => {
+    expect(needsBackfill(0)).toBe(false);
   });
 });
 
@@ -38,17 +38,24 @@ function makeDeps(totalEntries: number) {
   const upserted: any[] = [];
   const errors: any[] = [];
   const settings = new Map<string, string>();
+  /** entry id -> collection it is embedded in. */
+  const covered = new Map<number, string>();
   return {
     rows,
     upserted,
     errors,
     settings,
+    covered,
     deps: {
       catalog: {
-        countEntries: async () => totalEntries,
-        countEntriesUpTo: async (id: number) => rows.filter((r) => r.id <= id).length,
-        entriesAfter: async (cursor: number, limit: number) =>
-          rows.filter((r) => r.id > cursor).slice(0, limit),
+        countUncovered: async (c: string) =>
+          rows.filter((r) => covered.get(r.id) !== c).length,
+        uncoveredEntriesAfter: async (c: string, cursor: number, limit: number) =>
+          rows.filter((r) => covered.get(r.id) !== c && r.id > cursor).slice(0, limit),
+        // indexEntries marks coverage as each entry's final chunk lands.
+        markVectorized: vi.fn(async (ids: number[], c: string) => {
+          for (const id of ids) covered.set(id, c);
+        }),
         logError: vi.fn(async (...a: any[]) => void errors.push(a)),
         getSetting: async (k: string) => settings.get(k) ?? null,
         setSetting: async (k: string, v: string) => void settings.set(k, v),
@@ -67,10 +74,8 @@ function makeDeps(totalEntries: number) {
   };
 }
 
-const CURSOR_KEY = 'backfill_cursor:kdbscope_ollama_nomic_768';
-
 describe('backfillVectors', () => {
-  it('pages through every entry and upserts each one exactly once', async () => {
+  it('pages through every uncovered entry and upserts each one exactly once', async () => {
     const { deps, upserted } = makeDeps(75);
     const n = await backfillVectors(deps, { pageSize: 20 });
 
@@ -80,7 +85,7 @@ describe('backfillVectors', () => {
     expect(new Set(ids).size).toBe(75);
   });
 
-  it('reports progress against the total', async () => {
+  it('reports progress against the uncovered total', async () => {
     const { deps } = makeDeps(50);
     const seen: [number, number][] = [];
     await backfillVectors(deps, { pageSize: 20, onPage: (d, t) => void seen.push([d, t]) });
@@ -100,51 +105,54 @@ describe('backfillVectors', () => {
     expect(upserted).toHaveLength(0);
   });
 
-  /**
-   * Regression: an indexer restart used to re-embed from entry 1, throwing
-   * away hours of GPU time. The cursor is persisted per collection, so a
-   * different embedding model still rebuilds from scratch.
-   */
-  it('persists a cursor as it goes and clears it when finished', async () => {
-    const { deps, settings } = makeDeps(30);
+  it('is a no-op once every entry is covered', async () => {
+    const { deps, upserted } = makeDeps(30);
     await backfillVectors(deps, { pageSize: 10 });
-    // Cleared on completion so a later rebuild starts clean.
-    expect(settings.get(CURSOR_KEY)).toBe('');
+    upserted.length = 0;
+
+    // Second run: coverage is complete, so nothing is re-embedded.
+    expect(await backfillVectors(deps, { pageSize: 10 })).toBe(0);
+    expect(upserted).toHaveLength(0);
   });
 
-  it('resumes from the stored cursor instead of restarting', async () => {
-    const { deps, settings, upserted } = makeDeps(30);
-    settings.set(CURSOR_KEY, '20'); // entries 1..20 already embedded
+  /**
+   * Resumption comes from `vectorized_in`, not a stored cursor: an interrupted
+   * run simply re-selects whatever is still uncovered. Previously a persisted
+   * `backfill_cursor` could disagree with the actual state of the collection.
+   */
+  it('resumes by re-selecting uncovered entries, not from a stored cursor', async () => {
+    const { deps, upserted, covered } = makeDeps(30);
+    for (let id = 1; id <= 20; id++) covered.set(id, 'kdbscope_ollama_nomic_768');
 
     const embedded = await backfillVectors(deps, { pageSize: 10 });
 
-    expect(embedded).toBe(10); // only 21..30 re-embedded
+    expect(embedded).toBe(10); // only 21..30
     expect(upserted.map((p) => p.payload.entry_id)).toEqual(
       Array.from({ length: 10 }, (_, i) => 21 + i),
     );
   });
 
-  it('reports absolute progress but this-run throughput when resuming', async () => {
+  it('consults no stored cursor setting at all', async () => {
     const { deps, settings } = makeDeps(30);
-    settings.set(CURSOR_KEY, '20');
-    const seen: [number, number, number][] = [];
+    settings.set('backfill_cursor:kdbscope_ollama_nomic_768', '20');
 
-    await backfillVectors(deps, { pageSize: 10, onPage: (d, t, e) => void seen.push([d, t, e]) });
-
-    // done counts the resumed prefix; embedded counts only this run.
-    expect(seen).toEqual([[30, 30, 10]]);
-  });
-
-  it('ignores the cursor when resume is disabled', async () => {
-    const { deps, settings } = makeDeps(30);
-    settings.set(CURSOR_KEY, '20');
-    expect(await backfillVectors(deps, { pageSize: 10, resume: false })).toBe(30);
-  });
-
-  it('keys the cursor by collection so a model switch starts fresh', async () => {
-    const { deps, settings } = makeDeps(30);
-    settings.set('backfill_cursor:some_other_collection', '20');
+    // The stale setting must not shorten the run, and none is written back.
     expect(await backfillVectors(deps, { pageSize: 10 })).toBe(30);
+    expect([...settings.keys()]).toEqual(['backfill_cursor:kdbscope_ollama_nomic_768']);
+  });
+
+  /**
+   * The regression test for the design flaw caught in self-review: a
+   * `vectorized_at` timestamp would report these rows as covered against a
+   * brand-new empty collection, so the rebuild after a model switch would
+   * silently never run.
+   */
+  it('treats entries embedded in another collection as uncovered', async () => {
+    const { deps, upserted, covered } = makeDeps(30);
+    for (let id = 1; id <= 30; id++) covered.set(id, 'kdbscope_some_other_model_1024');
+
+    expect(await backfillVectors(deps, { pageSize: 10 })).toBe(30);
+    expect(upserted).toHaveLength(30);
   });
 
   /**
@@ -167,5 +175,21 @@ describe('backfillVectors', () => {
     expect(errors[0][2]).toBe('backfill');
     // The two healthy pages still landed.
     expect(upserted).toHaveLength(20);
+  });
+
+  it('leaves a failed page uncovered so the next run retries it', async () => {
+    const { deps, covered } = makeDeps(30);
+    let call = 0;
+    (deps.embedder.embed as any) = vi.fn(async (t: string[]) => {
+      if (++call === 1) throw new HttpError('invalid vector dimension', 400);
+      return t.map(() => [1, 2, 3]);
+    });
+
+    await backfillVectors(deps, { pageSize: 10 });
+
+    // Entries 1..10 failed and must still be pending, unlike the old cursor
+    // behaviour which skipped past them until a full rebuild.
+    for (let id = 1; id <= 10; id++) expect(covered.has(id)).toBe(false);
+    expect(await deps.catalog.countUncovered('kdbscope_ollama_nomic_768')).toBe(10);
   });
 });

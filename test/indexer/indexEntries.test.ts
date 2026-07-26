@@ -17,10 +17,19 @@ const entry = (id: number, body: string): { id: number; entry: Entry } => ({
 function makeDeps(embedImpl?: () => Promise<number[][]>) {
   const upserted: unknown[][] = [];
   const embedCalls: number[] = [];
+  /** Entry ids marked as vectorized, in the order indexEntries marked them. */
+  const marked: number[] = [];
+  const markedIn: string[] = [];
   return {
     deps: {
-      catalog: {} as any,
+      catalog: {
+        markVectorized: vi.fn(async (ids: number[], collection: string) => {
+          marked.push(...ids);
+          markedIn.push(collection);
+        }),
+      } as any,
       vectors: {
+        collection: 'test_collection',
         upsert: vi.fn(async (points: unknown[]) => {
           upserted.push(points);
         }),
@@ -38,6 +47,8 @@ function makeDeps(embedImpl?: () => Promise<number[][]>) {
     },
     upserted,
     embedCalls,
+    marked,
+    markedIn,
   };
 }
 
@@ -114,5 +125,85 @@ describe('indexEntries', () => {
     e.entry.meta = { docStatus: 'archived' };
     await indexEntries(deps, [e]);
     expect((upserted[0] as any[])[0].payload.doc_status).toBe('archived');
+  });
+
+  /**
+   * Coverage tracking. These pin the 2026-07-25 incident: entries were committed
+   * to Postgres, the embedder failed mid-file, and because insertEntries dedups
+   * on rescan they were never embedded again — silently unsearchable forever.
+   * An entry may only be marked once every one of its chunks has been upserted.
+   */
+  describe('vector coverage marking', () => {
+    it('marks an entry against the active collection once its chunks land', async () => {
+      const { deps, marked, markedIn } = makeDeps();
+      await indexEntries(deps, [entry(7, 'short body')]);
+      expect(marked).toEqual([7]);
+      // Recorded per collection, so a later model switch invalidates it.
+      expect(markedIn).toEqual(['test_collection']);
+    });
+
+    it('does NOT mark entries whose chunks were never embedded', async () => {
+      // Fails on the very first batch: nothing was upserted, so nothing may be
+      // claimed as covered. This is the regression test for the incident.
+      const { deps, marked } = makeDeps(async () => {
+        throw new Error('ollama embed failed: 500');
+      });
+      const inserted = Array.from({ length: 12 }, (_, i) => entry(i + 1, BIG_BODY));
+
+      await expect(indexEntries(deps, inserted)).rejects.toThrow(/embed failed/);
+      expect(marked).toEqual([]);
+    });
+
+    it('marks only the entries completed before a mid-file failure', async () => {
+      // Succeed for the first batch, then fail: entries whose chunks all landed
+      // in batch 1 are covered; the rest must stay unmarked so the reconciler
+      // picks them up.
+      //
+      // A non-transient message on purpose — 'fetch failed' would burn all five
+      // retries (~15s of backoff) to prove something the retry test already
+      // covers. What matters here is only that the later batch never upserts.
+      let call = 0;
+      const { deps, marked } = makeDeps(async () => {
+        if (++call > 1) throw new Error('ollama embed failed: 500');
+        return Array.from({ length: 32 }, () => [1, 2, 3]);
+      });
+      const inserted = Array.from({ length: 12 }, (_, i) => entry(i + 1, BIG_BODY));
+
+      await expect(indexEntries(deps, inserted)).rejects.toThrow(/embed failed/);
+
+      // Something was covered, but far from all — and never an entry whose
+      // chunks extend past the first batch.
+      expect(marked.length).toBeGreaterThan(0);
+      expect(marked.length).toBeLessThan(inserted.length);
+      expect(marked).toEqual([...marked].sort((a, b) => a - b));
+    });
+
+    it('marks an entry only after its final chunk, when it straddles batches', async () => {
+      // ~4 chunks per entry over a 32-chunk batch: entry 9's chunks span the
+      // batch boundary, so a naive per-batch mark would claim it too early.
+      const { deps, marked, upserted } = makeDeps();
+      const inserted = Array.from({ length: 12 }, (_, i) => entry(i + 1, BIG_BODY));
+
+      const marksAtFirstUpsert: number[] = [];
+      (deps.vectors as any).upsert = vi.fn(async (points: unknown[]) => {
+        upserted.push(points);
+        marksAtFirstUpsert.push(marked.length);
+      });
+
+      await indexEntries(deps, inserted);
+
+      expect(marked).toEqual(inserted.map((e) => e.id));
+      // No entry is marked before its own chunks have been upserted: the count
+      // of marks after the first batch is strictly less than the entry count.
+      expect(marksAtFirstUpsert[0]).toBeLessThan(inserted.length);
+    });
+
+    it('marks an entry that produces no chunks rather than looping forever', async () => {
+      // A body the chunker yields nothing for must not stay permanently
+      // uncovered — the reconciler would retry it on every pass.
+      const { deps, marked } = makeDeps();
+      await indexEntries(deps, [entry(3, '')]);
+      expect(marked).toContain(3);
+    });
   });
 });

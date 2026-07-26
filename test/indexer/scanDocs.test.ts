@@ -43,9 +43,11 @@ function makeDeps(opts: { storedVersion?: string | null; scanned?: boolean } = {
       synced.push([path, archived]);
       return archived ? [41, 42] : [];
     }),
+    markVectorized: vi.fn(async () => {}),
     logError: vi.fn(async () => {}),
   };
   const vectors = {
+    collection: 'test_collection',
     upsert: vi.fn(async () => {}),
     setDocStatus: vi.fn(async () => {}),
   };

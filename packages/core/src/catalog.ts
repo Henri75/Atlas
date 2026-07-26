@@ -121,6 +121,17 @@ CREATE INDEX IF NOT EXISTS usage_log_at_idx ON usage_log (at DESC);
 -- CREATE TABLE IF NOT EXISTS never adds a column to a table that already
 -- exists, so new columns need an explicit, idempotent ALTER.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS action_count INT NOT NULL DEFAULT 0;
+
+-- Which Qdrant collection this entry's vectors were written to. NULL, or any
+-- value other than the active collection, means "not searchable right now".
+--
+-- Collection-valued rather than a timestamp on purpose: the name encodes
+-- provider/model/dimension, so switching the embedding model invalidates every
+-- row for free. A vectorized_at timestamp would report full coverage against
+-- a brand-new empty collection and silently skip the rebuild.
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS vectorized_in TEXT;
+-- The reconciler's hot query. Partial, so it stays tiny while coverage is whole.
+CREATE INDEX IF NOT EXISTS entries_unvectorized ON entries (id) WHERE vectorized_in IS NULL;
 `;
 
 export interface ScanState {
@@ -133,6 +144,28 @@ export interface ScanState {
 export interface InsertedEntry {
   id: number;
   entry: Entry;
+}
+
+/** Shared by every query that rebuilds an Entry from the catalog. */
+const ENTRY_COLUMNS = `e.id, e.source_type, e.component, e.session_id, e.title, e.body,
+              e.occurred_at, e.source_path, e.source_ref, e.meta, p.slug`;
+
+/** Row → Entry. Kept in one place so re-embedding paths cannot drift apart. */
+function rowToEntry(row: any): Entry & { id: number } {
+  return {
+    id: row.id,
+    projectSlug: row.slug,
+    sourceType: row.source_type,
+    component: row.component ?? undefined,
+    sessionId: row.session_id ?? undefined,
+    title: row.title,
+    body: row.body,
+    occurredAt: row.occurred_at?.toISOString(),
+    sourcePath: row.source_path,
+    sourceRef: row.source_ref ?? undefined,
+    // Without meta a collection rebuild would drop kind/doc_status payloads.
+    meta: row.meta ?? undefined,
+  };
 }
 
 export class Catalog {
@@ -383,6 +416,78 @@ export class Catalog {
   }
 
   /**
+   * Record that these entries are fully embedded into `collection`.
+   *
+   * Called only after the upsert of their final chunk resolves — see
+   * indexEntries. Marking earlier would recreate the failure this column
+   * exists to prevent.
+   */
+  async markVectorized(ids: number[], collection: string): Promise<void> {
+    if (!ids.length) return;
+    await this.pool.query('UPDATE entries SET vectorized_in = $2 WHERE id = ANY($1)', [
+      ids,
+      collection,
+    ]);
+  }
+
+  /**
+   * Drop the coverage mark for entries whose vectors are gone.
+   *
+   * The catalog column cannot observe loss on the Qdrant side (a dropped
+   * collection, an orphan-reclaim bug, a restore from an older snapshot), so
+   * the deep audit clears the mark and lets the ordinary reconciler re-embed.
+   */
+  async clearVectorized(ids: number[]): Promise<void> {
+    if (!ids.length) return;
+    await this.pool.query('UPDATE entries SET vectorized_in = NULL WHERE id = ANY($1)', [ids]);
+  }
+
+  /**
+   * Every entry id with the collection it is currently believed to live in.
+   *
+   * The audit compares this against what Qdrant actually holds and writes only
+   * the difference. Returning the believed state (rather than ids alone) is what
+   * keeps a steady-state audit free: with coverage intact there is nothing to
+   * update, instead of re-marking all 323k rows.
+   */
+  async entryCoverage(): Promise<{ id: number; vectorizedIn: string | null }[]> {
+    const r = await this.pool.query('SELECT id, vectorized_in FROM entries');
+    return r.rows.map((row) => ({ id: row.id, vectorizedIn: row.vectorized_in }));
+  }
+
+  /** Entries not searchable in `collection` — the reconciler's backlog size. */
+  async countUncovered(collection: string): Promise<number> {
+    const r = await this.pool.query(
+      'SELECT count(*)::int AS n FROM entries WHERE vectorized_in IS DISTINCT FROM $1',
+      [collection],
+    );
+    return r.rows[0].n;
+  }
+
+  /**
+   * One page of entries that are not searchable in `collection`, by ascending
+   * id so the caller can page with a keyset cursor.
+   *
+   * `IS DISTINCT FROM` rather than `<>` is load-bearing: `<>` is NULL for a
+   * NULL left-hand side, so the never-embedded rows — the whole point of this
+   * query — would silently not match.
+   */
+  async uncoveredEntriesAfter(
+    collection: string,
+    cursor: number,
+    limit: number,
+  ): Promise<(Entry & { id: number })[]> {
+    const r = await this.pool.query(
+      `SELECT ${ENTRY_COLUMNS}
+       FROM entries e JOIN projects p ON p.id = e.project_id
+       WHERE e.vectorized_in IS DISTINCT FROM $1 AND e.id > $2
+       ORDER BY e.id ASC LIMIT $3`,
+      [collection, cursor, limit],
+    );
+    return r.rows.map(rowToEntry);
+  }
+
+  /**
    * Bring stored doc entries of one file in line with its current archive
    * classification. Needed because insertEntries is ON CONFLICT DO NOTHING:
    * a re-parse never touches rows that already exist. Returns the ids that
@@ -551,26 +656,12 @@ export class Catalog {
    */
   async entriesAfter(cursor: number, limit: number): Promise<(Entry & { id: number })[]> {
     const r = await this.pool.query(
-      `SELECT e.id, e.source_type, e.component, e.session_id, e.title, e.body,
-              e.occurred_at, e.source_path, e.source_ref, e.meta, p.slug
+      `SELECT ${ENTRY_COLUMNS}
        FROM entries e JOIN projects p ON p.id = e.project_id
        WHERE e.id > $1 ORDER BY e.id ASC LIMIT $2`,
       [cursor, limit],
     );
-    return r.rows.map((row) => ({
-      id: row.id,
-      projectSlug: row.slug,
-      sourceType: row.source_type,
-      component: row.component ?? undefined,
-      sessionId: row.session_id ?? undefined,
-      title: row.title,
-      body: row.body,
-      occurredAt: row.occurred_at?.toISOString(),
-      sourcePath: row.source_path,
-      sourceRef: row.source_ref ?? undefined,
-      // Without meta a collection rebuild would drop kind/doc_status payloads.
-      meta: row.meta ?? undefined,
-    }));
+    return r.rows.map(rowToEntry);
   }
 
   /** On-disk size of the catalog database. */

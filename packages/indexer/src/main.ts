@@ -12,6 +12,7 @@ import {
   getConfig,
 } from '@atlas/core';
 import {
+  auditVectorCoverage,
   backfillVectors,
   needsBackfill,
   processScanJob,
@@ -99,11 +100,14 @@ async function main() {
   }
 
   /**
-   * A collection holding fewer vectors than the catalog has entries means the
-   * embedding model changed (the dimension is part of the collection name) or
-   * a previous backfill died partway. Entries are never re-inserted
-   * (dedup_key), so a normal scan never re-emits them — the vectors must be
-   * rebuilt from Postgres.
+   * Any entry not embedded into the active collection is unsearchable, and a
+   * normal scan will never fix it: entries are never re-inserted (dedup_key),
+   * so nothing re-emits them. Vectors must be rebuilt from Postgres.
+   *
+   * One count covers both causes. A model switch changes the collection name
+   * (it encodes the dimension), so every row's `vectorized_in` goes stale at
+   * once and this rebuilds everything. An embedder outage leaves a handful
+   * stale and this repairs just those.
    *
    * This runs to completion *before* the scan worker starts. Both paths embed,
    * and a local Ollama serves one request at a time, so letting them compete
@@ -112,12 +116,31 @@ async function main() {
    * `active_collection` is only published once the rebuild finishes, so the
    * API keeps querying the previous, fully-populated collection throughout.
    */
-  const [vectorPoints, entryCount] = await Promise.all([vectors.count(), catalog.countEntries()]);
-  const rebuilding = needsBackfill(vectorPoints, entryCount);
+  /**
+   * Audit before trusting the column, but only when it claims something is
+   * missing. On a healthy boot the count is 0 and the scroll is skipped
+   * entirely; when the column is newly added every row reads as uncovered, and
+   * the audit adopts the vectors that already exist instead of letting the
+   * indexer re-embed the whole catalog for hours.
+   */
+  let uncovered = await catalog.countUncovered(vectors.collection);
+  if (uncovered > 0) {
+    const { adopted, cleared } = await auditVectorCoverage(deps);
+    // Counts are the *delta* the audit wrote, not totals: "adopted" is rows
+    // whose vectors were already present but unmarked, "cleared" is rows marked
+    // covered whose points are gone. Both zero means the column already matched
+    // the collection and the uncovered entries are genuinely unembedded.
+    console.log(
+      `[indexer] coverage audit: adopted ${adopted}, cleared ${cleared} ` +
+        `(against ${vectors.collection})`,
+    );
+    uncovered = await catalog.countUncovered(vectors.collection);
+  }
+  const rebuilding = needsBackfill(uncovered);
   if (rebuilding) {
     const previous = await catalog.getSetting('active_collection');
     console.log(
-      `[indexer] ${vectors.collection} holds ${vectorPoints} vectors for ${entryCount} entries — ` +
+      `[indexer] ${uncovered} entries are not searchable in ${vectors.collection} — ` +
         `re-embedding from the catalog${previous ? ` (search stays on ${previous})` : ''}`,
     );
     const t0 = Date.now();

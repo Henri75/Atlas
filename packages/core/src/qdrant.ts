@@ -306,6 +306,34 @@ export class VectorStore {
     }
   }
 
+  /**
+   * Every distinct `entry_id` that currently has at least one point.
+   *
+   * The ground truth for the coverage audit: the catalog column records what we
+   * *believe* we embedded, and this is what the collection actually holds. Only
+   * the id payload is fetched, so the scroll stays cheap (measured ~5-10s for
+   * ~362k points); the ids are held in a Set, a few MB at this scale.
+   */
+  async allEntryIds(): Promise<Set<number>> {
+    const seen = new Set<number>();
+    let offset: unknown;
+    for (;;) {
+      const res = await this.client.scroll(this.collection, {
+        limit: 16_000,
+        with_payload: ['entry_id'],
+        with_vector: false,
+        ...(offset ? { offset: offset as never } : {}),
+      });
+      for (const p of res.points) {
+        const id = (p.payload as { entry_id?: number } | null)?.entry_id;
+        if (typeof id === 'number') seen.add(id);
+      }
+      if (!res.next_page_offset) break;
+      offset = res.next_page_offset;
+    }
+    return seen;
+  }
+
   async count(): Promise<number> {
     try {
       const r = await this.client.count(this.collection, { exact: false });

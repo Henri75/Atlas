@@ -58,22 +58,47 @@ interface PendingChunk {
 }
 
 /**
+ * A batch of chunks to embed, plus the entries this batch *finishes*.
+ *
+ * Batches span entry boundaries, so "which entries are now fully embedded" is
+ * not derivable from the batch contents alone: an entry whose chunks straddle
+ * the boundary is only complete once the later batch lands. Carrying the answer
+ * out of the generator, where chunk order is known, keeps the caller honest.
+ */
+interface ChunkBatch {
+  items: PendingChunk[];
+  /** Entry ids whose final chunk is in this batch (or which had no chunks). */
+  completed: number[];
+}
+
+/**
  * Yield chunks in fixed-size batches without materializing every chunk of a
  * file first — a single 38MB transcript produces tens of thousands of chunks.
  */
-function* batchChunks(inserted: InsertedEntry[]): Generator<PendingChunk[]> {
-  let batch: PendingChunk[] = [];
+function* batchChunks(inserted: InsertedEntry[]): Generator<ChunkBatch> {
+  let items: PendingChunk[] = [];
+  let completed: number[] = [];
   for (const { id, entry } of inserted) {
     const chunks = chunk(`${entry.title}\n\n${entry.body}`);
+    // Nothing to embed: mark it complete anyway, or the reconciler would retry
+    // this entry on every single pass, forever.
+    if (!chunks.length) {
+      completed.push(id);
+      continue;
+    }
     for (const [seq, text] of chunks.entries()) {
-      batch.push({ entryId: id, entry, seq, text });
-      if (batch.length === EMBED_BATCH) {
-        yield batch;
-        batch = [];
+      items.push({ entryId: id, entry, seq, text });
+      if (seq === chunks.length - 1) completed.push(id);
+      if (items.length === EMBED_BATCH) {
+        yield { items, completed };
+        items = [];
+        completed = [];
       }
     }
   }
-  if (batch.length) yield batch;
+  // `completed` can be non-empty with no items left (a trailing zero-chunk
+  // entry), so this cannot be guarded on items alone.
+  if (items.length || completed.length) yield { items, completed };
 }
 
 /**
@@ -87,32 +112,40 @@ export async function indexEntries(
 ): Promise<number> {
   let done = 0;
   for (const batch of batchChunks(inserted)) {
-    // Local embedders (Ollama) drop connections under sustained load; give
-    // them room to recover rather than failing the whole file.
-    const dense = await withRetry(() => deps.embedder.embed(batch.map((b) => b.text)), {
-      attempts: 5,
-      baseDelayMs: 1000,
-    });
-    await deps.vectors.upsert(
-      batch.map((b, j) => ({
-        id: deterministicUuid(b.entry.projectSlug, b.entry.sourcePath, String(b.entryId), String(b.seq)),
-        dense: dense[j],
-        sparse: sparseVector(b.text),
-        payload: {
-          entry_id: b.entryId,
-          project: b.entry.projectSlug,
-          source_type: b.entry.sourceType,
-          component: b.entry.component,
-          session_id: b.entry.sessionId,
-          // Lets search ask for insights/summaries/actions directly.
-          kind: (b.entry.meta?.kind as string | undefined) ?? undefined,
-          // Archived docs are downranked at query time; absence means active.
-          doc_status: (b.entry.meta?.docStatus as string | undefined) ?? undefined,
-          occurred_at: b.entry.occurredAt,
-        },
-      })),
-    );
-    done += batch.length;
+    if (batch.items.length) {
+      // Local embedders (Ollama) drop connections under sustained load; give
+      // them room to recover rather than failing the whole file.
+      const dense = await withRetry(() => deps.embedder.embed(batch.items.map((b) => b.text)), {
+        attempts: 5,
+        baseDelayMs: 1000,
+      });
+      await deps.vectors.upsert(
+        batch.items.map((b, j) => ({
+          id: deterministicUuid(b.entry.projectSlug, b.entry.sourcePath, String(b.entryId), String(b.seq)),
+          dense: dense[j],
+          sparse: sparseVector(b.text),
+          payload: {
+            entry_id: b.entryId,
+            project: b.entry.projectSlug,
+            source_type: b.entry.sourceType,
+            component: b.entry.component,
+            session_id: b.entry.sessionId,
+            // Lets search ask for insights/summaries/actions directly.
+            kind: (b.entry.meta?.kind as string | undefined) ?? undefined,
+            // Archived docs are downranked at query time; absence means active.
+            doc_status: (b.entry.meta?.docStatus as string | undefined) ?? undefined,
+            occurred_at: b.entry.occurredAt,
+          },
+        })),
+      );
+    }
+    // Only *after* the upsert resolves. Anything that throws above leaves these
+    // entries unmarked, so the reconciler re-embeds them instead of them
+    // becoming permanently unsearchable (the 2026-07-25 incident).
+    if (batch.completed.length) {
+      await deps.catalog.markVectorized(batch.completed, deps.vectors.collection);
+    }
+    done += batch.items.length;
     await onProgress?.(done);
   }
   return done;
@@ -350,15 +383,68 @@ async function scanDocs(
 }
 
 /**
- * Should the active collection be rebuilt from the catalog?
+ * Reconcile the coverage column against what the collection actually holds.
  *
- * True when the catalog has entries the collection cannot possibly serve.
- * Every entry produces at least one chunk, so `points < entries` means either
- * the embedding model changed (new, empty collection) or an earlier backfill
- * died partway. Both are repaired by the same idempotent rebuild.
+ * Two jobs, one scroll:
+ *  - **adopt**: entries whose vectors are present but unmarked. Without this the
+ *    column's introduction would read as "nothing is embedded" and trigger a
+ *    full re-embed of the entire catalog (hours) on the next boot.
+ *  - **clear**: entries marked as covered whose points are gone. The column
+ *    records what we believe we wrote; it cannot observe loss on the Qdrant side
+ *    (a dropped collection, an orphan-reclaim bug, a restore from an older
+ *    snapshot). Clearing turns that into ordinary reconciler work.
+ *
+ * Deliberately not run on every boot — it costs a full scroll. It is the slow,
+ * authoritative check behind the cheap `vectorized_in IS DISTINCT FROM` query.
  */
-export function needsBackfill(vectorPoints: number, entryCount: number): boolean {
-  return entryCount > 0 && vectorPoints < entryCount;
+export async function auditVectorCoverage(
+  deps: PipelineDeps,
+): Promise<{ adopted: number; cleared: number }> {
+  const collection = deps.vectors.collection;
+  const [inQdrant, believed] = await Promise.all([
+    deps.vectors.allEntryIds(),
+    deps.catalog.entryCoverage(),
+  ]);
+
+  // Write only the difference between what the column claims and what the
+  // collection holds. Re-marking every row would make a steady-state audit cost
+  // ~323k UPDATEs (measured: 13 minutes), which is far too expensive to run
+  // periodically — and the periodic run is the entire point.
+  const adopt: number[] = [];
+  const clear: number[] = [];
+  for (const { id, vectorizedIn } of believed) {
+    const present = inQdrant.has(id);
+    if (present && vectorizedIn !== collection) adopt.push(id);
+    else if (!present && vectorizedIn !== null) clear.push(id);
+  }
+
+  // Chunked: `id = ANY($1)` with 300k parameters would blow past what the
+  // driver and Postgres will accept in one statement.
+  const CHUNK = 5_000;
+  for (let i = 0; i < adopt.length; i += CHUNK) {
+    await deps.catalog.markVectorized(adopt.slice(i, i + CHUNK), collection);
+  }
+  for (let i = 0; i < clear.length; i += CHUNK) {
+    await deps.catalog.clearVectorized(clear.slice(i, i + CHUNK));
+  }
+  return { adopted: adopt.length, cleared: clear.length };
+}
+
+/**
+ * Should the reconciler run?
+ *
+ * Counted in *entries not searchable in the active collection*, which is the
+ * thing that actually matters, rather than inferred from aggregate sizes.
+ *
+ * The previous version compared Qdrant points to catalog entries — different
+ * units. One entry yields one or more chunks, so points exceed entries even
+ * with thousands of entries missing (measured 2026-07-25: 361,941 points vs
+ * 323,176 entries while 39 entries, including two whole documents, had no
+ * vectors at all). It could never fire, and a safety net with a unit bug reads
+ * as protection while providing none.
+ */
+export function needsBackfill(uncoveredEntries: number): boolean {
+  return uncoveredEntries > 0;
 }
 
 /**
@@ -375,51 +461,44 @@ export async function backfillVectors(
   opts: {
     pageSize?: number;
     /**
-     * `done` is the absolute number of entries covered (including any prefix a
-     * previous run finished); `embedded` counts only this run. Progress bars
-     * want `done`; throughput and ETA must be computed from `embedded`.
+     * `done` and `embedded` are both counted in entries processed by this run.
+     * They are equal now that only uncovered entries are ever selected — the
+     * signature keeps three arguments so callers computing throughput and
+     * progress separately need no change.
      */
     onPage?: (done: number, total: number, embedded: number) => void | Promise<void>;
-    /** Resume from a stored cursor rather than restarting from entry 1. */
-    resume?: boolean;
   } = {},
 ): Promise<number> {
   const pageSize = opts.pageSize ?? 200;
-  const total = await deps.catalog.countEntries();
-  // Keyed by collection: a different model's rebuild must start from scratch.
-  const cursorKey = `backfill_cursor:${deps.vectors.collection}`;
+  const collection = deps.vectors.collection;
+  const total = await deps.catalog.countUncovered(collection);
 
+  // The cursor is per-run and in-memory only. `vectorized_in` is the durable
+  // progress record, so an interrupted run resumes simply by selecting what is
+  // still uncovered — there is no stored cursor left to disagree with reality.
   let cursor = 0;
-  if (opts.resume !== false) {
-    const stored = await deps.catalog.getSetting(cursorKey).catch(() => null);
-    cursor = stored ? Number(stored) || 0 : 0;
-  }
-  // Entries at or below the cursor were embedded by an earlier run.
-  const alreadyDone = cursor > 0 ? await deps.catalog.countEntriesUpTo(cursor) : 0;
   let embedded = 0;
 
   for (;;) {
-    const rows = await deps.catalog.entriesAfter(cursor, pageSize);
+    const rows = await deps.catalog.uncoveredEntriesAfter(collection, cursor, pageSize);
     if (!rows.length) break;
-    const pageEnd = rows[rows.length - 1]!.id;
+    // Advance past the page even if it fails, or a permanently bad row would
+    // re-select forever. Its entries stay uncovered, so the next run retries
+    // them — previously a failed page was skipped until a full rebuild.
+    cursor = rows[rows.length - 1]!.id;
 
     const inserted: InsertedEntry[] = rows.map((r) => ({ id: r.id, entry: r }));
     try {
       await indexEntries(deps, inserted);
     } catch (e) {
       // A page that fails even after retries must not abandon hours of work;
-      // record it and keep going. The next full backfill picks it up.
+      // record it and keep going.
       await deps.catalog.logError(null, `entries>${cursor}`, 'backfill', (e as Error).message);
     }
-    cursor = pageEnd;
     embedded += rows.length;
-    // Persist after the page lands, so a restart resumes here rather than at 1.
-    await deps.catalog.setSetting(cursorKey, String(cursor)).catch(() => {});
-    await opts.onPage?.(alreadyDone + embedded, total, embedded);
+    await opts.onPage?.(embedded, total, embedded);
   }
 
-  // Finished: drop the cursor so a later rebuild of this collection starts clean.
-  await deps.catalog.setSetting(cursorKey, '').catch(() => {});
   return embedded;
 }
 
