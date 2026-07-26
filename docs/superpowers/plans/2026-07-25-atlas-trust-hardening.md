@@ -6,6 +6,7 @@
 | Date (UTC) | Change |
 |---|---|
 | 2026-07-25 23:20 | Initial plan. Phase 0 (heal) already executed and verified. |
+| 2026-07-26 04:25 | Phase 4 complete and verified: moved checkouts aliased to their canonical project, recovering 27,300 entries from scoped search; MCP guidance corrected. D2 withdrawn — the source is idle, not broken. All phases done. |
 | 2026-07-26 01:55 | Phase 3 complete and verified: `since`/`until` on MCP, `occurred_at` datetime index (3.11s → 0.004s), recency term, near-duplicate collapse (14/14 distinct titles, was 11/14), age labels beyond docs. B4 deferred with reasoning. |
 | 2026-07-26 01:35 | Phase 2 complete and verified: the exact incident question now answers correctly — "based on the retrieved sources… 11,227 entries in the surrounding period, 0 timestamped 2026-07-21" — and goes on to name a real mechanism instead of stopping. |
 | 2026-07-26 01:10 | Phase 1 complete and verified live: coverage column, delta-only audit, unified reconciler, periodic reconcile job, `unsearchableEntries` in status. A4 withdrawn — already fixed on 2026-07-09. |
@@ -49,7 +50,7 @@ Severity is judged by *what an agent does wrong* as a result.
 | C4 | No content-level dedup; 3 of 14 blocks were near-duplicates | incident sources | 3 |
 | C5 | `finalize()` applies age handling only to `sourceType === 'doc'` | `search.ts:104` | 3 |
 | D1 | Ghost slugs hold 23,184 real DeepCast entries that scoped queries miss | census | 4 |
-| D2 | `kdb_report` frozen at 2025-11-18 | 226 entries, one timestamp | 4 |
+| D2 | ~~`kdb_report` frozen at 2025-11-18~~ **NOT A BUG** — see Phase 4 | — | — |
 
 ## Phase 0 — Heal (DONE, verified)
 
@@ -297,18 +298,45 @@ session-dense and was being out-ranked — without weakening the structural
 guarantee that keeps explanatory sources in the window. Changing both at once
 would have made neither effect measurable.
 
-## Phase 4 — Catalog hygiene
+## Phase 4 — Catalog hygiene (DONE, verified in production)
 
-- **D1** Alias ghost slugs to canonical projects so scoping stops silently
-  dropping 23,184 real entries. These are older checkout paths with unique
-  transcripts, **not** duplicates — `SERVER_INSTRUCTIONS` currently tells agents
-  to discard them, which must be corrected. Changes project identity semantics,
-  so it needs its own ADR.
-- **D2** Decide `kdb_report`: repair or remove. A source frozen since 2025-11-18
-  that still answers queries is a trap.
+**D1 — moved checkouts are aliases, not duplicates.** See
+`docs/adr/20260726-moved-checkouts-are-aliases-not-duplicates.md`.
 
-**Tests** — `test/core/{discovery,selectedProjects}.test.ts`: alias resolution,
-scoped search spanning aliases, no double-counting in `atlas_projects`.
+`projects.alias_of` links a project whose slug ends with another's — the
+signature of a checkout that moved — to its canonical project. Scope expansion
+happens in `SearchService.search()`, so the vector path and the FTS fallback
+cannot disagree, and Ask measures coverage over the same widened scope.
+
+Entries are deliberately **not** re-attributed: `Catalog.dedupKey` hashes
+`projectSlug`, so migrated rows would keep dedup keys computed from the ghost
+slug while the next scan computes canonical ones — and `ON CONFLICT DO NOTHING`
+would then insert all 27,300 a second time. Aliasing is metadata-only, needs no
+re-embed, and is reversible by clearing one column.
+
+**Verified live** (2026-07-26): 8 aliases linked, recovering **27,300 entries**.
+`…-deepcast-lycos` correctly resolved to `deepcast-lycos` rather than `deepcast`
+(longest match), while genuinely standalone projects — `myllm`, `freerouting`,
+the `paperclip` workspaces, and the code root `users-nasta-coding-new` — were
+left alone. A search scoped to `deepcast` now returns 2025-era hits from
+`volumes-cloudbox-coding-deepcast` that it previously excluded in silence.
+
+`SERVER_INSTRUCTIONS` and the `atlas_projects` description were telling agents
+these rows were "ghost duplicates — prefer the clean slug", i.e. instructing them
+to discard the only copy of that period's history. Both now say the opposite, and
+`aliasOf` is surfaced on every alias row.
+
+**D2 — withdrawn, not a bug.** `kdb_report` looked frozen at 2025-11-18. It is
+not broken: the source type indexes ad-hoc markdown in a project's `kdb/`
+directory, `occurredAt` is the file mtime, and those DeepCast files genuinely
+have not been modified since 2025-11-18 (confirmed on disk). A frozen date
+correctly reflects frozen files.
+
+That is the **third** finding in this plan to dissolve under checking (with A4
+and the `recentErrors` claim), all the same shape: reading a max/count from a
+table as present-tense state rather than as a record of the past. Worth naming as
+a recurring failure mode, since it is a milder version of the incident this whole
+plan exists to fix.
 
 ## Sequencing and risk
 

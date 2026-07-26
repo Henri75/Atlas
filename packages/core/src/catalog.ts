@@ -12,6 +12,7 @@ import {
   type TimelineItem,
 } from './types.js';
 import { contentHash, deterministicUuid } from './ids.js';
+import { resolveProjectAlias } from './discovery.js';
 
 /**
  * Postgres catalog: projects, scan state, entries, sessions, errors, runs.
@@ -131,6 +132,14 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS action_count INT NOT NULL DEFAULT 
 -- row for free. A vectorized_at timestamp would report full coverage against
 -- a brand-new empty collection and silently skip the rebuild.
 ALTER TABLE entries ADD COLUMN IF NOT EXISTS vectorized_in TEXT;
+
+-- A project that is an older location of another (a moved checkout). Its Claude
+-- transcripts no longer match any code root, so they were filed under a slug
+-- derived from the whole old path. The entries are real and unique -- the only
+-- copy of that era -- so rather than re-attributing them (which would rewrite
+-- every dedup_key and risk duplicating the catalog on the next scan) the scope
+-- of a search simply expands to include them.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS alias_of INT REFERENCES projects(id);
 -- The reconciler's hot query. Partial, so it stays tiny while coverage is whole.
 CREATE INDEX IF NOT EXISTS entries_unvectorized ON entries (id) WHERE vectorized_in IS NULL;
 `;
@@ -286,9 +295,11 @@ export class Catalog {
   async listProjects(): Promise<(Project & { entryCount: number })[]> {
     const r = await this.pool.query(
       `SELECT p.id, p.slug, p.name, p.root_path, p.has_kdb, p.discovered_at,
-              count(e.id)::int AS entry_count
-       FROM projects p LEFT JOIN entries e ON e.project_id = p.id
-       GROUP BY p.id ORDER BY entry_count DESC, p.slug`,
+              c.slug AS alias_of_slug, count(e.id)::int AS entry_count
+       FROM projects p
+       LEFT JOIN entries e ON e.project_id = p.id
+       LEFT JOIN projects c ON p.alias_of = c.id
+       GROUP BY p.id, c.slug ORDER BY entry_count DESC, p.slug`,
     );
     return r.rows.map((row) => ({
       id: row.id,
@@ -297,6 +308,7 @@ export class Catalog {
       rootPath: row.root_path,
       hasKdb: row.has_kdb,
       discoveredAt: row.discovered_at?.toISOString?.() ?? String(row.discovered_at),
+      ...(row.alias_of_slug ? { aliasOf: row.alias_of_slug } : {}),
       entryCount: row.entry_count,
     }));
   }
@@ -423,6 +435,49 @@ export class Catalog {
    * indexEntries. Marking earlier would recreate the failure this column
    * exists to prevent.
    */
+  /**
+   * Recompute which projects are older locations of which, from slugs alone.
+   *
+   * Idempotent and cheap (tens of rows), so it runs on every scheduler tick:
+   * a project discovered later must be able to adopt a ghost that was created
+   * before it existed.
+   */
+  async refreshProjectAliases(): Promise<number> {
+    const r = await this.pool.query('SELECT id, slug, root_path FROM projects');
+    const rows = r.rows.map((x) => ({ id: x.id, slug: x.slug, rootPath: x.root_path }));
+    const byId = new Map(rows.map((p) => [p.slug, p.id]));
+
+    let linked = 0;
+    for (const p of rows) {
+      // Only ghosts can be aliases; a discovered project is authoritative.
+      const target = p.rootPath ? null : resolveProjectAlias(p.slug, rows);
+      const targetId = target ? (byId.get(target) ?? null) : null;
+      await this.pool.query('UPDATE projects SET alias_of = $2 WHERE id = $1 AND alias_of IS DISTINCT FROM $2', [
+        p.id,
+        targetId,
+      ]);
+      if (targetId) linked++;
+    }
+    return linked;
+  }
+
+  /**
+   * Widen a set of project slugs to include the older locations of each.
+   *
+   * Without this, scoping to "deepcast" silently excluded 27,300 entries filed
+   * under the slugs of paths the repo used to live at — the failure that made
+   * scoped search untrustworthy and led the MCP instructions to tell agents to
+   * ignore real history.
+   */
+  async expandProjectScope(slugs: string[]): Promise<string[]> {
+    if (!slugs.length) return slugs;
+    const r = await this.pool.query(
+      `SELECT a.slug FROM projects a JOIN projects c ON a.alias_of = c.id WHERE c.slug = ANY($1)`,
+      [slugs],
+    );
+    return [...new Set([...slugs, ...r.rows.map((x) => x.slug)])];
+  }
+
   /**
    * What the index holds for each named project: entry count and the span of
    * `occurred_at`. Empty list means every project.

@@ -45,7 +45,8 @@ writeFileSync(join(root, 'DeepCast/kdb/changelog.log'), 'x');
 describe('scheduleScans job options', () => {
   const run = async () => {
     const add = vi.fn(async () => {});
-    const catalog = { upsertProject: vi.fn(async () => 1) } as any;
+    const catalog = { refreshProjectAliases: async () => 0,
+    upsertProject: vi.fn(async () => 1) } as any;
     const cfg = parseConfig({ CODE_ROOT: root, CLAUDE_PROJECTS_DIR: join(root, 'nope') });
     await scheduleScans(cfg, catalog, { add } as any);
     return add;

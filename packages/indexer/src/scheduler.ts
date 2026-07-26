@@ -107,6 +107,12 @@ export async function scheduleScans(
       enqueued++;
     }
   }
+
+  // After every project is upserted, not before: a canonical project discovered
+  // on this tick must be able to adopt a ghost created on an earlier one.
+  const aliased = await catalog.refreshProjectAliases();
+  if (aliased) console.log(`[indexer] ${aliased} project(s) linked as older locations`);
+
   return enqueued;
 }
 

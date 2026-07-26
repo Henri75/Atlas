@@ -45,6 +45,9 @@ function makeService(opts: {
   let call = 0;
   const catalog = {
     getEntries: async (ids: number[]) => new Map(ids.map((i) => [i, { body: 'full body' }])),
+    // Aliases widen the scope before coverage is measured, so the mock must
+    // answer it; without this the measurement is swallowed and reads as empty.
+    expandProjectScope: async (slugs: string[]) => slugs,
     coverage: async () =>
       opts.coverage ?? [
         {
@@ -126,6 +129,7 @@ describe('AskService retrieval report', () => {
     };
     const catalog = {
       getEntries: async (ids: number[]) => new Map(ids.map((i) => [i, { body: 'b' }])),
+      expandProjectScope: async (slugs: string[]) => slugs,
       coverage: async () => {
         throw new Error('catalog down');
       },

@@ -86,3 +86,37 @@ export function claudeDirFallbackSlug(
   }
   return slugify(tail.replace(/^-+/, ''));
 }
+
+/**
+ * Resolve a ghost project slug to the canonical project it is an older location
+ * of, or null if it stands on its own.
+ *
+ * When a repo moves, its existing Claude transcript directories no longer match
+ * any configured code root, so `claudeDirFallbackSlug` derives a slug from the
+ * entire old path — "users-nasta-documents-coding-new-deepcast" for what is
+ * simply DeepCast. Those entries are the only copy of that era's history (27,300
+ * of them as of 2026-07-26), yet a search scoped to "deepcast" missed every one,
+ * and the MCP instructions told agents to discard them as duplicates.
+ *
+ * Matching on slugs alone is sufficient and stable: both slugs are derived from
+ * the same trailing path segments, so a moved checkout's slug always *ends with*
+ * its canonical slug. Requiring a `-` boundary stops "notdeepcast" matching
+ * "deepcast"; requiring a real `rootPath` stops one ghost aliasing onto another
+ * and chaining; taking the longest match keeps DeepCast/Lycos out of DeepCast.
+ *
+ * No tie-breaking is needed: `projects.slug` is UNIQUE, so at most one project
+ * can carry the longest matching suffix.
+ */
+export function resolveProjectAlias<T extends { slug: string; rootPath: string }>(
+  slug: string,
+  projects: T[],
+): string | null {
+  let best: string | null = null;
+  for (const p of projects) {
+    // Only a discovered project can be an alias target, and never itself.
+    if (!p.rootPath || p.slug === slug) continue;
+    if (!slug.endsWith(`-${p.slug}`)) continue;
+    if (p.slug.length > (best?.length ?? 0)) best = p.slug;
+  }
+  return best;
+}

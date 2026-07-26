@@ -454,7 +454,10 @@ export class AskService {
     if (!projects.length) return undefined;
 
     try {
-      const coverage = await this.catalog.coverage(projects);
+      // Same widening search applies, so coverage describes what was actually
+      // searched rather than a narrower scope the caller merely asked for.
+      const scope = await this.catalog.expandProjectScope(projects);
+      const coverage = await this.catalog.coverage(scope);
       if (!coverage.length) return undefined;
 
       const asked = extractDateWindow(question);
@@ -462,8 +465,8 @@ export class AskService {
 
       const around = paddedWindow(asked, WINDOW_PAD_DAYS);
       const [exact, padded] = await Promise.all([
-        this.catalog.countInWindow(projects, asked.since, asked.until),
-        this.catalog.countInWindow(projects, around.since, around.until),
+        this.catalog.countInWindow(scope, asked.since, asked.until),
+        this.catalog.countInWindow(scope, around.since, around.until),
       ]);
       return {
         coverage,

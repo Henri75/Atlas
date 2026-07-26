@@ -78,7 +78,7 @@ How to use it well:
 - "What/why/when" questions needing synthesis: atlas_ask, then verify via its cited sources.
 - Orienting in an unfamiliar project: atlas_projects → atlas_timeline → atlas_component_history.
 - Prefer UNSCOPED search/ask first. A feature often lives under a different project slug than you expect; a wrong 'project' filter is the main reason a real answer looks missing.
-- Slugs that look like flattened absolute paths (e.g. "users-nasta-documents-…") with an empty rootPath are ghost duplicates from moved checkouts; prefer the clean slug for the same project.
+- Slugs that look like flattened absolute paths (e.g. "users-nasta-documents-…") are a project's EARLIER LOCATION, from before its checkout moved. They are NOT duplicates — they hold the only copy of that period's history. They carry an aliasOf field naming the canonical project, and scoping to that canonical slug now includes them automatically, so scope normally and ignore the split.
 - Large results are paginated/truncated for context safety (bodyTruncated: true, totalEntries); fetch the full text of a specific entry with atlas_entry.
 
 WHY THESE TRIGGERS (background — the rules above are the operative part):
@@ -180,7 +180,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'atlas_projects',
     description:
-      'List all indexed projects with entry counts. Use it to find the right slug before scoping any other tool. Slugs that look like flattened absolute paths ("users-nasta-documents-…") with an empty rootPath are ghost duplicates of moved checkouts — prefer the clean slug.',
+      'List all indexed projects with entry counts. Use it to find the right slug before scoping any other tool. A row carrying `aliasOf` is a project\'s earlier location (its checkout moved); its entries are unique history, not duplicates, and are already included when you scope to the canonical slug it names.',
     schema: {},
     request: () => ({ path: '/api/projects' }),
   },

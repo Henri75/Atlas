@@ -922,3 +922,35 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-26] - Phase 4: moved checkouts are aliases, not duplicates
+
+**Objective:**
+- Stop scoped search silently excluding 27,300 entries, and stop telling agents to discard them.
+
+**Summary of Work:**
+- resolveProjectAlias(): a project whose slug ENDS WITH another's is an older location of it. Guards: '-' boundary (notdeepcast != deepcast), target must have a real rootPath (no ghost-to-ghost chaining), longest match wins (…-deepcast-lycos -> deepcast-lycos, not deepcast). No tie-break needed: projects.slug is UNIQUE.
+- projects.alias_of column; refreshProjectAliases() runs every scheduler tick (order-independent, so a canonical project discovered later adopts an earlier ghost).
+- SearchService.search() expands the scope before anything filters on it, so the vector path and the FTS fallback cannot disagree. AskService.measure() measures coverage over the same widened scope.
+- aliasOf surfaced on atlas_projects; SERVER_INSTRUCTIONS corrected.
+- ADR: docs/adr/20260726-moved-checkouts-are-aliases-not-duplicates.md
+
+**Key Decisions & Rationale:**
+- DID NOT re-attribute entries, which was the intuitive fix and is unsafe: Catalog.dedupKey hashes projectSlug, so migrated rows keep dedup keys computed from the ghost slug while the next scan computes canonical ones — ON CONFLICT DO NOTHING would then insert all 27,300 a second time. Doing it properly means re-hashing every body AND rewriting every vector payload. Aliasing is metadata-only, no re-embed, reversible by clearing one column.
+- Did not bump PROJECT_GROUPING either: that path wipes and re-parses everything, hours of re-embed to fix a scoping bug metadata solves.
+- Alias rows stay visible in atlas_projects rather than being folded away — the split is real and worth seeing; hiding it would repeat the original sin of pretending the data model is tidier than it is.
+
+**Code/Files Modified:**
+- packages/core/src/{discovery.ts,catalog.ts,search.ts,ask.ts,types.ts}
+- packages/indexer/src/scheduler.ts, packages/mcp/src/tools.ts
+- test/core/projectAliases.test.ts (new), askRetrievalReport.test.ts, test/indexer/scheduler.test.ts
+- docs/adr/20260726-moved-checkouts-are-aliases-not-duplicates.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** 8 aliases linked, 27,300 entries recovered. Verified live: a search scoped to deepcast now returns 2025-11-25 hits from volumes-cloudbox-coding-deepcast that it previously excluded in silence. Genuinely standalone projects (myllm, freerouting, paperclip workspaces, and the code root users-nasta-coding-new) correctly left alone.
+- **What Failed:** Wrote a test asserting the matcher refuses an "ambiguous" tie between two projects with the same slug — an impossible state, since projects.slug is UNIQUE. Deleted the test and the dead tie-breaking branch rather than keeping defensive code for a state the schema forbids. Also put backticks inside a template literal in SERVER_INSTRUCTIONS again, same mistake as the SCHEMA one on 2026-07-25.
+- **D2 WITHDRAWN:** kdb_report is not frozen-because-broken. The source indexes ad-hoc markdown in a project's kdb/ dir, occurredAt is the file mtime, and those DeepCast files genuinely have not been touched since 2025-11-18 (confirmed on disk).
+- **Lesson:** D2 is the THIRD finding in this plan to dissolve under checking (with A4 and recentErrors), all the same shape — reading a max/count from a table as present-tense state rather than as a record of the past. That is a milder version of the incident this whole plan exists to fix, committed by me while fixing it.
+
+**Status:**
+- Completed

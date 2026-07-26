@@ -22,6 +22,12 @@ export const ALL_SOURCE_TYPES: SourceType[] = [
 ];
 
 export interface Project {
+  /**
+   * Canonical slug when this project is an older location of another (a moved
+   * checkout). Its entries are real and unique — scoping to the canonical slug
+   * includes them automatically.
+   */
+  aliasOf?: string;
   id: number;
   slug: string;
   name: string;

@@ -3,7 +3,7 @@ import { DEFAULT_AGING_MONTHS, DEFAULT_ARCHIVED_PENALTY, deriveDocAge } from './
 import type { EmbeddingProvider } from './embeddings/types.js';
 import type { VectorStore } from './qdrant.js';
 import { sparseVector } from './sparse.js';
-import type { SearchFilters, SearchHit, SearchResult } from './types.js';
+import { selectedProjects, type SearchFilters, type SearchHit, type SearchResult } from './types.js';
 
 /**
  * Search orchestration with the graceful-degradation chain:
@@ -56,6 +56,10 @@ export class SearchService {
   async search(q: string, filters: SearchFilters = {}, limit = 20): Promise<SearchResult> {
     const t0 = Date.now();
     await this.syncCollection(t0);
+    // Widen the scope to the project's older locations before anything filters
+    // on it. Both the vector path and the FTS fallback flow through here, so
+    // they cannot disagree about what "scoped to deepcast" means.
+    filters = await this.expandScope(filters);
     const sparse = sparseVector(q);
 
     let dense: number[] | undefined;
@@ -85,6 +89,23 @@ export class SearchService {
       // Qdrant unavailable → keyword fallback straight from Postgres.
       const hits = await this.catalog.ftsSearch(q, filters, fetchLimit);
       return { hits: this.finalize(hits, limit), mode: 'fts', degraded: true, tookMs: Date.now() - t0 };
+    }
+  }
+
+  /**
+   * Include a project's aliases — the slugs its history was filed under before
+   * the checkout moved. Best-effort: a catalog hiccup must narrow the search,
+   * never fail it.
+   */
+  private async expandScope(filters: SearchFilters): Promise<SearchFilters> {
+    const selected = selectedProjects(filters);
+    if (!selected.length) return filters;
+    try {
+      const expanded = await this.catalog.expandProjectScope(selected);
+      if (expanded.length === selected.length) return filters;
+      return { ...filters, project: undefined, projects: expanded };
+    } catch {
+      return filters;
     }
   }
 
