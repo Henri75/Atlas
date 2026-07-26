@@ -112,6 +112,58 @@ describe('AskService.askStream', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  /**
+   * A stream that ends without ever producing text is a failure, not an answer.
+   *
+   * The non-streaming path already refuses this: `chatComplete` throws
+   * `EmptyCompletionError` when the completion is blank, which is what a
+   * reasoning model returns once `max_tokens` is spent on reasoning
+   * (`finish_reason: "length"`). The streaming path had no such guard — zero
+   * content frames plus a normal `[DONE]` meant the `for await` body never ran,
+   * so `done` reported `degraded: false` with metrics, and the UI rendered an
+   * empty answer beside real sources. This is the path a human sees, so it was
+   * the worse half of the two to leave unguarded.
+   */
+  it('reports a stream that produced no text as degraded, not as an answer', async () => {
+    // Role-only opener and a usage frame, exactly what a truncated reasoning
+    // model sends: telemetry arrives, content never does.
+    const body =
+      `data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant' } }] })}\n\n` +
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n` +
+      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 9000, completion_tokens: 2048, total_tokens: 11048 } })}\n\n` +
+      'data: [DONE]\n\n';
+    const svc = makeService([hit], body);
+    const events = await collect(svc.askStream('what changed?'));
+
+    // The sources are still worth having, so they are still emitted.
+    expect(events[0]).toMatchObject({ type: 'sources' });
+    const text = events
+      .filter((e) => e.type === 'delta')
+      .map((e: any) => e.text)
+      .join('');
+    expect(text).not.toBe('');
+    expect(text).toMatch(/no answer text/i);
+    // And the finish reason is named, because "empty" alone does not tell a
+    // reader whether the model was cut off or genuinely had nothing to say.
+    expect(text).toMatch(/length/);
+    expect(events.at(-1)).toMatchObject({ type: 'done', degraded: true });
+  });
+
+  it('still reports a normal answer as healthy', async () => {
+    // Guard against over-correcting: content present must stay degraded: false.
+    const svc = makeService([hit], frame('a real answer [1]') + 'data: [DONE]\n\n');
+    const events = await collect(svc.askStream('q'));
+    expect(events.at(-1)).toMatchObject({ type: 'done', degraded: false });
+  });
+
+  it('treats a stream of only empty-string deltas as no answer', async () => {
+    // The SSE parser drops falsy content, so this arrives as zero deltas too —
+    // but assert it explicitly, since a future parser change could pass them on.
+    const svc = makeService([hit], frame('') + frame('') + 'data: [DONE]\n\n');
+    const events = await collect(svc.askStream('q'));
+    expect(events.at(-1)).toMatchObject({ type: 'done', degraded: true });
+  });
+
   it('degrades gracefully and fast when the LLM stream fails', async () => {
     const spy = vi.fn(async () => {
       throw new Error('fetch failed');

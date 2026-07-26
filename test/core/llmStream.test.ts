@@ -81,6 +81,47 @@ describe('createSseParser', () => {
       expect(createSseParser(() => {})(frame('x'))).toEqual(['x']);
     });
   });
+
+  /**
+   * The finish reason is what separates "the model had nothing to say" from "the
+   * model was cut off mid-thought". Ask reports one of those to the user, and
+   * without this it could only say the answer was empty — which is precisely what
+   * made the same failure hard to diagnose on the non-streaming path.
+   */
+  describe('finish reason capture', () => {
+    it('reports the reason from the final content frame', () => {
+      const seen: string[] = [];
+      const parse = createSseParser(undefined, (r) => seen.push(r));
+      const last = `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`;
+
+      expect(parse(frame('hi') + last)).toEqual(['hi']);
+      expect(seen).toEqual(['stop']);
+    });
+
+    it('reports a truncation even though that frame carries no content', () => {
+      // The case that matters: zero deltas, and the only evidence of why.
+      const seen: string[] = [];
+      const parse = createSseParser(undefined, (r) => seen.push(r));
+      const truncated = `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n`;
+
+      expect(parse(truncated + 'data: [DONE]\n\n')).toEqual([]);
+      expect(seen).toEqual(['length']);
+    });
+
+    it('stays silent when no frame carries a reason', () => {
+      const seen: string[] = [];
+      const parse = createSseParser(undefined, (r) => seen.push(r));
+      parse(frame('hi') + 'data: [DONE]\n\n');
+      expect(seen).toEqual([]);
+    });
+
+    it('ignores a null reason, which providers send on every non-final frame', () => {
+      const seen: string[] = [];
+      const parse = createSseParser(undefined, (r) => seen.push(r));
+      parse(`data: ${JSON.stringify({ choices: [{ delta: { content: 'a' }, finish_reason: null }] })}\n\n`);
+      expect(seen).toEqual([]);
+    });
+  });
 });
 
 /**

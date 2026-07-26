@@ -715,6 +715,7 @@ export class AskService {
     let meta: StreamMeta = {};
     const startedAt = Date.now();
 
+    let answered = false;
     try {
       for await (const delta of chatStream(this.llmConfig, prepared.messages, {
         clientId: this.g2pClientId,
@@ -722,13 +723,42 @@ export class AskService {
           meta = m;
         },
       })) {
+        answered = true;
         yield { type: 'delta', text: delta };
+      }
+      const metrics = toMetrics(meta, this.llmConfig.model, Date.now() - startedAt);
+      // A stream can end cleanly having produced no text at all: a reasoning
+      // model that spends its whole token budget on reasoning sends telemetry, a
+      // `finish_reason: "length"`, and not one content frame. Nothing throws, so
+      // this used to fall through to `degraded: false` and the UI rendered an
+      // empty answer beside real sources — a failure presented as a healthy
+      // result, which is the shape `20260725-ask-answer-trust-contract.md` exists
+      // to eliminate. `chatComplete` already refuses this (EmptyCompletionError);
+      // the streaming path is the one a human looks at, so it must too.
+      //
+      // Judged here rather than in `chatStream`: that generator is a transport
+      // whose contract is "yield content deltas", and zero deltas is a legitimate
+      // wire outcome it has no basis to interpret. Ask is the layer that knows an
+      // answer without text is not an answer.
+      if (!answered) {
+        yield {
+          type: 'delta',
+          text:
+            `\n\n_The model returned no answer text (finish_reason: ${meta.finishReason ?? 'unknown'})` +
+            `${meta.finishReason === 'length' ? ' — its token budget was exhausted before it wrote anything' : ''}. ` +
+            'The sources above are the most relevant indexed results._',
+        };
+        // Metrics ARE reported here, unlike the throw path below: the request
+        // succeeded and the telemetry is real. The completion-token count is the
+        // evidence of what happened, so withholding it would hide the diagnosis.
+        yield { type: 'done', model: this.llmConfig.model, degraded: true, metrics };
+        return;
       }
       yield {
         type: 'done',
         model: this.llmConfig.model,
         degraded: false,
-        metrics: toMetrics(meta, this.llmConfig.model, Date.now() - startedAt),
+        metrics,
       };
     } catch (e) {
       yield {

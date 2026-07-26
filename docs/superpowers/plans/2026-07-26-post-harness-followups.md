@@ -6,6 +6,7 @@
 | Date (UTC) | Change |
 |---|---|
 | 2026-07-26 14:10 | Initial spec. Written as a self-contained handoff for a later session. |
+| 2026-07-26 14:25 | Item 1 closed: `askStream`'s blank-answer hole fixed the same day, with `finishReason` plumbed through the SSE parser so the message names the cause. Sequencing updated. |
 
 ---
 
@@ -54,9 +55,9 @@ increasing statistical power (item 4) or label quality (item 5).
 
 ---
 
-## Item 1 — The three defects: fixed. A fourth: not.
+## Item 1 — The defects: all four fixed
 
-**Answering the question directly: yes, all three are fixed, tested and pushed.**
+**Answering the question directly: yes, all fixed, tested and pushed.**
 
 | Defect | Fix | Test |
 |---|---|---|
@@ -64,27 +65,34 @@ increasing statistical power (item 4) or label quality (item 5).
 | `chatComplete` returned `''` for a truncated completion and reported success | `EmptyCompletionError` in `packages/core/src/llm.ts`, naming `finish_reason` | `test/core/llmComplete.test.ts` |
 | Every `atlas_ask` question logged as an empty query | `usageQuery` context slot in `packages/api/src/app.ts` | `test/api/routes.test.ts` |
 
-**The fourth, still open — `askStream` has the same blank-answer hole
-`chatComplete` just lost.** `chatComplete` now throws when a completion is empty,
-so Ask takes its LLM-unavailable branch and returns sources plus an explanation.
-`askStream` uses `chatStream`, which yields content deltas: if a reasoning model
-truncates before emitting any content, the stream completes with **zero deltas**,
-the UI renders an empty answer beside real sources, and `done` reports
-`degraded: false`. A failure presented as a healthy result — the exact class the
-trust contract exists to eliminate, and the UI path is the one a human sees.
+**The fourth was `askStream`, and it is now fixed too** (`2026-07-26`, same day).
+It had the same blank-answer hole `chatComplete` had just lost, on the worse path:
+a reasoning model that truncates before emitting content ends the stream with
+**zero deltas** and no error, so `done` reported `degraded: false` and the UI
+rendered an empty answer beside real sources.
 
-**Do this.** In `AskService.askStream` (`packages/core/src/ask.ts`), track whether
-any delta was yielded. If the stream ends having yielded none, emit the same
-fallback text the catch branch uses and report `degraded: true`. Keep it in
-`askStream` rather than `chatStream`: the generator is a transport and has no
-opinion about what an empty answer means, whereas Ask does.
+What shipped:
+- `AskService.askStream` tracks whether any delta was yielded. If none, it emits an
+  explanatory delta and `done` with `degraded: true`. Judged in Ask rather than in
+  `chatStream`, because that generator is a transport whose contract is "yield
+  content deltas" and zero deltas is a legitimate wire outcome it has no basis to
+  interpret.
+- `StreamMeta.finishReason`, fed by a new `onFinish` callback on
+  `createSseParser`, so the message can say *why* — "no answer text
+  (finish_reason: length) — its token budget was exhausted before it wrote
+  anything" rather than just "empty". Without it the streaming path could only
+  report emptiness, which is exactly what made this hard to diagnose non-streaming.
+- Metrics **are** reported on this degraded path (unlike the throw path, which has
+  none): the request succeeded, the telemetry is real, and the completion-token
+  count is the evidence of what happened.
 
-Test scenarios: a stream that yields nothing then ends; a stream that yields one
-empty-string delta; a stream that yields content then ends (must stay
-`degraded: false`); a stream that throws mid-way (existing behaviour, must not
-regress).
+Tests in `test/core/askStream.test.ts` and `test/core/llmStream.test.ts` cover:
+zero deltas with a `length` finish reason; only empty-string deltas; content
+present staying `degraded: false`; a throw mid-stream unchanged; and the parser
+reporting a reason from a frame that carries no content, while ignoring the `null`
+reason providers send on every non-final frame.
 
-Small, self-contained, no dependencies. Do it first.
+Nothing left to do here.
 
 ---
 
@@ -413,7 +421,7 @@ while removing the signal κ currently gives about label noise.
 
 Ordered by dependency, with the cheap and unblocking work first:
 
-1. **Item 1** — fix `askStream`'s blank answer. Independent, small, user-visible.
+1. ~~**Item 1** — fix `askStream`'s blank answer.~~ **Done 2026-07-26.**
 2. **Item 7 step 1** — disputed-label bounds. Minutes, and it tells you whether
    label quality gates items 4 and 6.
 3. **Item 3 step 1** — attribute degradation to a query id. Cheap, and every
@@ -429,8 +437,8 @@ Ordered by dependency, with the cheap and unblocking work first:
 
 ## Definition of done
 
-- [ ] `askStream` cannot report an empty answer as healthy; tests cover the four
-      stream shapes in item 1.
+- [x] `askStream` cannot report an empty answer as healthy; tests cover the four
+      stream shapes in item 1. **Done 2026-07-26.**
 - [ ] The disputed-label bounds are computed and reported; the decision to
       arbitrate (or not) is recorded with its reason.
 - [ ] The degraded banner names which query degraded and in what mode.

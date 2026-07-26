@@ -41,6 +41,16 @@ export interface StreamMeta {
   ttftMs?: number;
   /** Present only when the provider sent a usage frame. */
   usage?: TokenUsage;
+  /**
+   * Why generation stopped, as the provider reported it ('stop', 'length', …).
+   *
+   * Carried because a stream can end having produced no text at all, and
+   * "produced nothing" and "was cut off mid-thought" call for different words to
+   * the user. The non-streaming path gets this from the response body; without it
+   * here, the streaming path could only report that the answer was empty and not
+   * why — which is what made the same failure hard to diagnose in the first place.
+   */
+  finishReason?: string;
 }
 
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
@@ -147,12 +157,16 @@ export async function chatComplete(
  * `data: [DONE]`. Frames can be split across network reads, so the caller
  * feeds raw text and we buffer until a complete `\n\n` record is available.
  *
- * `onUsage` is optional and out-of-band: the usage frame carries `choices: []`,
- * so it yields no content and cannot be expressed in the return value without
- * changing what a "delta" means to every caller. Keeping the return type as
- * plain content deltas is what lets this stay a drop-in for the existing loop.
+ * `onUsage` and `onFinish` are optional and out-of-band, for the same reason: the
+ * usage frame carries `choices: []` and a finish reason carries no content, so
+ * neither can be expressed in the return value without changing what a "delta"
+ * means to every caller. Keeping the return type as plain content deltas is what
+ * lets this stay a drop-in for the existing loop.
  */
-export function createSseParser(onUsage?: (usage: TokenUsage) => void): (text: string) => string[] {
+export function createSseParser(
+  onUsage?: (usage: TokenUsage) => void,
+  onFinish?: (reason: string) => void,
+): (text: string) => string[] {
   let buffer = '';
   return (text: string): string[] => {
     buffer += text;
@@ -168,7 +182,7 @@ export function createSseParser(onUsage?: (usage: TokenUsage) => void): (text: s
         if (!payload || payload === '[DONE]') continue;
         try {
           const json = JSON.parse(payload) as {
-            choices?: { delta?: { content?: string } }[];
+            choices?: { delta?: { content?: string }; finish_reason?: string }[];
             usage?: {
               prompt_tokens?: number;
               completion_tokens?: number;
@@ -177,6 +191,10 @@ export function createSseParser(onUsage?: (usage: TokenUsage) => void): (text: s
           };
           const piece = json.choices?.[0]?.delta?.content;
           if (piece) deltas.push(piece);
+          // Arrives on the final content frame. Read even when that frame has no
+          // content, which is exactly the truncated case worth reporting.
+          const finish = json.choices?.[0]?.finish_reason;
+          if (onFinish && typeof finish === 'string' && finish) onFinish(finish);
           // Arrives once, in a trailing frame with an empty `choices` array,
           // and only when the request opted in via stream_options.
           const u = json.usage;
@@ -290,10 +308,16 @@ export async function* chatStream(
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  const parse = createSseParser((usage) => {
-    meta.usage = usage;
-    emitMeta();
-  });
+  const parse = createSseParser(
+    (usage) => {
+      meta.usage = usage;
+      emitMeta();
+    },
+    (reason) => {
+      meta.finishReason = reason;
+      emitMeta();
+    },
+  );
   try {
     for (;;) {
       const { done, value } = await reader.read();

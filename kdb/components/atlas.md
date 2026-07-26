@@ -1025,3 +1025,31 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-26] - Bugfix: askStream could report a blank answer as healthy
+
+**Objective:**
+- Close the streaming half of the empty-completion hole; chatComplete had just been fixed and askStream had not.
+
+**Summary of Work:**
+- `AskService.askStream` now tracks whether any content delta was yielded. If none, it emits an explanatory delta and `done` with `degraded: true` instead of falling through to `degraded: false`.
+- `StreamMeta.finishReason` added, fed by a new optional `onFinish` callback on `createSseParser`, so the message names the cause rather than only reporting emptiness.
+- Metrics are still reported on this path (unlike the throw path, which genuinely has none): the request succeeded and the completion-token count is the evidence.
+
+**Key Decisions & Rationale:**
+- Judged in Ask, not in `chatStream`. That generator is a transport whose contract is "yield content deltas"; zero deltas is a legitimate wire outcome it has no basis to interpret. Ask is the layer that knows an answer without text is not an answer. It is also the smaller blast radius — chatStream's only caller is askStream, but a future caller inherits no new contract.
+- `onFinish` mirrors the existing `onUsage`: out-of-band, because a finish reason carries no content and cannot be expressed in the delta return type without changing what a delta means to every caller.
+
+**Code/Files Modified:**
+- packages/core/src/ask.ts
+- packages/core/src/llm.ts
+- test/core/askStream.test.ts, test/core/llmStream.test.ts
+- docs/superpowers/plans/2026-07-26-post-harness-followups.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Test-first. The two new askStream tests failed on the old code and the "a normal answer stays healthy" guard passed, which confirmed the root-cause hypothesis (the `for await` body never runs, so nothing throws and nothing marks the answer degraded) before any fix was written.
+- **What Failed:** Nothing in the fix, but the process is worth recording: I fixed `chatComplete` earlier the same day, wrote the streaming twin into the backlog, and shipped the asymmetry. Fixing one half of a defect and documenting the other half is worse than either fixing both or fixing neither — the codebase then looks guarded where it is not. The hole was on the UI path, i.e. the half a human actually sees.
+- 719 tests green, lint clean.
+
+**Status:**
+- Completed
