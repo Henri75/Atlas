@@ -57,6 +57,33 @@ class MalformedResponseError extends Error {
 }
 
 /**
+ * A 200 whose completion is empty.
+ *
+ * Almost always a reasoning model truncated mid-thought: it spends completion
+ * tokens on reasoning before emitting any content, so a `max_tokens` sized for
+ * the visible answer returns `finish_reason: "length"` and an empty string.
+ * Measured on `cline-pass/kimi-k3`: 200 tokens → empty, 800 → a 492-token
+ * completion carrying the answer.
+ *
+ * This used to be returned as `''`, which made a truncated call indistinguishable
+ * from a model that genuinely said nothing — and on the Ask path turned it into a
+ * blank answer reported as a success. Both are failures that must not read as
+ * results. `status = 422` keeps it non-retryable by default, because repeating an
+ * identical request cannot fix it; a caller that can raise its own token budget
+ * should classify it as retryable and escalate (see `RetryOptions.isRetryable`).
+ */
+export class EmptyCompletionError extends Error {
+  readonly status = 422;
+  constructor(readonly finishReason: string | undefined) {
+    super(
+      `LLM returned an empty completion (finish_reason: ${finishReason ?? 'unknown'})` +
+        (finishReason === 'length' ? ' — max_tokens exhausted, most likely by reasoning tokens' : ''),
+    );
+    this.name = 'EmptyCompletionError';
+  }
+}
+
+/**
  * Buffered completion. Retry classification is delegated to withRetry, which
  * reads `err.status`: hand-rolling it here previously matched on the message
  * text (`startsWith('LLM 4')`), which both retried a malformed body three
@@ -97,9 +124,16 @@ export async function chatComplete(
         // 429/5xx carry a retryable status; everything else fails fast.
         throw new HttpError(`LLM ${r.status}: ${text.slice(0, 500)}`, r.status);
       }
-      const data = (await r.json()) as { choices?: { message?: { content?: string } }[] };
-      const content = data.choices?.[0]?.message?.content;
+      const data = (await r.json()) as {
+        choices?: { message?: { content?: string }; finish_reason?: string }[];
+      };
+      const choice = data.choices?.[0];
+      const content = choice?.message?.content;
       if (typeof content !== 'string') throw new MalformedResponseError('LLM returned no content');
+      // An empty string is not an answer. Returning it made a truncated
+      // reasoning model look like a model with nothing to say, and on the Ask
+      // path it surfaced as a blank answer marked successful.
+      if (content.trim() === '') throw new EmptyCompletionError(choice?.finish_reason);
       return content;
     },
     { attempts: 3, baseDelayMs: 1000, ...opts.retry },

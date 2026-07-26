@@ -1,0 +1,1139 @@
+{
+  "version": 1,
+  "generatedAt": "2026-07-26T04:59:56.250Z",
+  "queries": [
+    {
+      "id": "0220b73c",
+      "pool": "A",
+      "text": "Lycos postgres videos table autovacuum: when were the per-table autovacuum storage parameters (autovacuum_vacuum_scale_factor=0.01, analyze_scale_factor=0.005, cost_delay=0, vacuum_threshold=5000) set on the videos table? Was there a finding that videos had never been autovacuumed with n_live_tup 925 vs 5.48M real rows?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "transcript",
+        "at": "2026-07-22T21:21:18.928Z",
+        "ref": "-Users-nasta---CODING-NEW-DeepCast-Lycos/5c3ba0fd-9e16-4bba-847c-12f5953adb11.jsonl"
+      }
+    },
+    {
+      "id": "0ca5960d",
+      "pool": "A",
+      "text": "videoinsight_low starvation fix queue workers",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-25T22:53:33.894Z",
+        "ref": "usage_log#168"
+      }
+    },
+    {
+      "id": "1b799c65",
+      "pool": "A",
+      "text": "ltree extension postgres partition white label multi-tenant experiment",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-17T17:17:08.397Z",
+        "ref": "usage_log#148"
+      }
+    },
+    {
+      "id": "2f8b6bea",
+      "pool": "A",
+      "text": "worker pool resize procedure supervisorctl stopwaitsecs",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-25T23:50:18.712Z",
+        "ref": "usage_log#171"
+      }
+    },
+    {
+      "id": "3fea368b",
+      "pool": "A",
+      "text": "why the Atlas triggers were rewritten to observable moments instead of capability description",
+      "class": "intent",
+      "filters": {},
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-19T01:37:46.475Z",
+        "ref": "usage_log#152"
+      }
+    },
+    {
+      "id": "40e5f0a8",
+      "pool": "A",
+      "text": "On July 19-20 2026 the backfill service chain in G2P config.json was changed: nvidia/openai/gpt-oss-120b was removed from the backfill chain and cerebras/gpt-oss-120b was moved to the head. Why was nvidia gpt-oss-120b removed from the backfill chain? What was the rationale recorded in that session?",
+      "class": "intent",
+      "filters": {},
+      "provenance": {
+        "source": "transcript",
+        "at": "2026-07-23T00:15:18.689Z",
+        "ref": "-Users-nasta---CODING-NEW-google-gemini-pool/30594d9d-ffc9-4e2d-bab6-f3f5748361f2.jsonl"
+      }
+    },
+    {
+      "id": "4899585a",
+      "pool": "A",
+      "text": "safari youtube content process crash problem repeatedly occurred bisect video-inject",
+      "class": "incident",
+      "filters": {
+        "project": "deepcast"
+      },
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-23T17:39:54.188Z",
+        "ref": "usage_log#162"
+      }
+    },
+    {
+      "id": "4bd407c3",
+      "pool": "A",
+      "text": "qdrant int8 quantization footprint reduction",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "transcript",
+        "at": "2026-07-17T15:26:52.597Z",
+        "ref": "-Users-nasta---CODING-NEW-kdb/a93be5d1-cc60-40c7-b49f-77351f1aa94e.jsonl"
+      }
+    },
+    {
+      "id": "4cdc5bb7",
+      "pool": "A",
+      "text": "dashboard card thumbnail quality high maxres bandwidth videoCard Phase 2a",
+      "class": "definitional",
+      "filters": {
+        "project": "deepcast"
+      },
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-19T14:32:59.096Z",
+        "ref": "usage_log#154"
+      }
+    },
+    {
+      "id": "5d7d4120",
+      "pool": "A",
+      "text": "Has there ever been any work, discussion, or design around a NEXUS egress node that does NOT route through an expressvpn gateway container — e.g. a \"direct\" exit, a bare/host-network egress, egressing via the Mac host's own external IP, or a node with network_mode host? What approach was taken or considered?",
+      "class": "definitional",
+      "filters": {
+        "project": "google-gemini-pool"
+      },
+      "provenance": {
+        "source": "transcript",
+        "at": "2026-07-23T00:01:15.129Z",
+        "ref": "-Users-nasta---CODING-NEW-google-gemini-pool/33576d48-1d26-4595-bbd4-5ecdb22ae111.jsonl"
+      }
+    },
+    {
+      "id": "74340b30",
+      "pool": "A",
+      "text": "What happened on 2026-07-21 that would cause a large spike of failed RQ jobs on the videoinsight_low queue in DeepCast? Around 413 video analysis jobs failed on that single day. Was there an incident, deploy, or known bug?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "transcript",
+        "at": "2026-07-25T22:50:48.566Z",
+        "ref": "-Users-nasta---CODING-NEW-DeepCast/83db501b-c8a3-4471-824f-20617675096c.jsonl"
+      }
+    },
+    {
+      "id": "754bfd92",
+      "pool": "A",
+      "text": "Assessor MCP server modes and assessment workflow",
+      "class": "definitional",
+      "filters": {
+        "project": "assessor"
+      },
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-17T16:17:09.812Z",
+        "ref": "usage_log#5"
+      }
+    },
+    {
+      "id": "776f42f7",
+      "pool": "A",
+      "text": "nexus weighted egress rate limit",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-22T22:10:03.051Z",
+        "ref": "usage_log#158"
+      }
+    },
+    {
+      "id": "8dbed327",
+      "pool": "A",
+      "text": "Safari extension YouTube content process crash \"a problem repeatedly occurred with www.youtube.com\" — what root causes were found, what fixes were tried, and what bisect results or open leads remain? DeepCast browser extension safari target.",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "transcript",
+        "at": "2026-07-23T17:00:07.650Z",
+        "ref": "-Users-nasta---CODING-NEW-DeepCast/b121d243-448e-4aad-925e-6f62555fa651.jsonl"
+      }
+    },
+    {
+      "id": "93d08b4e",
+      "pool": "A",
+      "text": "Atlas disconnected mid-session attribution unverified root cause Claude Code transcripts",
+      "class": "incident",
+      "filters": {
+        "kind": "summary"
+      },
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-19T00:57:29.094Z",
+        "ref": "usage_log#150"
+      }
+    },
+    {
+      "id": "c6da40b1",
+      "pool": "A",
+      "text": "In the DeepCast frontend dashboard redesign (Phase 2a dashboard card system, components/videoCard/ with PosterCard, RichCard, MagazineCard), why was the thumbnail quality hardcoded to 'high' in useThumbnailWithFallback calls? Was this a deliberate bandwidth/performance decision, or was it an oversight when moving away from VideoThumbnailSection which had viewport-based maxres/high selection? Also: was there any discussion about thumbnail resolution, image bandwidth, or blurry thumbnails on large/4K screens during the dashboard redesign?",
+      "class": "intent",
+      "filters": {},
+      "provenance": {
+        "source": "transcript",
+        "at": "2026-07-19T14:31:32.809Z",
+        "ref": "-Users-nasta---CODING-NEW-DeepCast/af424b61-233d-40c0-93e1-d592a7e4dd94.jsonl"
+      }
+    },
+    {
+      "id": "d1857be0",
+      "pool": "A",
+      "text": "how to resize a worker pool safely, live pool resize procedure",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-25T23:11:26.956Z",
+        "ref": "usage_log#169"
+      }
+    },
+    {
+      "id": "e7da72be",
+      "pool": "A",
+      "text": "What bug fixes were made to the Atlas search hydration, and what was the root cause?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "transcript",
+        "at": "2026-07-17T15:27:14.939Z",
+        "ref": "-Users-nasta---CODING-NEW-kdb/a93be5d1-cc60-40c7-b49f-77351f1aa94e.jsonl"
+      }
+    },
+    {
+      "id": "ea34a7f1",
+      "pool": "A",
+      "text": "nexus dynamic weight",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-21T22:31:08.311Z",
+        "ref": "usage_log#156"
+      }
+    },
+    {
+      "id": "f230e713",
+      "pool": "A",
+      "text": "Why does the G2P hstats \"Available keys — live gauge (last 24h)\" (providersKeysChart, pool-health ring) fill lazily one sample per poll while the tab is open, with no background sampler? Was the lazy-fill / poll-driven design deliberate, and what was the 2026-07-21 \"always empty gauge\" fix?",
+      "class": "intent",
+      "filters": {},
+      "provenance": {
+        "source": "transcript",
+        "at": "2026-07-22T23:59:40.048Z",
+        "ref": "-Users-nasta---CODING-NEW-google-gemini-pool/0e891738-1fd2-4849-881b-8a1459611d46.jsonl"
+      }
+    },
+    {
+      "id": "f43f998d",
+      "pool": "A",
+      "text": "When was int8 quantization added to Atlas's Qdrant collection and did it require a re-embed?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "transcript",
+        "at": "2026-07-17T15:48:40.668Z",
+        "ref": "-Users-nasta---CODING-NEW-kdb/a93be5d1-cc60-40c7-b49f-77351f1aa94e.jsonl"
+      }
+    },
+    {
+      "id": "12aaf943",
+      "pool": "B",
+      "text": "Has the security review of the newly added theme variant components been completed, and did it uncover any injection risks?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:42:18.609Z",
+        "fromEntryId": 12804,
+        "fromSourceType": "claude_session",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        12804
+      ],
+      "leakage": 0.385
+    },
+    {
+      "id": "15111ac9",
+      "pool": "B",
+      "text": "How does the Cohere free-tier provider tell a short-lived rate limit apart from an exhausted monthly quota?",
+      "class": "intent",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:38:24.540Z",
+        "fromEntryId": 245995,
+        "fromSourceType": "kdb_changelog",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        245995
+      ],
+      "leakage": 0.429
+    },
+    {
+      "id": "190918d9",
+      "pool": "B",
+      "text": "What ongoing maintenance does our single point for converting errors into HTTP responses demand as new database error codes appear?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:31:31.310Z",
+        "fromEntryId": 970,
+        "fromSourceType": "doc",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        970
+      ],
+      "leakage": 0.375
+    },
+    {
+      "id": "1d8bdc04",
+      "pool": "B",
+      "text": "How much did no-change deployment time drop after the digest comparison stopped relying on per-daemon image IDs?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:38:42.430Z",
+        "fromEntryId": 213210,
+        "fromSourceType": "kdb_changelog",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        213210
+      ],
+      "leakage": 0.333
+    },
+    {
+      "id": "2e14fd24",
+      "pool": "B",
+      "text": "What went wrong when egress traffic seemed poorly spread across weighted nodes, and which edge defects were confirmed without changing code?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:26:41.403Z",
+        "fromEntryId": 553191,
+        "fromSourceType": "kdb_component",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        553191
+      ],
+      "leakage": 0.263
+    },
+    {
+      "id": "2f405cea",
+      "pool": "B",
+      "text": "What caused AI-picked photos to be missing from live chat replies until the page was refreshed?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:25:25.018Z",
+        "fromEntryId": 92635,
+        "fromSourceType": "kdb_component",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        92635
+      ],
+      "leakage": 0.333
+    },
+    {
+      "id": "35e851fc",
+      "pool": "B",
+      "text": "When did the daily news briefing UI components and the new audio policy service first land in the codebase?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:36:41.008Z",
+        "fromEntryId": 5917,
+        "fromSourceType": "git_commit",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        5917
+      ],
+      "leakage": 0.231
+    },
+    {
+      "id": "3abb73e3",
+      "pool": "B",
+      "text": "What change made the YouTube push callback ingestion path tolerate database slowdowns while adding volume telemetry?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:36:18.027Z",
+        "fromEntryId": 5723,
+        "fromSourceType": "git_commit",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        5723
+      ],
+      "leakage": 0.133
+    },
+    {
+      "id": "3d144f44",
+      "pool": "B",
+      "text": "How do I run the app locally using code baked into the container image instead of the mounted development source?",
+      "class": "intent",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:36:24.785Z",
+        "fromEntryId": 5820,
+        "fromSourceType": "git_commit",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        5820
+      ],
+      "leakage": 0.308
+    },
+    {
+      "id": "42ab4d76",
+      "pool": "B",
+      "text": "What were the planned steps to centralize service configuration so defaults live in shared Python settings rather than environment files?",
+      "class": "intent",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:33:04.296Z",
+        "fromEntryId": 8051,
+        "fromSourceType": "doc",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        8051
+      ],
+      "leakage": 0.5
+    },
+    {
+      "id": "50d31fe3",
+      "pool": "B",
+      "text": "Had the deep research feature's parallel multi-model aggregation and stage display worked correctly before it regressed?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:40:35.586Z",
+        "fromEntryId": 4559,
+        "fromSourceType": "claude_session",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        4559
+      ],
+      "leakage": 0.429
+    },
+    {
+      "id": "53989372",
+      "pool": "B",
+      "text": "What code quality improvements were documented for the video feed frontend, covering memoization, component reuse, type safety, and performance?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:34:25.364Z",
+        "fromEntryId": 8924,
+        "fromSourceType": "doc",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        8924
+      ],
+      "leakage": 0.533
+    },
+    {
+      "id": "5407f30f",
+      "pool": "B",
+      "text": "How can I check whether linter warnings in an edited file predate my changes without stashing anything?",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:44:40.392Z",
+        "fromEntryId": 13871,
+        "fromSourceType": "claude_session",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        13871
+      ],
+      "leakage": 0.462
+    },
+    {
+      "id": "5425ac6f",
+      "pool": "B",
+      "text": "Why does the backend test run report failure after all tests pass, and why does teardown complain about missing secrets?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:39:51.830Z",
+        "fromEntryId": 873,
+        "fromSourceType": "claude_session",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        873
+      ],
+      "leakage": 0.6
+    },
+    {
+      "id": "56c42810",
+      "pool": "B",
+      "text": "When does the worker skip retrying a video because an earlier attempt for that user was marked unrecoverable?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:34:58.291Z",
+        "fromEntryId": 9409,
+        "fromSourceType": "doc",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        9409
+      ],
+      "leakage": 0.182
+    },
+    {
+      "id": "58034562",
+      "pool": "B",
+      "text": "How do I create procedurally generated textures and custom-font text labels for the 3D video wall tiles?",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:35:47.378Z",
+        "fromEntryId": 5335,
+        "fromSourceType": "git_commit",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        5335
+      ],
+      "leakage": 0.077
+    },
+    {
+      "id": "63d62dc1",
+      "pool": "B",
+      "text": "How can I build streaming chat replies with a waiting indicator, formatted markdown output, and user-cancellable requests?",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:39:25.771Z",
+        "fromEntryId": 461532,
+        "fromSourceType": "kdb_changelog",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        461532
+      ],
+      "leakage": 0.308
+    },
+    {
+      "id": "7328bb54",
+      "pool": "B",
+      "text": "How did we prevent overlapping container builds across our project Makefiles from silently hanging or interfering with each other?",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:27:57.741Z",
+        "fromEntryId": 6597,
+        "fromSourceType": "kdb_component",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        6597
+      ],
+      "leakage": 0.214
+    },
+    {
+      "id": "865830ec",
+      "pool": "B",
+      "text": "When did we add deployment guidance for handling heavy load by running extra analysis service workers and replicas?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:33:21.140Z",
+        "fromEntryId": 8245,
+        "fromSourceType": "doc",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        8245
+      ],
+      "leakage": 0.538
+    },
+    {
+      "id": "88e8c4d6",
+      "pool": "B",
+      "text": "What steps should I follow to load the Puter.js SDK reliably after script tags in the page head kept failing?",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:32:22.187Z",
+        "fromEntryId": 1746,
+        "fromSourceType": "doc",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        1746
+      ],
+      "leakage": 0.467
+    },
+    {
+      "id": "8b8c2857",
+      "pool": "B",
+      "text": "What caused the 3D video wall to go completely black at the briefings zoom level, and how was it fixed?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:35:15.591Z",
+        "fromEntryId": 5238,
+        "fromSourceType": "git_commit",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        5238
+      ],
+      "leakage": 0.308
+    },
+    {
+      "id": "990a9280",
+      "pool": "B",
+      "text": "How do I benchmark the pipeline to confirm speed gains, and what quality cost comes with the faster model option?",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:34:01.263Z",
+        "fromEntryId": 8536,
+        "fromSourceType": "doc",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        8536
+      ],
+      "leakage": 0.385
+    },
+    {
+      "id": "9b04f9eb",
+      "pool": "B",
+      "text": "Why did the audit for commits lacking notes turn up mostly false alarms, and how were the two real gaps published safely?",
+      "class": "intent",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:40:19.951Z",
+        "fromEntryId": 1843,
+        "fromSourceType": "claude_session",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        1843
+      ],
+      "leakage": 0.438
+    },
+    {
+      "id": "a1577df1",
+      "pool": "B",
+      "text": "What keeps the channel name from getting crushed when a video card's metadata row runs out of horizontal space?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:41:43.380Z",
+        "fromEntryId": 10767,
+        "fromSourceType": "claude_session",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        10767
+      ],
+      "leakage": 0.333
+    },
+    {
+      "id": "a3beb2cd",
+      "pool": "B",
+      "text": "According to the testing guide, how should unit tests isolate a service from the database and its other dependencies?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:32:42.394Z",
+        "fromEntryId": 3395,
+        "fromSourceType": "doc",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        3395
+      ],
+      "leakage": 0.364
+    },
+    {
+      "id": "a87fd67d",
+      "pool": "B",
+      "text": "Why did the post-deploy health check mark updates as failed when the stack had actually recovered, and what changed?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:39:04.992Z",
+        "fromEntryId": 213211,
+        "fromSourceType": "kdb_changelog",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        213211
+      ],
+      "leakage": 0.467
+    },
+    {
+      "id": "b631183d",
+      "pool": "B",
+      "text": "How do I let users drop a new block between existing ones and drag blocks to reorder them?",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:30:08.038Z",
+        "fromEntryId": 85070,
+        "fromSourceType": "kdb_component",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        85070
+      ],
+      "leakage": 0.308
+    },
+    {
+      "id": "b6d42b72",
+      "pool": "B",
+      "text": "How can I make each channel strip automatically match its output loudness to its input level?",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:25:05.983Z",
+        "fromEntryId": 85069,
+        "fromSourceType": "kdb_component",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        85069
+      ],
+      "leakage": 0.545
+    },
+    {
+      "id": "c20e3a78",
+      "pool": "B",
+      "text": "When the podcast-script story narration and pause features shipped, which verification steps were still pending because of the host incident?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:26:04.397Z",
+        "fromEntryId": 532239,
+        "fromSourceType": "kdb_component",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        532239
+      ],
+      "leakage": 0.563
+    },
+    {
+      "id": "cba33049",
+      "pool": "B",
+      "text": "Which third-party AI service had its secret key exposed in plain text inside our provider configuration documentation?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:31:52.136Z",
+        "fromEntryId": 1067,
+        "fromSourceType": "doc",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        1067
+      ],
+      "leakage": 0.125
+    },
+    {
+      "id": "d02fe1ae",
+      "pool": "B",
+      "text": "What workaround finally made the header navigation links update the address bar when an unknown handler was swallowing their clicks?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:37:56.657Z",
+        "fromEntryId": 213209,
+        "fromSourceType": "kdb_changelog",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        213209
+      ],
+      "leakage": 0.267
+    },
+    {
+      "id": "d06a88fe",
+      "pool": "B",
+      "text": "Why did the title backfill's throughput count suddenly drop back to zero while the overall progress number kept climbing?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:41:01.107Z",
+        "fromEntryId": 7857,
+        "fromSourceType": "claude_session",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        7857
+      ],
+      "leakage": 0.333
+    },
+    {
+      "id": "e5d69844",
+      "pool": "B",
+      "text": "Why did the continuous backfill keep exhausting its daily enqueue cap after translating only a fraction of that many distinct videos?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:24:52.033Z",
+        "fromEntryId": 7566,
+        "fromSourceType": "kdb_component",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        7566
+      ],
+      "leakage": 0.6
+    },
+    {
+      "id": "e69a741d",
+      "pool": "B",
+      "text": "We lost persisted data while rebuilding our containers; which compose teardown option caused it and how do we safeguard volumes?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:33:43.550Z",
+        "fromEntryId": 8342,
+        "fromSourceType": "doc",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        8342
+      ],
+      "leakage": 0.133
+    },
+    {
+      "id": "e9ac85e0",
+      "pool": "B",
+      "text": "When did we add the scheduled background watcher that emails the operator about pipeline health problems?",
+      "class": "temporal",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:24:44.183Z",
+        "fromEntryId": 7469,
+        "fromSourceType": "kdb_component",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        7469
+      ],
+      "leakage": 0.545
+    },
+    {
+      "id": "f4facc84",
+      "pool": "B",
+      "text": "How did we diagnose the gap between client and API success rates in the Gemini pool, and what causes were confirmed?",
+      "class": "procedural",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:37:36.567Z",
+        "fromEntryId": 515458,
+        "fromSourceType": "kdb_changelog",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        515458
+      ],
+      "leakage": 0.308
+    },
+    {
+      "id": "f78025d6",
+      "pool": "B",
+      "text": "How was the newest Lycos milestone added to the throughput dashboard without extra queries, and why is it counted as LLM work?",
+      "class": "intent",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:31:04.389Z",
+        "fromEntryId": 451536,
+        "fromSourceType": "kdb_component",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        451536
+      ],
+      "leakage": 0.5
+    },
+    {
+      "id": "f89209c1",
+      "pool": "B",
+      "text": "What two flaws did the assistant's self-review of the legacy video migration plan catch, and how was each one fixed?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:42:33.115Z",
+        "fromEntryId": 12998,
+        "fromSourceType": "claude_session",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        12998
+      ],
+      "leakage": 0.4
+    },
+    {
+      "id": "f9b56e4e",
+      "pool": "B",
+      "text": "Why would freshly registered password accounts suddenly get a 403 when trying to log in?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:29:52.648Z",
+        "fromEntryId": 82548,
+        "fromSourceType": "kdb_component",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        82548
+      ],
+      "leakage": 0.182
+    },
+    {
+      "id": "ffe0bc71",
+      "pool": "B",
+      "text": "Kids videos stopped importing correctly — which change updated the import service, safety flagging, and wall pages together?",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:37:10.645Z",
+        "fromEntryId": 6305,
+        "fromSourceType": "git_commit",
+        "generator": "cline-pass/kimi-k3"
+      },
+      "gold": [
+        6305
+      ],
+      "leakage": 0.267
+    },
+    {
+      "id": "0ab5ca1a",
+      "pool": "N",
+      "text": "Why did App Review reject build 2.7.0 (412) with the ITMS-90809 UIWebView deprecation notice, and which Fastlane lane did we update to strip the legacy web view symbols before resubmitting to TestFlight?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:55:22.832Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "0afabc86",
+      "pool": "N",
+      "text": "When did the Crashlytics dSYM upload step break in the release pipeline, leaving every iOS crash report after version 3.1.0 unsymbolicated, and how did we reprocess the missing stack traces?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:55:59.267Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "329fb8a9",
+      "pool": "N",
+      "text": "Which ProGuard keep rules did we add in release 4.2.1 to stop Play Console vitals from flagging obfuscated NullPointerException crashes in the media playback service during the staged rollout?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:56:42.979Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "44dcb8a2",
+      "pool": "N",
+      "text": "What caused the RabbitMQ dead-letter exchange to back up during the March incident, and which queue TTL and retry settings were changed afterward?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:47:57.643Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "4a4bd03d",
+      "pool": "N",
+      "text": "When we switched the checkout flow from Paddle to Stripe Billing, how did we preserve historical VAT invoices for EU customers, and what happened to the old refund idempotency-key table during the migration?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:53:50.141Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "706a557d",
+      "pool": "N",
+      "text": "After the Google Play staged rollout reached 20%, what crash signature in Android vitals made us halt the release of 5.0.3, and did the hotfix require re-uploading the R8 mapping file for the deobfuscation to work?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:57:25.811Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "7ba2a505",
+      "pool": "N",
+      "text": "How did we resolve the Avro backward-compatibility break in the Schema Registry that caused the legacy consumers to fail deserialization after the v2 schema rollout?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:50:23.063Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "bd3354c3",
+      "pool": "N",
+      "text": "Why did we migrate the order-processing pipeline off Kafka consumer groups, and how did we handle partition rebalancing during the cutover to Kinesis?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:47:03.149Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "bd925ccd",
+      "pool": "N",
+      "text": "What was the rollout plan for the Stripe 2023-10 API version upgrade in the subscriptions module, specifically the deprecation of the Sources API in favor of PaymentMethods with 3DS2 confirmation for recurring charges?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:54:44.311Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "ddfe4af9",
+      "pool": "N",
+      "text": "Why did we migrate the subscription dunning flow from Stripe's built-in retry schedule to a custom Braintree grace-period pipeline, and in which release was the legacy invoice.payment_failed webhook handler finally deleted?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:52:18.956Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "f5e1cb20",
+      "pool": "N",
+      "text": "Which commit removed the Chargebee integration for seat-based licensing, and how did the proration logic change when we moved mid-cycle plan upgrades to the in-house metered billing service?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:53:02.128Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    },
+    {
+      "id": "f7e3be15",
+      "pool": "N",
+      "text": "When did the team decide to adopt NATS JetStream instead of Pulsar for telemetry fan-out, and what retention policy was configured on the stream?",
+      "class": "definitional",
+      "filters": {},
+      "provenance": {
+        "source": "generated",
+        "at": "2026-07-26T04:49:21.079Z",
+        "generator": "cline-pass/kimi-k3"
+      }
+    }
+  ],
+  "classesReviewed": "2026-07-26 — all 21 read and hand-corrected; mining never overwrites these",
+  "poolB": {
+    "leakageThreshold": 0.6,
+    "rejected": 10,
+    "accepted": 40,
+    "sparseOnlyHitAt30": 0.275
+  }
+}

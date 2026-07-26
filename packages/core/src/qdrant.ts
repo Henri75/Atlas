@@ -394,4 +394,37 @@ export class VectorStore {
       score: p.score ?? 0,
     }));
   }
+
+  /**
+   * Dense branch alone, returning raw cosine similarity.
+   *
+   * Not a search path — nothing in the product calls this. It exists because the
+   * fused `query()` above returns RRF scores, which are rank-based: `Σ 1/(k+rank)`
+   * yields the same 0.75 for the top hit of a perfect match and the top hit of a
+   * query with nothing relevant in the index. So no threshold on a fused score can
+   * ever express "found nothing *relevant*", and there is no way to derive one
+   * from the fused response either, because Qdrant reports no per-branch score.
+   *
+   * Cosine is comparable across queries, which is what a calibrated relevance
+   * signal needs. This returns it so the evaluation harness can measure whether
+   * it actually separates answerable questions from unanswerable ones, before any
+   * product surface commits to a number.
+   */
+  async queryDense(opts: {
+    dense: number[];
+    filters: SearchFilters;
+    limit: number;
+  }): Promise<{ entryId: number; score: number }[]> {
+    const res = await this.client.query(this.collection, {
+      query: opts.dense,
+      using: 'dense',
+      limit: opts.limit,
+      filter: this.buildFilter(opts.filters),
+      with_payload: ['entry_id'],
+    });
+    return res.points.map((p) => ({
+      entryId: Number((p.payload as any)?.entry_id),
+      score: p.score ?? 0,
+    }));
+  }
 }

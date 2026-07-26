@@ -49,6 +49,38 @@ describe('chatComplete', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * An empty completion is a failure, not an answer.
+   *
+   * Reasoning models spend completion tokens thinking before emitting anything,
+   * so a `max_tokens` sized for the visible answer returns `finish_reason:
+   * "length"` and an empty string. Measured on `cline-pass/kimi-k3`: 200 tokens
+   * gives an empty body, 800 gives a 492-token completion carrying the answer.
+   *
+   * This used to be returned verbatim, which made a truncated call
+   * indistinguishable from a model that genuinely said nothing — and on the Ask
+   * path turned it into a blank answer reported as a success, the same shape of
+   * failure-rendered-as-result that the trust contract exists to eliminate.
+   */
+  it('rejects an empty completion and names truncation as the cause', async () => {
+    const fn = stub([
+      { ok: true, body: { choices: [{ message: { content: '' }, finish_reason: 'length' }] } },
+    ]);
+    await expect(chatComplete(cfg, msgs, { retry: noSleep })).rejects.toThrow(
+      /empty completion \(finish_reason: length\).*max_tokens exhausted/,
+    );
+    // Not retried by default: an identical request is truncated identically. Only
+    // a caller that can raise its own budget should retry, by escalating it.
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a whitespace-only completion too', async () => {
+    stub([{ ok: true, body: { choices: [{ message: { content: '  \n ' } }] } }]);
+    await expect(chatComplete(cfg, msgs, { retry: noSleep })).rejects.toThrow(
+      /finish_reason: unknown/,
+    );
+  });
+
   it('retries a 5xx and succeeds', async () => {
     const fn = stub([
       { ok: false, status: 503, body: { error: 'unavailable' } },

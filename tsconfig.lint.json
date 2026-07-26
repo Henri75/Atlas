@@ -6,7 +6,8 @@
     "jsx": "react-jsx",
     "types": ["node"],
     "paths": {
-      "@atlas/core": ["./packages/core/src/index.ts"]
+      "@atlas/core": ["./packages/core/src/index.ts"],
+      "@atlas/eval/*": ["./packages/eval/src/*"]
     }
   },
   "include": [
@@ -15,6 +16,7 @@
     "packages/api/src/**/*.ts",
     "packages/mcp/src/**/*.ts",
     "packages/cli/src/**/*.ts",
+    "packages/eval/src/**/*.ts",
     "test/**/*.ts"
   ]
 }

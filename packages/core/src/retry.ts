@@ -51,6 +51,17 @@ export interface RetryOptions {
   /** Injected in tests so we never actually sleep. */
   sleep?: (ms: number) => Promise<void>;
   onRetry?: (attempt: number, err: unknown) => void;
+  /**
+   * Override which errors count as retryable. Defaults to `isTransient`.
+   *
+   * Some failures are transient without being *transport* failures: a heavy
+   * model behind the gateway can return 200 with a truncated or non-JSON body,
+   * which is a parse error, not a network error, and `isTransient` correctly
+   * says no. The alternative — making the parse error's message match one of
+   * the transient patterns — would encode retry policy in a string, invisibly.
+   * Callers that know their own transient shapes declare them here instead.
+   */
+  isRetryable?: (err: unknown) => boolean;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -59,6 +70,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
   const attempts = opts.attempts ?? 3;
   const base = opts.baseDelayMs ?? 500;
   const sleep = opts.sleep ?? defaultSleep;
+  const retryable = opts.isRetryable ?? isTransient;
 
   let lastErr: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -66,7 +78,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (!isTransient(err) || attempt === attempts) throw err;
+      if (!retryable(err) || attempt === attempts) throw err;
       opts.onRetry?.(attempt, err);
       // Exponential backoff with jitter to avoid retry storms across workers.
       const delay = base * 2 ** (attempt - 1);

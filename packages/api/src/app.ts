@@ -43,8 +43,19 @@ export interface BackfillProgress {
   etaSec: number;
 }
 
-export function buildApp(deps: ApiDeps): Hono {
-  const app = new Hono();
+/**
+ * Slot a handler fills with the text its request asked about, for usage
+ * telemetry.
+ *
+ * GET routes carry the query in the URL, which the middleware can read for
+ * itself. POST routes carry it in the body, and reading the body in middleware
+ * either consumes the stream or depends on Hono's internal body cache. So the
+ * handler — which has already parsed it — hands it over explicitly.
+ */
+type UsageVars = { usageQuery?: string };
+
+export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
+  const app = new Hono<{ Variables: UsageVars }>();
   app.use('/api/*', cors());
 
   /**
@@ -53,6 +64,12 @@ export function buildApp(deps: ApiDeps): Hono {
    * the UI's 30-second status polling would bury them in noise. The write is
    * fire-and-forget — telemetry must never slow down or fail the call it
    * measures, so errors are swallowed after a console note.
+   *
+   * `usageQuery` matters more than it looks: every `atlas_ask` call ever made
+   * recorded an empty `query`, because ask is a POST and only the URL was read.
+   * The questions agents actually ask Atlas — the most valuable record this table
+   * could hold, and the seed for the retrieval evaluation query set — were being
+   * dropped on the floor.
    */
   app.use('/api/*', async (c, next) => {
     const client = c.req.header('x-atlas-client');
@@ -66,7 +83,10 @@ export function buildApp(deps: ApiDeps): Hono {
         tool: c.req.header('x-atlas-tool'),
         method: c.req.method,
         path: url.pathname,
-        query: url.search ? url.search.slice(1) : undefined,
+        // Whatever the handler recorded, else the URL query for GET routes.
+        // `logUsage` truncates to the column width, so a long question is
+        // clipped in one place rather than at every call site.
+        query: c.get('usageQuery') ?? (url.search ? url.search.slice(1) : undefined),
         status: c.res.status,
         durationMs: Date.now() - startedAt,
       })
@@ -218,6 +238,7 @@ export function buildApp(deps: ApiDeps): Hono {
     const body = await c.req.json().catch(() => ({}));
     const question = typeof body.question === 'string' ? body.question.trim() : '';
     if (!question) return c.json({ error: 'question is required' }, 400);
+    c.set('usageQuery', question);
     const result = await deps.ask.ask(
       question,
       { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, since: body.since, until: body.until, docStatus: body.docStatus },
@@ -237,6 +258,7 @@ export function buildApp(deps: ApiDeps): Hono {
     const body = await c.req.json().catch(() => ({}));
     const question = typeof body.question === 'string' ? body.question.trim() : '';
     if (!question) return c.json({ error: 'question is required' }, 400);
+    c.set('usageQuery', question);
 
     const events = deps.ask.askStream(
       question,

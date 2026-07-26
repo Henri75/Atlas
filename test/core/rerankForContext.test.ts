@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rerankForContext } from '@atlas/core';
+import { DEFAULT_RERANK, rerankForContext } from '@atlas/core';
 import type { SearchHit } from '@atlas/core';
 
 /**
@@ -173,5 +173,114 @@ describe('rerankForContext recency', () => {
     // limit dated entries approach), never a penalty beneath it.
     const out = rerankForContext([undated, aged(3, 0.8, 900)], 2);
     expect(out.map((h) => h.entryId).sort()).toEqual([3, 9]);
+  });
+});
+
+/**
+ * Injectable ranking knobs.
+ *
+ * The knobs were module constants, so comparing two configurations meant editing
+ * source and restarting — which is why "is the 50% session cap still right?"
+ * went unanswered through three phases of retrieval work. These guard the
+ * plumbing, and above all that the *defaults* still rank exactly as the shipped
+ * constants do: an options object that quietly changed behaviour for every
+ * production caller would be a far worse bug than the one it enables fixing.
+ */
+describe('rerankForContext options', () => {
+  // Pinned clock: the recency term reads the wall clock, so without this the
+  // golden below would decay a little every day and eventually reorder.
+  const NOW = Date.parse('2026-07-26T00:00:00.000Z');
+  const at = (daysAgo: number) => new Date(NOW - daysAgo * 864e5).toISOString();
+
+  const mixed = (): SearchHit[] => [
+    { ...hit(1, 0.9, 'claude_session'), occurredAt: at(1) },
+    { ...hit(2, 0.88, 'claude_session'), occurredAt: at(2) },
+    { ...hit(3, 0.86, 'claude_session'), occurredAt: at(3) },
+    { ...hit(4, 0.84, 'claude_session'), occurredAt: at(400) },
+    { ...hit(5, 0.7, 'doc'), occurredAt: at(500) },
+    { ...hit(6, 0.68, 'kdb_component'), occurredAt: at(30) },
+    { ...hit(7, 0.66, 'git_commit'), occurredAt: at(10) },
+    { ...hit(8, 0.64, 'kdb_changelog'), occurredAt: at(5) },
+  ];
+
+  /**
+   * Sessions out-weigh everything else here, which is what makes the cap
+   * observable: in `mixed` the authoritative hits already win on merit, so a cap
+   * on sessions changes nothing and a test written against it would pass no
+   * matter what the cap did.
+   */
+  const sessionsDominate = (): SearchHit[] => [
+    { ...hit(1, 0.99, 'claude_session'), occurredAt: at(1) },
+    { ...hit(2, 0.98, 'claude_session'), occurredAt: at(2) },
+    { ...hit(3, 0.97, 'claude_session'), occurredAt: at(3) },
+    { ...hit(4, 0.96, 'claude_session'), occurredAt: at(4) },
+    { ...hit(5, 0.5, 'doc'), occurredAt: at(200) },
+    { ...hit(6, 0.48, 'kdb_component'), occurredAt: at(200) },
+  ];
+
+  it('reproduces the shipped ranking when given no options', () => {
+    // Golden order under today's constants, computed from the shipped weights
+    // (kdb_component 0.68*1.3*1.102=0.974 leads, doc 0.7*1.35*1.008=0.952 next,
+    // the 0.8-weighted sessions follow). If a ranking change is intended, update
+    // this deliberately; if it breaks unexpectedly, the options refactor moved
+    // production behaviour.
+    const expected = [6, 5, 8, 1, 2, 3, 7, 4];
+    expect(rerankForContext(mixed(), 8, { nowMs: NOW }).map((h) => h.entryId)).toEqual(expected);
+    // Passing the exported defaults explicitly must be indistinguishable from
+    // passing nothing — otherwise a variant that starts from DEFAULT_RERANK is
+    // already measuring something other than the product.
+    expect(
+      rerankForContext(mixed(), 8, { ...DEFAULT_RERANK, nowMs: NOW }).map((h) => h.entryId),
+    ).toEqual(expected);
+  });
+
+  it('lifts the session ceiling when asked', () => {
+    const capped = rerankForContext(sessionsDominate(), 4, { nowMs: NOW });
+    expect(capped.filter((h) => h.sourceType === 'claude_session')).toHaveLength(2);
+    const open = rerankForContext(sessionsDominate(), 4, { nowMs: NOW, maxSessionFraction: 1 });
+    // With the cap gone the four highest-weighted hits are all sessions.
+    expect(open.filter((h) => h.sourceType === 'claude_session')).toHaveLength(4);
+  });
+
+  it('reserves slots for non-session types when the floor framing is selected', () => {
+    // floor=2 of 4 permits 2 sessions, matching the 50% ceiling at this k...
+    const floor2 = rerankForContext(sessionsDominate(), 4, { nowMs: NOW, minNonSessionSlots: 2 });
+    expect(floor2.filter((h) => h.sourceType === 'claude_session')).toHaveLength(2);
+    // ...while floor=1 lets sessions take the rest, which is the whole point of
+    // the alternative framing: the guarantee is expressed in slots, so it does
+    // not tighten or loosen as k changes the way a fraction does.
+    const floor1 = rerankForContext(sessionsDominate(), 4, { nowMs: NOW, minNonSessionSlots: 1 });
+    expect(floor1.filter((h) => h.sourceType === 'claude_session')).toHaveLength(3);
+  });
+
+  it('still fills from sessions under the floor framing when nothing else matches', () => {
+    const sessionsOnly = sessionsDominate().filter((h) => h.sourceType === 'claude_session');
+    // The reserved slots have no other candidates, so they must not go empty.
+    expect(rerankForContext(sessionsOnly, 4, { nowMs: NOW, minNonSessionSlots: 3 })).toHaveLength(4);
+  });
+
+  it('drops the doc promotion when source weighting is disabled', () => {
+    const doc = (hits: SearchHit[]) => hits.findIndex((h) => h.sourceType === 'doc');
+    // Weighted, the 500-day-old doc is promoted to second place on type alone.
+    expect(doc(rerankForContext(mixed(), 8, { nowMs: NOW }))).toBe(1);
+    // Unweighted, it falls to last: its raw score is mid-pack and it is the
+    // oldest thing in the pool, so recency cannot rescue it either.
+    expect(doc(rerankForContext(mixed(), 8, { nowMs: NOW, sourceWeight: {} }))).toBe(7);
+  });
+
+  it('drops the recency tie-break when the boost is zeroed', () => {
+    const old = { ...hit(10, 0.8, 'kdb_component'), occurredAt: at(900) };
+    const fresh = { ...hit(11, 0.8, 'kdb_component'), occurredAt: at(1) };
+    expect(rerankForContext([old, fresh], 2, { nowMs: NOW })[0]!.entryId).toBe(11);
+    // Equal scores, no boost: the tie is broken by nothing, so input order holds.
+    expect(
+      rerankForContext([old, fresh], 2, { nowMs: NOW, recencyMaxBoost: 0 })[0]!.entryId,
+    ).toBe(10);
+  });
+
+  it('is deterministic across calls once the clock is injected', () => {
+    const a = rerankForContext(mixed(), 8, { nowMs: NOW }).map((h) => h.entryId);
+    const b = rerankForContext(mixed(), 8, { nowMs: NOW }).map((h) => h.entryId);
+    expect(a).toEqual(b);
   });
 });

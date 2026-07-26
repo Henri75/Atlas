@@ -1,0 +1,17 @@
+{
+  "name": "@atlas/eval",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Retrieval evaluation harness: judged query pools, per-stage metrics, variant A/B",
+  "bin": {
+    "atlas-eval": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@atlas/core": "0.1.0",
+    "commander": "15.0.0"
+  }
+}

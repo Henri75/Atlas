@@ -3,7 +3,16 @@
 SHELL := /bin/bash
 COMPOSE := docker compose
 
-.PHONY: help env install build test lint up down restart logs ps reindex reindex-full smoke cli-link kdb-rebuild clean
+.PHONY: help env install build test lint up down restart logs ps reindex reindex-full smoke cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals
+
+# The harness runs on the host, not in a container: a variant has to be a config
+# object rather than an image rebuild for an A/B to be possible at all. Ports come
+# from .env so they are still defined in exactly one place.
+EVAL_ENV := DATABASE_URL=postgres://kdbscope:kdbscope@127.0.0.1:$${POSTGRES_PORT:-5460}/kdbscope \
+	QDRANT_URL=http://127.0.0.1:$${QDRANT_PORT:-6363} \
+	OLLAMA_URL=http://127.0.0.1:11434 \
+	LLM_BASE_URL=http://127.0.0.1:8181/v1
+EVAL := npm run --silent build -w packages/core -w packages/eval >/dev/null && $(EVAL_ENV) node packages/eval/dist/main.js
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -67,6 +76,30 @@ cli-link: ## make the `atlas` command available on this machine
 
 kdb-rebuild: ## regenerate kdb/*.md views from kdb/*.log (never touches logs)
 	node bin/kdb_rebuild.mjs
+
+# --- retrieval evaluation (docs/superpowers/specs/2026-07-26-retrieval-eval-harness-design.md)
+# `eval` makes no LLM calls: it is retrieval + rerank + metrics, so it is free,
+# deterministic and safe to run constantly. The two steps that cost money
+# (generate, judge) are separate commands, run rarely and explicitly — bundling
+# them in would silently relabel the fixture every committed baseline is pinned to.
+
+eval: ## measure retrieval quality; VARIANT=<name> to A/B, POOL=A CLASS=temporal to focus
+	@$(EVAL) run $${VARIANT:+--variant $$VARIANT} $${FLOOR:+--floor $$FLOOR} $${POOL:+--pool $$POOL} $${CLASS:+--class $$CLASS}
+
+eval-mine: ## refresh Pool A from usage_log + Claude transcripts (merges, never overwrites)
+	@$(EVAL) mine $${DRY_RUN:+--dry-run}
+
+eval-generate: ## build Pool B (known-item) and Pool N (verified negatives) — costs LLM calls
+	@$(EVAL) generate $${POOL_B:+--pool-b $$POOL_B} $${POOL_N:+--pool-n $$POOL_N}
+
+eval-judge: ## grade Pool A candidates — costs LLM calls; TOP_UP=1 for only unlabelled ones
+	@$(EVAL) judge $${TOP_UP:+--top-up} $${LIMIT:+--limit $$LIMIT}
+
+eval-baseline: ## record the committed baseline (refuses if retrieval is degraded)
+	@$(EVAL) baseline
+
+eval-signals: ## record relevance signals for B4 calibration (no bands, no thresholds)
+	@$(EVAL) signals
 
 clean: ## remove build artifacts
 	rm -rf packages/*/dist packages/ui/dist

@@ -98,3 +98,51 @@ describe('withRetry', () => {
     expect(onRetry).toHaveBeenCalledWith(1, expect.any(Error));
   });
 });
+
+/**
+ * Caller-declared retryability.
+ *
+ * Not every transient failure is a *transport* failure: a heavy model behind the
+ * LLM gateway answers 200 with a truncated body, which is a parse error and which
+ * `isTransient` rightly refuses to retry. The alternative to this hook was
+ * wording the parse error so it matched one of the transient message patterns —
+ * retry policy hidden in a string, invisible to anyone reading either file.
+ */
+describe('withRetry isRetryable override', () => {
+  class FormatError extends Error {}
+
+  it('retries an error the default classifier would reject', async () => {
+    let n = 0;
+    const out = await withRetry(
+      async () => {
+        if (++n < 3) throw new FormatError('not valid JSON');
+        return 'ok';
+      },
+      { sleep: noSleep, isRetryable: (e) => e instanceof FormatError },
+    );
+    expect(out).toBe('ok');
+    expect(n).toBe(3);
+    // Sanity: the default classifier really would have given up immediately.
+    expect(isTransient(new FormatError('not valid JSON'))).toBe(false);
+  });
+
+  it('narrows as well as widens — an override that says no stops the retry', async () => {
+    const fn = vi.fn(async () => {
+      throw new Error('fetch failed');
+    });
+    await expect(withRetry(fn, { sleep: noSleep, isRetryable: () => false })).rejects.toThrow(
+      'fetch failed',
+    );
+    expect(fn).toHaveBeenCalledOnce();
+  });
+
+  it('still honours the attempt budget', async () => {
+    const fn = vi.fn(async () => {
+      throw new FormatError('nope');
+    });
+    await expect(
+      withRetry(fn, { attempts: 3, sleep: noSleep, isRetryable: () => true }),
+    ).rejects.toThrow('nope');
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+});

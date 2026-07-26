@@ -660,4 +660,58 @@ describe('usage telemetry', () => {
     const body = await (await buildApp(makeDeps()).request('/api/admin/usage?days=30')).json();
     expect(body).toMatchObject({ days: 30, calls: 12, errors: 1, clients: 2 });
   });
+
+  /**
+   * Ask questions arrive in a POST body, so reading only the URL recorded an
+   * empty query for every atlas_ask call ever made — losing the single most
+   * valuable thing this table could hold, and the seed for the retrieval
+   * evaluation query set.
+   */
+  it('records the question a POST /api/ask asked, not an empty query', async () => {
+    const app = buildApp(makeDeps());
+    await app.request('/api/ask', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-atlas-client': 'mcp', 'x-atlas-tool': 'atlas_ask' },
+      body: JSON.stringify({ question: 'why was nvidia removed from the backfill chain?' }),
+    });
+    await flush();
+    expect(usageRows[0]).toMatchObject({
+      tool: 'atlas_ask',
+      method: 'POST',
+      path: '/api/ask',
+      query: 'why was nvidia removed from the backfill chain?',
+    });
+  });
+
+  it('records the question on the streaming route too', async () => {
+    const app = buildApp(makeDeps());
+    await app.request('/api/ask/stream', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-atlas-client': 'mcp', 'x-atlas-tool': 'atlas_ask' },
+      body: JSON.stringify({ question: 'what happened on 2026-07-21?' }),
+    });
+    await flush();
+    expect(usageRows[0]).toMatchObject({ path: '/api/ask/stream', query: 'what happened on 2026-07-21?' });
+  });
+
+  it('leaves GET routes reading their query from the URL', async () => {
+    const app = buildApp(makeDeps());
+    await app.request('/api/search?q=hello&limit=3', { headers: { 'x-atlas-client': 'cli' } });
+    await flush();
+    expect(usageRows[0]).toMatchObject({ query: 'q=hello&limit=3' });
+  });
+
+  it('records nothing for a rejected ask — there was no question to record', async () => {
+    const app = buildApp(makeDeps());
+    await app.request('/api/ask', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-atlas-client': 'mcp' },
+      body: JSON.stringify({ question: '  ' }),
+    });
+    await flush();
+    // The call itself is still logged — a 400 is monitoring signal — but the
+    // query stays empty rather than recording whitespace as a real question.
+    expect(usageRows[0]).toMatchObject({ status: 400 });
+    expect((usageRows[0] as { query?: string }).query).toBeUndefined();
+  });
 });

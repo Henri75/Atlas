@@ -13,6 +13,7 @@ import {
 } from './types.js';
 import { contentHash, deterministicUuid } from './ids.js';
 import { resolveProjectAlias } from './discovery.js';
+import { tokenize } from './sparse.js';
 
 /**
  * Postgres catalog: projects, scan state, entries, sessions, errors, runs.
@@ -154,6 +155,41 @@ export interface ScanState {
 export interface InsertedEntry {
   id: number;
   entry: Entry;
+}
+
+/**
+ * Build a full-text query that finds documents matching *some* of the words.
+ *
+ * `websearch_to_tsquery` was used here, and it ANDs every unquoted term:
+ * `worker pool resize procedure supervisorctl stopwaitsecs` becomes
+ * `'worker' & 'pool' & 'resiz' & 'procedur' & 'supervisorctl' & 'stopwaitsec'`,
+ * which requires all six in one entry. Measured against the live index: that
+ * query matched **0** entries, while `worker pool resize` matched 31 and
+ * `supervisorctl` alone matched 182.
+ *
+ * The consequence was worse than a bad ranking. This is the degraded path taken
+ * when Qdrant is unreachable, and an empty result is returned as
+ * `{ hits: [], mode: 'fts' }` — indistinguishable, to any caller, from "the index
+ * genuinely holds nothing about this". A broken fallback presented itself as a
+ * confident negative answer, which is the failure class
+ * `20260725-ask-answer-trust-contract.md` exists to eliminate.
+ *
+ * OR semantics with `ts_rank` ordering is the standard shape for a
+ * natural-language query: every term contributes to the score, entries matching
+ * more of them rank higher, and matching one still beats matching none.
+ *
+ * Terms come from `tokenize`, the sparse encoder's own tokeniser, so the two
+ * keyword paths cannot disagree about what counts as a term — the same reasoning
+ * that keeps the filter translation identical across the vector and FTS paths.
+ * It also removes the injection surface: tokens are `[a-z0-9_]` only, so nothing
+ * reaches `to_tsquery`'s parser that could be read as an operator.
+ */
+export function ftsQuery(q: string): string {
+  const terms = tokenize(q);
+  // No usable terms (all stopwords, or punctuation only) yields a query that
+  // matches nothing — correct, and it must not be a syntax error.
+  if (!terms.length) return '';
+  return terms.join(' | ');
 }
 
 /** Shared by every query that rebuilds an Entry from the catalog. */
@@ -806,8 +842,8 @@ export class Catalog {
 
   /** Degraded-mode keyword search when Qdrant is unavailable. */
   async ftsSearch(q: string, filters: SearchFilters, limit = 20): Promise<SearchHit[]> {
-    const params: unknown[] = [q];
-    let where = `e.fts @@ websearch_to_tsquery('english', $1)`;
+    const params: unknown[] = [ftsQuery(q)];
+    let where = `e.fts @@ to_tsquery('english', $1)`;
     // Mirrors the vector path exactly (see buildQdrantFilter): one project is an
     // equality, several are an ANY. The two paths degrade into one another, so a
     // filter that meant different things on each would be a vicious bug.
@@ -851,7 +887,7 @@ export class Catalog {
     const r = await this.pool.query(
       `SELECT e.id, e.source_type, e.component, e.session_id, e.title, e.body,
               e.occurred_at, e.source_path, e.source_ref, e.meta, p.slug,
-              ts_rank(e.fts, websearch_to_tsquery('english', $1)) AS rank
+              ts_rank(e.fts, to_tsquery('english', $1)) AS rank
        FROM entries e JOIN projects p ON p.id = e.project_id
        WHERE ${where} ORDER BY rank DESC LIMIT $${params.length}`,
       params,

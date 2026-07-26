@@ -84,6 +84,54 @@ const SOURCE_WEIGHT: Partial<Record<string, number>> = {
 const MAX_SESSION_FRACTION = 0.5;
 
 /**
+ * Every ranking knob, injectable.
+ *
+ * These were module constants, which made them unreachable from anywhere but a
+ * source edit — so "is the session cap still right?" could only be answered by
+ * changing code, rebuilding and restarting, one candidate at a time. The
+ * evaluation harness (`packages/eval`) has to run several configurations against
+ * the same queries in one process to compare them at all, and `SearchService`
+ * already takes its ranking knobs this way (`DocRankingOpts`).
+ *
+ * Every field is optional and falls back to the constant above, so production
+ * callers pass nothing and behave exactly as before.
+ */
+export interface RerankOptions {
+  /** Per-source-type multiplier; a type not listed is left at 1. */
+  sourceWeight?: Partial<Record<string, number>>;
+  /** Ceiling: at most this fraction of k may be claude_session. */
+  maxSessionFraction?: number;
+  /**
+   * Floor instead of ceiling: reserve this many of the k slots for non-session
+   * types and let sessions take whatever is left.
+   *
+   * Wins over `maxSessionFraction` when set. Unset in production — it exists so
+   * the harness can measure the alternative framing of the same guarantee
+   * (protect authoritative sources without penalising a question whose honest
+   * answer *is* session-dense). Nothing selects it until a measured decision
+   * says so.
+   */
+  minNonSessionSlots?: number;
+  recencyHalfLifeDays?: number;
+  recencyMaxBoost?: number;
+  /**
+   * Clock, injected. The recency term reads the wall clock, so the same query
+   * against the same index ranks differently tomorrow — which makes a recorded
+   * baseline drift for reasons that have nothing to do with ranking.
+   */
+  nowMs?: number;
+}
+
+/** Today's shipped configuration, readable so a variant can start from it. */
+export const DEFAULT_RERANK: Readonly<Required<Omit<RerankOptions, 'nowMs' | 'minNonSessionSlots'>>> =
+  {
+    sourceWeight: SOURCE_WEIGHT,
+    maxSessionFraction: MAX_SESSION_FRACTION,
+    recencyHalfLifeDays: 180,
+    recencyMaxBoost: 0.12,
+  };
+
+/**
  * Gentle recency multiplier, by age in days.
  *
  * Ranking had no time term at all, so "what broke last week" competed against
@@ -97,7 +145,12 @@ const MAX_SESSION_FRACTION = 0.5;
 const RECENCY_HALF_LIFE_DAYS = 180;
 const RECENCY_MAX_BOOST = 0.12;
 
-function recencyFactor(occurredAt: string | undefined, nowMs: number): number {
+function recencyFactor(
+  occurredAt: string | undefined,
+  nowMs: number,
+  halfLifeDays: number,
+  maxBoost: number,
+): number {
   // Undated entries sit at the floor of the curve — factor 1.0, the limit a very
   // old entry approaches — so they rank as maximally old rather than being
   // docked for the missing timestamp. Absence of a date says nothing about age,
@@ -106,7 +159,7 @@ function recencyFactor(occurredAt: string | undefined, nowMs: number): number {
   const ageMs = nowMs - Date.parse(occurredAt);
   if (!Number.isFinite(ageMs)) return 1;
   const days = Math.max(0, ageMs / 864e5);
-  return 1 + RECENCY_MAX_BOOST * Math.exp(-days / RECENCY_HALF_LIFE_DAYS);
+  return 1 + maxBoost * Math.exp(-days / halfLifeDays);
 }
 
 /**
@@ -129,13 +182,19 @@ function dedupeKey(h: SearchHit): string {
  * near-duplicate sessions can still crowd the window on raw score — so both the
  * dedupe and the cap are enforced structurally.
  */
-export function rerankForContext(pool: SearchHit[], k: number): SearchHit[] {
-  const nowMs = Date.now();
+export function rerankForContext(pool: SearchHit[], k: number, opts: RerankOptions = {}): SearchHit[] {
+  const weights = opts.sourceWeight ?? SOURCE_WEIGHT;
+  const halfLife = opts.recencyHalfLifeDays ?? RECENCY_HALF_LIFE_DAYS;
+  const maxBoost = opts.recencyMaxBoost ?? RECENCY_MAX_BOOST;
+  const nowMs = opts.nowMs ?? Date.now();
   const seen = new Set<string>();
   const weighted = pool
     .map((h) => ({
       h,
-      s: h.score * (SOURCE_WEIGHT[h.sourceType] ?? 1) * recencyFactor(h.occurredAt, nowMs),
+      s:
+        h.score *
+        (weights[h.sourceType] ?? 1) *
+        recencyFactor(h.occurredAt, nowMs, halfLife, maxBoost),
     }))
     .sort((a, b) => b.s - a.s)
     // After sorting, so the survivor of a duplicate group is its best-scoring
@@ -147,7 +206,15 @@ export function rerankForContext(pool: SearchHit[], k: number): SearchHit[] {
       return true;
     });
 
-  const maxSessions = Math.max(1, Math.floor(k * MAX_SESSION_FRACTION));
+  // Ceiling on sessions, or — when the floor framing is selected — whatever is
+  // left after reserving slots for everything else. Both end up as one number,
+  // and the overflow/backfill below already handles "there was nothing else to
+  // put in the reserved slots", so a session-only answer is never starved under
+  // either framing.
+  const maxSessions =
+    opts.minNonSessionSlots != null
+      ? Math.max(1, k - opts.minNonSessionSlots)
+      : Math.max(1, Math.floor(k * (opts.maxSessionFraction ?? MAX_SESSION_FRACTION)));
   const picked: SearchHit[] = [];
   const overflow: SearchHit[] = [];
   let sessions = 0;
@@ -385,11 +452,27 @@ export class AskService {
    * So on an empty scoped result we widen to all projects and flag it, rather
    * than returning a confident non-answer.
    */
-  private async retrieve(
+  async retrieveForContext(
     question: string,
     filters: SearchFilters,
     k: number,
-  ): Promise<{ hits: SearchHit[]; scopeFallback?: ScopeFallback; mode: string; degraded: boolean }> {
+    /** Ranking overrides. Production passes nothing; the harness passes variants. */
+    rerank?: RerankOptions,
+  ): Promise<{
+    hits: SearchHit[];
+    /**
+     * The over-fetched pool the context was chosen from, before reranking.
+     *
+     * Returned because retrieval and context selection are two different
+     * surfaces governed by different knobs — the session cap cannot change the
+     * pool at all, only which of its members survive — so anything measuring
+     * ranking has to see both. Production ignores it.
+     */
+    pool: SearchHit[];
+    scopeFallback?: ScopeFallback;
+    mode: string;
+    degraded: boolean;
+  }> {
     // Over-fetch so rerankForContext has authoritative hits to promote into the
     // window; the raw top-k is often all sessions.
     const pool = Math.min(Math.max(k * 3, 24), 60);
@@ -403,10 +486,10 @@ export class AskService {
     // ones that returned nothing simply had nothing to say — that is a *partial
     // match*, not an empty scope, and widening it would be wrong. Only a total
     // miss across every selected project is a scope problem.
-    if (hits.length) return { hits: rerankForContext(hits, k), mode, degraded };
+    if (hits.length) return { hits: rerankForContext(hits, k, rerank), pool: hits, mode, degraded };
 
     const requested = selectedProjects(filters);
-    if (!requested.length) return { hits, mode, degraded };
+    if (!requested.length) return { hits, pool: hits, mode, degraded };
 
     const {
       hits: wide,
@@ -421,9 +504,10 @@ export class AskService {
     );
     // Only report a fallback if widening actually surfaced something; an
     // all-projects miss is a genuine dead end, not a scope problem.
-    if (!wide.length) return { hits, mode, degraded };
+    if (!wide.length) return { hits, pool: hits, mode, degraded };
     return {
-      hits: rerankForContext(wide, k),
+      hits: rerankForContext(wide, k, rerank),
+      pool: wide,
       scopeFallback: { requested, usedAllProjects: true },
       mode: wideMode,
       degraded: wideDegraded,
@@ -496,7 +580,11 @@ export class AskService {
     k: number,
     history: AskTurn[] = [],
   ): Promise<Prepared> {
-    const { hits, scopeFallback, mode, degraded } = await this.retrieve(question, filters, k);
+    const { hits, scopeFallback, mode, degraded } = await this.retrieveForContext(
+      question,
+      filters,
+      k,
+    );
     const measured = await this.measure(question, filters, hits, scopeFallback);
     const retrieval: RetrievalReport = {
       mode,
