@@ -74,12 +74,14 @@ export async function judgeAll(cfg: EvalConfig, opts: JudgeAllOptions): Promise<
 
     // Queries are independent, so they run concurrently. Sequentially this took
     // ~3.6 min per query — a full pass measured in hours, dominated by waiting on
-    // a reasoning model. Bounded by the same concurrency as the rest of the
-    // harness, because the LLM gateway and the embedder are shared with the
-    // indexer and saturating either is how a "measurement" starts measuring
-    // contention.
+    // a reasoning model.
+    //
+    // Its own concurrency, lower than the retrieval one: at 4 the gateway returned
+    // sustained 429s and timeouts, and each pass that exhausted its retry budget
+    // left candidates unjudged. Going wider made the fixture thinner, which is the
+    // opposite of the trade it looked like.
     let done = 0;
-    await mapLimit(targets, cfg.concurrency, async (q) => {
+    await mapLimit(targets, cfg.judge.concurrency, async (q) => {
       const { ids, sources } = await candidatePool(stack, cfg, q);
       const pending = opts.topUp ? ids.filter((id) => !alreadyLabelled.has(`${q.id}:${id}`)) : ids;
       if (!pending.length) {

@@ -228,6 +228,78 @@ twelve unanswerable questions produced, from precisely that cause.
 No band is drawn and nothing is surfaced. That is B4's decision, and it now has
 data to make it from.
 
+### Second result: the source mix, measured
+
+The harness's first job was the question it was built for. Baseline over Pool A
+(21 queries, 1,182 labels, 0 unjudged, κ 0.802 → differences below ~0.10 are label
+noise):
+
+| class | n | nDCG@10 | precision@12 | recall@30 |
+|---|---|---|---|---|
+| definitional | 7 | 0.694 | 0.583 | 0.766 |
+| incident | 5 | 0.623 | 0.500 | 0.645 |
+| intent | 4 | 0.748 | 0.521 | 0.858 |
+| procedural | 2 | 0.573 | 0.500 | 0.700 |
+| temporal | 3 | 0.617 | **0.361** | 0.781 |
+| all | 21 | 0.665 | 0.512 | 0.751 |
+
+Temporal questions have by far the worst *context* precision while their *pool*
+recall is among the better figures. The relevant material is retrieved and then
+dropped before synthesis — which is the shape the source-mix complaint predicted,
+and it is now visible rather than argued.
+
+Two of the parent spec's candidate fixes were then measured, paired, over Pools A
+and B:
+
+- **`relax-when-scoped` (option 2) is a no-op.** 0W/0L/21T on Pool A nDCG and
+  nothing at all on Pool B. Its trigger is `extractDateWindow` matching the
+  question or an explicit `since`/`until`, and that fires on almost nothing — even
+  Pool B's nine temporal questions carry no parseable date. If the idea is worth
+  keeping, the trigger has to be temporal *intent*, not a parsed date.
+- **`cap-as-floor` (option 3) is not distinguishable from baseline.** At
+  `floor = 4` every interval includes zero, and the movement that exists trends
+  slightly negative (Pool A precision −0.012 [−0.024, +0.000], Pool B hit
+  −0.025 [−0.075, +0.000]). Note the direction: `floor = 4` at k = 12 permits
+  eight session blocks where the 0.5 cap permits six, so it is a *relaxation* —
+  and relaxing did not help, which is consistent with the reasoning that put the
+  cap there.
+
+Sweeping the floor in the other direction is the result worth recording.
+`floor = 8` at k = 12 permits only **four** session blocks, a *tighter* guarantee
+than the shipped cap's six, and it trends positive:
+
+| comparison | Δ | 95% CI | W/L/T |
+|---|---|---|---|
+| A/temporal nDCG@10 | **+0.045** | [−0.008, +0.086] | 2W/1L/0T |
+| A/temporal precision@12 | +0.028 | [+0.000, +0.083] | 1W/0L/2T |
+| A/all nDCG@10 | +0.008 | [−0.003, +0.021] | 3W/3L/15T |
+| B/all hit@12 | +0.025 | [+0.000, +0.075] | 1W/0L/39T |
+
+**This points the opposite way to the premise the work item was written on.** That
+premise was that the 50% cap is "a recency penalty wearing a source-quality
+costume" and should be relaxed for temporal questions. On this evidence relaxing
+it is slightly harmful and *tightening* it is slightly helpful — most helpful on
+temporal questions, the very class the premise was about. The plausible reading is
+that sessions crowd out better-typed material even when the question is about last
+week, because the answer is usually the commit or the log entry rather than the
+conversation around it.
+
+Every interval still includes zero, and +0.045 is below the κ-derived noise floor
+of ~0.10.
+
+**So the source-mix decision, on this evidence, is to change nothing** — which the
+parent spec listed as a legitimate outcome requiring evidence rather than
+assertion. That evidence now exists. What has also changed is the shape of the
+open question: it is no longer "should the cap be loosened for temporal questions"
+but "is the cap too loose in general", and the harness can answer that once the
+query set grows. `/api/ask` now records questions, so it will.
+
+One structural result is worth naming: `recall@30` came back +0.000 with 0W/0L in
+every class of every variant. That is not a null finding but a validation —
+`RerankOptions` provably cannot reach the retrieval pool, so a harness measuring
+only one stage would have been blind either to the variants' whole effect or to the
+fact that retrieval was untouched.
+
 ## Alternatives Considered
 
 - **Judge nothing; compare variants by eyeballing a few favourite queries.**

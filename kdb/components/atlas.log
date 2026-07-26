@@ -994,3 +994,32 @@
 
 **Status:**
 - In-Progress
+---
+### [2026-07-26] - Eval harness: first measurements, and the source-mix answer
+
+**Objective:**
+- Run the harness on the question it was built for, and record what it says.
+
+**Summary of Work:**
+- Judged all 21 Pool A queries: 1,182 primary labels over 46-70 candidates each, **0 unjudged** (the repair loop recovered every timeout, 429 and truncated reply). Grade spread 0:486 1:328 2:214 3:154, so 31% relevant — discriminating, not a rubber stamp.
+- Quadratic-weighted kappa **0.802** (67% exact) over a 270-label grade-stratified subsample re-judged by glm-5.2 -> stated resolution floor ~0.10.
+- Baseline recorded with a corpus fingerprint. Pool A nDCG@10 0.665, precision@12 0.516, recall@30 0.748 overall.
+- Measured both candidate fixes for the session cap, paired over pools A and B.
+
+**Key Decisions & Rationale:**
+- **Source mix: change nothing.** `relax-when-scoped` is a measured no-op (0W/0L/21T); `cap-as-floor` at floor=4 (a relaxation: 8 sessions allowed vs 6) trends slightly negative. The parent spec listed "leave it" as legitimate *given evidence*, and there is now evidence.
+- The open question changed shape. floor=8 (a *tightening*: 4 sessions) trends POSITIVE, most on temporal (+0.045 nDCG, +0.028 precision) — opposite to the premise that the cap is a disguised recency penalty. Still inside the noise floor, so not actionable; but the next question is "is the cap too loose in general", not "should it be loosened for temporal questions".
+- Judge concurrency separated from retrieval concurrency (2 vs 4). At 4 the gateway returned sustained 429s and timeouts, and every exhausted pass left candidates unjudged — going wider made the fixture thinner.
+
+**Code/Files Modified:**
+- packages/eval/src/{config,judgeAll}.ts
+- test/fixtures/eval/{queries,judgements,baseline,signals}.json, arbitrate.md
+- docs/adr/20260726-retrieval-quality-is-measured-not-argued.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Temporal questions have the worst context precision (0.361 vs 0.583 definitional) while their pool recall is high (0.781) — the relevant material is retrieved and then dropped before synthesis. That is the source-mix complaint made visible. Separately, `recall@30` came back +0.000 with 0W/0L in every class of every variant, which validates the two-stage design: RerankOptions provably cannot reach the retrieval pool, so a one-stage harness would have been blind to half of what it was measuring.
+- **What Failed:** Setting judge concurrency to 4 — I had written the comment warning about saturating the shared gateway two commits earlier and then picked the number that did it. Also: `eval baseline` over 73 queries hit mode=fts once and correctly refused to record; the guard worked, but a baseline currently needs a retry to land, and why Qdrant/the embedder dropped under harness load is unresolved (backlog).
+- The B4 signal panel found that RRF top-1 is not the flat non-signal it was documented as: all 12 verified negatives score exactly 0.500 (single-branch contribution — the branches agree on nothing), while 20 of 21 real queries score higher. It is still unusable alone, because 18 of 40 answerable Pool B questions also score exactly 0.500. Lexical overlap separates A from N perfectly and misclassifies 15% of Pool B; cosine@1 gets 94% and misclassifies 25%. Their errors fall on different queries, so B4's answer is probably a combination.
+
+**Status:**
+- Completed

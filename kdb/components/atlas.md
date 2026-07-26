@@ -956,3 +956,72 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-26] - Retrieval evaluation harness (deliverable 0 for B4 + source mix)
+
+**Objective:**
+- Build the instrument that makes a retrieval change measurable, so B4 and the session-cap question stop being undecidable.
+
+**Summary of Work:**
+- New `packages/eval` workspace: `mine | generate | judge | run | signals | baseline`, run on the host against the live stack so a ranking variant is a config object rather than an image rebuild.
+- Three query pools, reported separately and never averaged: A = 21 real mined queries (graded 0-3 by `cline-pass/kimi-k3`), B = corpus-derived known-item questions with leakage filtering, N = negatives whose absence is verified by retrieval + judge rather than assumed.
+- Metrics at BOTH pipeline stages, because the deferred items live at different ones: `recall@30` over the retrieval pool, `nDCG@10`/`precision@12` over the reranked context. `MAX_SESSION_FRACTION` cannot touch the pool at all.
+- Paired per-query deltas with a percentile bootstrap 95% CI, not two absolute means: at n=21 the pairing cancels most of the variance.
+- `rerankForContext(pool, k, opts?)` now takes source weights, session fraction, an alternative slot floor, recency params and an injectable clock, all defaulting to the shipped constants and pinned by a golden test.
+- `AskService.retrieve()` became public `retrieveForContext()` returning `{hits, pool, ...}` so the harness measures the product's exact path instead of a copy of it.
+- `RetryOptions.isRetryable` added so a caller can declare its own transient shapes.
+
+**Key Decisions & Rationale:**
+- Unjudged candidates BOUND the metric (computed optimistically and pessimistically); a conclusion that flips prints INCONCLUSIVE. The alternative was an invented \"more than N% unjudged is invalid\" gate, which is the kind of number this whole effort exists to remove.
+- An unlabelled candidate is never graded 0. Scoring it irrelevant fabricates a label, and every metric is a function of the labels.
+- The baseline variant is re-measured in the same process as any candidate. The index gains entries every five minutes, so a diff against a stored number measures corpus growth and calls it a ranking win.
+- Quadratic-weighted kappa over a GRADE-STRATIFIED subsample: the grades are ordinal, and a uniform sample would be nearly all grade 0 and flattered by easy consensus on obvious negatives.
+- Judge sees no rank and no score, candidates shuffled under a committed seed — otherwise today's ranking blesses itself.
+- Pooling is across retrieval MECHANISMS (hybrid, FTS, dense-only), not variants: variants only affect context selection, so their retrieval pools are identical and unioning them adds nothing.
+- Query classes derived from reading real traffic: `incident` replaces the spec's proposed session-recap class, which no real query matches.
+
+**Code/Files Modified:**
+- packages/eval/** (new)
+- packages/core/src/ask.ts, retry.ts, catalog.ts, llm.ts, qdrant.ts
+- packages/api/src/app.ts
+- test/eval/**, test/core/{rerankForContext,retrieveForContext,retry,ftsQuery,llmComplete}.test.ts, test/api/routes.test.ts
+- Makefile, package.json, tsconfig.lint.json, vitest.config.ts
+- docs/adr/20260726-retrieval-quality-is-measured-not-argued.md
+- docs/superpowers/specs/2026-07-26-retrieval-eval-harness-design.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Building the instrument before the tuning found three real defects that no existing test could catch, because each rendered a failure as a plausible result. (1) `ftsSearch` returned 0 hits for ANY multi-word query — `websearch_to_tsquery` ANDs terms, so a 6-term query matched 0 entries while `worker pool resize` matched 31; this is the Qdrant-down fallback and it returned `{hits: [], mode: 'fts'}`, indistinguishable from an empty index. Fixed by OR-ing terms from the sparse branch's own tokeniser: 0 -> 30 relevant hits live. (2) `chatComplete` returned `''` when a reasoning model truncated mid-thought, reporting it as success — on the Ask path a blank answer marked healthy. (3) Every `atlas_ask` question was recorded as an empty query, so the most valuable class of real traffic was invisible.
+- **What Failed:** Retrying a truncated LLM request unchanged — 45 consecutive empty completions before the cause was understood. A budget-starved call needs ESCALATION, not repetition; the retry classifier was right that the failure was transient and wrong to repeat the same request. Also: hand-predicting golden rank orders instead of computing them from the weights (four wrong test expectations), and an initial `precision@12` of 0.000 for never-judged queries, which read as \"nothing relevant retrieved\" when the truth was \"nobody has said\".
+- The mineable query set is 21, not the 30-50 the parent spec assumed: 60 of 94 logged queries are `burst N` load tests, 20 are one `concurrency N` template, and every ask question was empty. Load-test noise is now excluded by SHAPE (many texts differing only by a number) rather than a hand-maintained blocklist.
+
+**Status:**
+- In-Progress
+---
+### [2026-07-26] - Eval harness: first measurements, and the source-mix answer
+
+**Objective:**
+- Run the harness on the question it was built for, and record what it says.
+
+**Summary of Work:**
+- Judged all 21 Pool A queries: 1,182 primary labels over 46-70 candidates each, **0 unjudged** (the repair loop recovered every timeout, 429 and truncated reply). Grade spread 0:486 1:328 2:214 3:154, so 31% relevant — discriminating, not a rubber stamp.
+- Quadratic-weighted kappa **0.802** (67% exact) over a 270-label grade-stratified subsample re-judged by glm-5.2 -> stated resolution floor ~0.10.
+- Baseline recorded with a corpus fingerprint. Pool A nDCG@10 0.665, precision@12 0.516, recall@30 0.748 overall.
+- Measured both candidate fixes for the session cap, paired over pools A and B.
+
+**Key Decisions & Rationale:**
+- **Source mix: change nothing.** `relax-when-scoped` is a measured no-op (0W/0L/21T); `cap-as-floor` at floor=4 (a relaxation: 8 sessions allowed vs 6) trends slightly negative. The parent spec listed "leave it" as legitimate *given evidence*, and there is now evidence.
+- The open question changed shape. floor=8 (a *tightening*: 4 sessions) trends POSITIVE, most on temporal (+0.045 nDCG, +0.028 precision) — opposite to the premise that the cap is a disguised recency penalty. Still inside the noise floor, so not actionable; but the next question is "is the cap too loose in general", not "should it be loosened for temporal questions".
+- Judge concurrency separated from retrieval concurrency (2 vs 4). At 4 the gateway returned sustained 429s and timeouts, and every exhausted pass left candidates unjudged — going wider made the fixture thinner.
+
+**Code/Files Modified:**
+- packages/eval/src/{config,judgeAll}.ts
+- test/fixtures/eval/{queries,judgements,baseline,signals}.json, arbitrate.md
+- docs/adr/20260726-retrieval-quality-is-measured-not-argued.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Temporal questions have the worst context precision (0.361 vs 0.583 definitional) while their pool recall is high (0.781) — the relevant material is retrieved and then dropped before synthesis. That is the source-mix complaint made visible. Separately, `recall@30` came back +0.000 with 0W/0L in every class of every variant, which validates the two-stage design: RerankOptions provably cannot reach the retrieval pool, so a one-stage harness would have been blind to half of what it was measuring.
+- **What Failed:** Setting judge concurrency to 4 — I had written the comment warning about saturating the shared gateway two commits earlier and then picked the number that did it. Also: `eval baseline` over 73 queries hit mode=fts once and correctly refused to record; the guard worked, but a baseline currently needs a retry to land, and why Qdrant/the embedder dropped under harness load is unresolved (backlog).
+- The B4 signal panel found that RRF top-1 is not the flat non-signal it was documented as: all 12 verified negatives score exactly 0.500 (single-branch contribution — the branches agree on nothing), while 20 of 21 real queries score higher. It is still unusable alone, because 18 of 40 answerable Pool B questions also score exactly 0.500. Lexical overlap separates A from N perfectly and misclassifies 15% of Pool B; cosine@1 gets 94% and misclassifies 25%. Their errors fall on different queries, so B4's answer is probably a combination.
+
+**Status:**
+- Completed

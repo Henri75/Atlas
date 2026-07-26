@@ -27,6 +27,17 @@ export interface EvalConfig {
     subsampleFraction: number;
     /** Candidates per judging call. Keeps completions well inside token limits. */
     batchSize: number;
+    /**
+     * Queries judged at once — deliberately lower than `concurrency`.
+     *
+     * They throttle different things. `concurrency` is bounded by a local Ollama
+     * serialising embedding requests; this is bounded by a heavy reasoning model
+     * behind a shared gateway. Running the judge at 4 produced sustained
+     * `429 All 1 fallback targets exhausted` plus timeouts, and every pass that
+     * exhausted its retry budget became an unjudged candidate — so the number
+     * chosen to make the pass faster was quietly making the fixture thinner.
+     */
+    concurrency: number;
   };
   /** Where Claude Code transcripts live on this host. */
   claudeProjectsDir: string;
@@ -84,6 +95,7 @@ export function evalConfig(env: NodeJS.ProcessEnv = process.env): EvalConfig {
       second: str(env.ATLAS_EVAL_JUDGE2, 'cline-pass/glm-5.2'),
       subsampleFraction: num(env.ATLAS_EVAL_SUBSAMPLE, 0.25),
       batchSize: num(env.ATLAS_EVAL_BATCH, 20),
+      concurrency: num(env.ATLAS_EVAL_JUDGE_CONCURRENCY, 2),
     },
     claudeProjectsDir: str(env.CLAUDE_PROJECTS_HOST, `${homedir()}/.claude/projects`),
     fixtures: {

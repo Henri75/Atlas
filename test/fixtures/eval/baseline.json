@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "recordedAt": "2026-07-26T11:33:27.776Z",
+  "fingerprint": {
+    "entries": 324334,
+    "newestOccurredAt": "2026-07-26T12:45:00.000Z",
+    "collection": "kdbscope_ollama_nomic_embed_text_768",
+    "embedder": "ollama",
+    "embedderDim": 768,
+    "judgementsHash": "e4920978b37f3155"
+  },
+  "metrics": {
+    "baseline": {
+      "A": [
+        {
+          "class": "definitional",
+          "n": 7,
+          "values": {
+            "ndcg": 0.6937029772732505,
+            "precision": 0.5833333333333333,
+            "recall": 0.7661227661227662
+          },
+          "indicative": true
+        },
+        {
+          "class": "incident",
+          "n": 5,
+          "values": {
+            "ndcg": 0.6230492719615679,
+            "precision": 0.5,
+            "recall": 0.6447926267281106
+          },
+          "indicative": true
+        },
+        {
+          "class": "intent",
+          "n": 4,
+          "values": {
+            "ndcg": 0.7482458755208382,
+            "precision": 0.5208333333333334,
+            "recall": 0.8578869047619047
+          },
+          "indicative": true
+        },
+        {
+          "class": "procedural",
+          "n": 2,
+          "values": {
+            "ndcg": 0.5717971312980353,
+            "precision": 0.5416666666666667,
+            "recall": 0.675
+          },
+          "indicative": true
+        },
+        {
+          "class": "temporal",
+          "n": 3,
+          "values": {
+            "ndcg": 0.6168112090975825,
+            "precision": 0.3611111111111111,
+            "recall": 0.7809523809523808
+          },
+          "indicative": true
+        },
+        {
+          "class": "all",
+          "n": 21,
+          "values": {
+            "ndcg": 0.6646751710806078,
+            "precision": 0.515873015873016,
+            "recall": 0.7481536789716513
+          },
+          "indicative": false
+        }
+      ],
+      "B": [
+        {
+          "class": "definitional",
+          "n": 7,
+          "values": {
+            "mrr": 0.33333333333333337,
+            "hit": 0.5714285714285714
+          },
+          "indicative": true
+        },
+        {
+          "class": "incident",
+          "n": 10,
+          "values": {
+            "mrr": 0.12371794871794872,
+            "hit": 0.3
+          },
+          "indicative": false
+        },
+        {
+          "class": "intent",
+          "n": 5,
+          "values": {
+            "mrr": 0.10721611721611721,
+            "hit": 0.4
+          },
+          "indicative": true
+        },
+        {
+          "class": "procedural",
+          "n": 9,
+          "values": {
+            "mrr": 0.24228395061728392,
+            "hit": 0.4444444444444444
+          },
+          "indicative": false
+        },
+        {
+          "class": "temporal",
+          "n": 9,
+          "values": {
+            "mrr": 0.3382554379776602,
+            "hit": 0.6666666666666666
+          },
+          "indicative": false
+        },
+        {
+          "class": "all",
+          "n": 40,
+          "values": {
+            "mrr": 0.2332861975986976,
+            "hit": 0.475
+          },
+          "indicative": false
+        }
+      ]
+    }
+  }
+}

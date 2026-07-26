@@ -188,3 +188,11 @@
 
 **AI Response Summary:**
 > Proved the index was current (34,825 entries newer than 07-15) and traced the claim to one atlas_ask whose 14 retrieved blocks maxed out at 07-15; found underneath it that transient embed failures orphan entries permanently — 39 found, including two whole documents. Healed and verified them, then wrote 2 ADRs plus a 4-phase plan and self-reviewed it, fixing 4 design defects including a vectorized_at scheme that would have broken the model-switch backfill.
+---
+### [2026-07-26 12:45 UTC]
+
+**User Prompt Summary:**
+> Implement the retrieval eval harness (deliverable 0) from the deferred-work spec, B4 depends on it. Self-review as a senior developer, fix what that finds, write the spec and self-review that too, then implement. Use kimi-k3 via clinepass as the judge and give heavy models a tenacity-style retry.
+
+**AI Response Summary:**
+> Found the spec's premise wrong before designing: only 21 real queries are mineable, not 30-50, because 80 of 94 logged queries are load tests and every atlas_ask question was recorded empty. Designed and self-reviewed (11 findings), wrote and self-reviewed the spec (12 more, 3 of them inconsistencies), then built packages/eval: three separately-reported query pools, metrics at both retrieval and context stages, paired deltas with a bootstrap CI, and unjudged candidates bounding the metric instead of an invented validity threshold. Building it exposed three Atlas defects that rendered failures as plausible results - the FTS fallback returned zero hits for any multi-word query, chatComplete reported a truncated completion as an empty success, and ask questions were never logged - all fixed with tests. First measurement corrected a claim I had made: RRF top-1 does carry a branch-agreement signal (all 12 negatives score exactly 0.500), but Pool B proves it unusable alone since 18 of 40 answerable questions score the same.
