@@ -6,6 +6,7 @@ import {
   parseKdbStamp,
   parseSessionLog,
 } from '@atlas/core';
+import { createHash } from 'node:crypto';
 
 const ctx = { projectSlug: 'deepcast', sourcePath: '/data/code/DeepCast/kdb/changelog.log' };
 
@@ -105,5 +106,75 @@ describe('parseBacklog', () => {
     expect(entries[0]!.component).toBe('frontend-themes');
     expect(entries[1]!.component).toBeUndefined();
     expect(entries[1]!.occurredAt).toBe('2026-07-09T00:00:00Z');
+  });
+
+  // Real shapes from kdb/ and Swan/ backlogs (2026-07-29): free-form undated
+  // lines, legacy DONE:/RESOLVED: markers, structured RESOLVED [L<n>#<hash>].
+  it('indexes free-form undated lines as unstructured entries', () => {
+    const text = [
+      '- [2026-07-09] [kdbscope] dated item',
+      'VectorStore.updateSparse loses a whole 64-point slice when Qdrant rejects the batch',
+    ].join('\n');
+    const entries = parseBacklog(text, ctx);
+    expect(entries).toHaveLength(2);
+    expect(entries[1]!.meta?.unstructured).toBe(true);
+    expect(entries[1]!.occurredAt).toBeUndefined();
+    expect(entries[1]!.sourceRef).toBe('line:2');
+    expect(entries[1]!.title).toContain('VectorStore.updateSparse');
+  });
+
+  it('skips blank and #-comment lines without breaking line numbering', () => {
+    const text = '# backlog\n\n- [2026-07-09] real item';
+    const entries = parseBacklog(text, ctx);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.sourceRef).toBe('line:3');
+  });
+
+  it('stores a 6-hex lineHash of the trimmed physical line on every entry', () => {
+    const line = '- [2026-07-09] [frontend-themes] VideoCard select-mode click path: one shared parameterized test';
+    const entries = parseBacklog(`${line}   \n`, ctx);
+    const expected = createHash('sha256').update(line).digest('hex').slice(0, 6);
+    expect(entries[0]!.meta?.lineHash).toBe(expected);
+  });
+
+  it('parses structured RESOLVED markers with target line and hash', () => {
+    const entries = parseBacklog(
+      '- [2026-07-29] RESOLVED [L37#a3f2c1]: backfill resume cursor persisted (evidence: commit ebcec11)',
+      ctx,
+    );
+    expect(entries[0]!.meta?.marker).toEqual({ kind: 'resolved', targetLine: 37, targetHash: 'a3f2c1' });
+  });
+
+  it('parses DROPPED and REOPENED markers, hash optional', () => {
+    const text = [
+      '- [2026-07-29] DROPPED [L5]: superseded by the new embedder flow',
+      '- [2026-07-29] REOPENED [L12#0d9e11]: regressed after the pg18 upgrade',
+    ].join('\n');
+    const entries = parseBacklog(text, ctx);
+    expect(entries[0]!.meta?.marker).toEqual({ kind: 'dropped', targetLine: 5 });
+    expect(entries[1]!.meta?.marker).toEqual({ kind: 'reopened', targetLine: 12, targetHash: '0d9e11' });
+  });
+
+  it('tags legacy DONE:/RESOLVED:/FIXED: markers without a target', () => {
+    const text = [
+      '- [2026-07-09] [kdbscope] DONE: backfill resume cursor (persisted per collection in settings)',
+      '- [2026-07-03] RESOLVED: auth email verification implemented',
+      'FIXED: the tokenizer bug',
+    ].join('\n');
+    const entries = parseBacklog(text, ctx);
+    expect(entries[0]!.meta?.marker).toEqual({ kind: 'resolved', legacy: true });
+    expect(entries[0]!.component).toBe('kdbscope');
+    expect(entries[1]!.meta?.marker).toEqual({ kind: 'resolved', legacy: true });
+    expect(entries[2]!.meta?.marker).toEqual({ kind: 'resolved', legacy: true });
+  });
+
+  it('tags legacy WONTFIX:/OBSOLETE: markers as dropped', () => {
+    const entries = parseBacklog('- [2026-07-09] WONTFIX: too rare to matter', ctx);
+    expect(entries[0]!.meta?.marker).toEqual({ kind: 'dropped', legacy: true });
+  });
+
+  it('leaves ordinary items unmarked', () => {
+    const entries = parseBacklog('- [2026-07-09] add retry to the embed path', ctx);
+    expect(entries[0]!.meta?.marker).toBeUndefined();
   });
 });

@@ -1,6 +1,7 @@
 export * from './types.js';
 export * from './config.js';
 export * from './parsers/kdbLog.js';
+export * from './backlog.js';
 export * from './parsers/claudeJsonl.js';
 export * from './parsers/gitLog.js';
 export * from './parsers/docsMd.js';

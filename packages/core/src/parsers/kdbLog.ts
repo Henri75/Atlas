@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { Entry } from '../types.js';
 
 /**
@@ -95,21 +97,77 @@ export function parseComponentLog(text: string, ctx: ParseCtx): Entry[] {
 
 const BACKLOG_RE = /^-\s*\[(\d{4}-\d{2}-\d{2})\]\s*(?:\[([^\]]+)\])?\s*(.+)$/;
 
+/**
+ * Bump to force a re-parse of unchanged backlog files (mirrors
+ * DOCS_PARSER_VERSION). v2: unstructured lines, resolution markers, lineHash.
+ */
+export const BACKLOG_PARSER_VERSION = 2;
+
+/** A backlog line that resolves/drops/reopens another line rather than logging new work. */
+export interface BacklogMarker {
+  kind: 'resolved' | 'dropped' | 'reopened';
+  /** Absolute line number of the target item (structured markers only). */
+  targetLine?: number;
+  /** First 6 hex chars of SHA-256 of the target's trimmed line (optional in hand-written markers). */
+  targetHash?: string;
+  /** Ad-hoc pre-convention marker (DONE:/RESOLVED:/…); target unknown, linked by fuzzy match. */
+  legacy?: boolean;
+}
+
+const STRUCTURED_MARKER_RE = /^(RESOLVED|DROPPED|REOPENED)\s*\[L(\d+)(?:#([0-9a-fA-F]{6}))?\]\s*:/;
+const LEGACY_MARKER_RE = /^(DONE|RESOLVED|FIXED|WONTFIX|OBSOLETE)\s*:/;
+
+function detectMarker(desc: string): BacklogMarker | undefined {
+  const s = desc.match(STRUCTURED_MARKER_RE);
+  if (s) {
+    const kind = s[1]!.toLowerCase() as BacklogMarker['kind'];
+    const marker: BacklogMarker = { kind, targetLine: Number(s[2]) };
+    if (s[3]) marker.targetHash = s[3].toLowerCase();
+    return marker;
+  }
+  const l = desc.match(LEGACY_MARKER_RE);
+  if (l) {
+    const word = l[1]!.toUpperCase();
+    return { kind: word === 'WONTFIX' || word === 'OBSOLETE' ? 'dropped' : 'resolved', legacy: true };
+  }
+  return undefined;
+}
+
+/** First 6 hex chars of SHA-256 of the trimmed line — the `#<hash6>` in marker refs. */
+export function backlogLineHash(line: string): string {
+  return createHash('sha256').update(line.trimEnd()).digest('hex').slice(0, 6);
+}
+
 export function parseBacklog(text: string, ctx: ParseCtx): Entry[] {
   const entries: Entry[] = [];
-  for (const [i, line] of text.split('\n').entries()) {
-    const m = line.match(BACKLOG_RE);
-    if (!m) continue;
-    const [, date, component, desc] = m;
+  for (const [i, raw] of text.split('\n').entries()) {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const m = raw.match(BACKLOG_RE);
+    const meta: Record<string, unknown> = { lineHash: backlogLineHash(raw) };
+    let desc: string;
+    let date: string | undefined;
+    let component: string | undefined;
+    if (m) {
+      date = m[1];
+      component = m[2];
+      desc = m[3]!;
+    } else {
+      desc = trimmed;
+      meta.unstructured = true;
+    }
+    const marker = detectMarker(desc);
+    if (marker) meta.marker = marker;
     entries.push({
       projectSlug: ctx.projectSlug,
       sourceType: 'kdb_backlog',
       component: component?.trim(),
-      title: desc!.slice(0, 140),
-      body: desc!,
-      occurredAt: parseKdbStamp(date!),
+      title: desc.slice(0, 140),
+      body: desc,
+      occurredAt: date ? parseKdbStamp(date) : undefined,
       sourcePath: ctx.sourcePath,
       sourceRef: `line:${i + 1}`,
+      meta,
     });
   }
   return entries;

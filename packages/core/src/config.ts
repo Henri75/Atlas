@@ -93,6 +93,8 @@ const schema = z.object({
       archivedPenalty: z.coerce.number().min(0).max(1).default(DEFAULT_ARCHIVED_PENALTY),
     })
     .default({ agingMonths: DEFAULT_AGING_MONTHS, archivedPenalty: DEFAULT_ARCHIVED_PENALTY }),
+  /** Minimum token containment for linking a legacy DONE:/RESOLVED: line to its item. */
+  backlogMatchThreshold: z.coerce.number().min(0).max(1).default(0.5),
   apiPort: z.coerce.number().int().default(8710),
   mcpPort: z.coerce.number().int().default(8711),
   apiUrl: z.string().default('http://api:8710'),
@@ -159,6 +161,7 @@ function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
       agingMonths: opt(env.KDB_DOCS_AGING_MONTHS),
       archivedPenalty: opt(env.KDB_ARCHIVED_PENALTY),
     },
+    backlogMatchThreshold: opt(env.KDB_BACKLOG_MATCH_THRESHOLD),
     apiPort: opt(env.API_PORT),
     mcpPort: opt(env.MCP_PORT),
     apiUrl: opt(env.KDBSCOPE_API_URL),
