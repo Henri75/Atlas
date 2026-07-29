@@ -42,8 +42,10 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
       },
       // Per-project routes 404 on slugs this returns false for.
       projectExists: async (slug: string) => slug === 'deepcast',
-      logUsage: async (row: unknown) => {
-        usageRows.push(row);
+      // Mirrors Catalog.recordCall(call, reply?): the middleware records the
+      // request row and the handler's reply as one unit.
+      recordCall: async (call: unknown, reply?: unknown) => {
+        usageRows.push(reply === undefined ? call : { ...(call as object), reply });
       },
       usageStats: async (days: number) => ({
         days, calls: 12, errors: 1, clients: 2, byTool: [], byDay: [],
@@ -151,6 +153,7 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     } as any,
     backlogMatchThreshold: 0.5,
     enqueueScan: vi.fn(async () => 1),
+    enqueueAdoption: vi.fn(async () => 1),
     vectorCount: async () => 123,
     meta: () => ({ embedder: 'ollama/nomic-embed-text', collection: 'kdbscope_x' }),
     queueCounts: async () => ({ waiting: 5, active: 2, delayed: 1, failed: 0, completed: 90 }),
@@ -763,10 +766,18 @@ describe('usage telemetry', () => {
     });
   });
 
-  it('ignores unlabeled (UI) requests', async () => {
+  /**
+   * Reversed deliberately. Recording only requests that carried
+   * `x-atlas-client` kept the table tidy by making the user's own use of Atlas
+   * invisible — a poor trade for a tool whose whole subject is what happened.
+   * Every `/api/*` call is recorded now, and polling noise is separated at READ
+   * time by `route_class` instead, so the rows exist and the reader chooses.
+   */
+  it('records unlabeled (UI) requests too, as an unknown client', async () => {
     await buildApp(makeDeps()).request('/api/search?q=hello');
     await flush();
-    expect(usageRows).toHaveLength(0);
+    expect(usageRows).toHaveLength(1);
+    expect(usageRows[0]).toMatchObject({ client: 'unknown', path: '/api/search' });
   });
 
   it('records failures too — a 404 is exactly what monitoring wants to see', async () => {
@@ -805,13 +816,26 @@ describe('usage telemetry', () => {
     });
   });
 
+  /**
+   * The streaming route records ITSELF, on whichever of close/cancel arrives
+   * first, because only then are the answer and the token counts known. So the
+   * row does not exist when the response object is returned — the body has to
+   * be drained first. Asserting straight after `request()` tested the middleware
+   * that this route now deliberately opts out of.
+   */
   it('records the question on the streaming route too', async () => {
-    const app = buildApp(makeDeps());
-    await app.request('/api/ask/stream', {
+    async function* fakeStream() {
+      yield { type: 'sources', sources: [{ n: 1, entryId: 1 }] };
+      yield { type: 'delta', text: 'Hello' };
+      yield { type: 'done', model: 'm', degraded: false };
+    }
+    const app = buildApp(makeDeps({ ask: { askStream: () => fakeStream() } as any }));
+    const res = await app.request('/api/ask/stream', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-atlas-client': 'mcp', 'x-atlas-tool': 'atlas_ask' },
       body: JSON.stringify({ question: 'what happened on 2026-07-21?' }),
     });
+    await res.text(); // drain: the row is written when the stream ends
     await flush();
     expect(usageRows[0]).toMatchObject({ path: '/api/ask/stream', query: 'what happened on 2026-07-21?' });
   });
