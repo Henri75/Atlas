@@ -3,6 +3,7 @@
 # REST API
 
 ## Revision History
+- 2026-07-30 00:40 UTC — **Gateway headers are the source of truth for the served model.** The buffered ask path (`/api/ask`, which MCP uses) read `model` from the response *body*, which echoes the requested name — so every model substitution was recorded as the model we asked for. It now reads `x-g2p-reply-model` like the streaming path always did, via a shared `readGatewayMeta`, and also records `x-g2p-reply-attempts` and `x-request-id` in new nullable `usage_reply.attempts` / `request_id` columns. Substitution is judged in one place (`isSubstitution`) on the bare model name, so a vendor prefix (`google/x` vs `x`) is not reported as a swap. Verified live: the same route recorded `gemini-3-flash-preview` before and `google/gemini-3-flash-preview` after.
 - 2026-07-30 00:25 UTC — **Monitor filters, insights, cursor paging**: `/api/admin/usage/calls` gains `hideNoise`, returns `facets` (counts by client and by tool over the filtered set) plus `nextCursor`, and pages by keyset `cursorAt`+`cursorId` rather than `offset` — the log grows while you read it, so an offset page is measured from a top that has moved. New `GET /api/admin/usage/insights?days=N`: outcome rates per mode (searches returning nothing, asks with no sources, aborted, degraded/failed), a log-scaled latency histogram, which models actually answered, weekday spread, most-repeated questions.
 - 2026-07-29 21:20 UTC — **Usage monitoring**: **every** `/api/*` request is now logged (previously only `x-atlas-client` callers), with a new `route_class` column classifying the route (`query|read|write|status|admin|other`) so polling is separated at read time instead of discarded. Search and ask store what they replied — answer, result count, top hits, served model, tokens, TTFT — in a new 1:1 `usage_reply` table; `/api/ask/stream` records itself on close/cancel, so an aborted answer is kept at `status 499` with its partial text and a real duration. New routes: `GET /api/admin/usage/calls`, `GET /api/admin/usage/calls/:id`, `GET /api/admin/adoption`, `POST /api/admin/adoption/refresh`. `/api/admin/usage` gains `p50Ms`/`p95Ms`, per-tool percentiles, `byClass` and `byHour` (additively — existing fields unchanged). See `docs/adr/20260729-usage-telemetry-and-reply-capture.md`.
 - 2026-07-29 20:25 UTC — **Backlog review**: `GET /api/projects/:slug/backlog` derives per-item status (open/resolved/dropped, with provenance `structured|reviewed|heuristic` and lints) at request time from the indexed backlog; `POST …/backlog/review` gathers scoped evidence and (unless `judge:false`) stores an Atlas-LLM verdict; `POST …/backlog/verdict` records a caller's own verdict. Both POSTs answer with `proposedLine` — the exact `RESOLVED/DROPPED/REOPENED [L<n>#<hash6>]` marker to append via the project's blessed helper; Atlas never writes project files. Verdicts live in the `backlog_review` table (survives reindex; the appended marker line is the canonical durable record). See `docs/adr/20260729-backlog-status-derivation.md`.
@@ -75,7 +76,18 @@ whenever the classifier improves.
 **Replies.** Search and ask additionally store what came back, in a 1:1
 `usage_reply` table (`ON DELETE CASCADE`, so pruning only touches `usage_log`):
 the full answer, result count, top 5 hits with scores, the model that *actually*
-answered, prompt/completion tokens, TTFT, and a `degraded` flag. A call and its
+answered, prompt/completion tokens, TTFT, and a `degraded` flag.
+
+The served model, `attempts` and `request_id` all come from the gateway's
+`x-g2p-reply-model` / `x-g2p-reply-attempts` / `x-request-id` **response
+headers**, never from the response body. The body's `model` field is frequently
+the requested name echoed back, so reading it attributes an answer to a model
+that may never have seen the question — which is precisely the substitution this
+record exists to expose. `attempts > 1` means the gateway failed over internally
+before succeeding; `request_id` is the handle for correlating a suspect answer
+against the gateway's own logs. Both the buffered and streaming paths read them
+through one shared helper (`readGatewayMeta`), because they previously read them
+separately and only one of them actually did. A call and its
 reply are written in one data-modifying CTE, so a reply can never half-land.
 
 `/api/ask/stream` records itself rather than going through the middleware, which

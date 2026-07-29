@@ -84,7 +84,32 @@ export function CallDrawer({ id, onClose }: { id: number; onClose: () => void })
                 <Field label="Outcome">
                   <StatusBadge status={call.status} />
                 </Field>
-                {reply?.model && <Field label="Model">{reply.model}</Field>}
+                {reply?.model && (
+                  <Field label="Model served">
+                    {/* From the gateway's x-g2p-reply-model header, not the
+                        response body — the body often echoes what was requested,
+                        which would hide every substitution. */}
+                    <span title="Reported by the gateway as the model that actually answered">
+                      {reply.model}
+                    </span>
+                    {reply.attempts != null && reply.attempts > 1 && (
+                      <span
+                        className="ml-1.5 font-mono text-[10px]"
+                        style={{ color: 'var(--color-report)' }}
+                        title="The gateway failed over internally before it succeeded"
+                      >
+                        {reply.attempts} attempts
+                      </span>
+                    )}
+                  </Field>
+                )}
+                {reply?.requestId && (
+                  <Field label="Gateway request">
+                    {/* The handle for correlating a suspect answer against the
+                        gateway's own logs. Selectable, hence the mono span. */}
+                    <span className="font-mono text-[11px] select-all">{reply.requestId}</span>
+                  </Field>
+                )}
                 {reply?.ttftMs != null && <Field label="First token">{millis(reply.ttftMs)}</Field>}
                 {reply?.promptTokens != null && (
                   <Field label="Tokens">

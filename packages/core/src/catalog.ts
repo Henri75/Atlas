@@ -206,6 +206,14 @@ CREATE INDEX IF NOT EXISTS entries_unvectorized ON entries (id) WHERE vectorized
 -- path whenever the classifier improves, so an early misclassification is never
 -- baked in. Rows predating this column read as 'other' until that first resync.
 ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS route_class TEXT NOT NULL DEFAULT 'other';
+
+-- The rest of what the gateway reports about an answer, from the same
+-- x-g2p-reply-* headers that carry the served model. attempts > 1 means the
+-- gateway failed over internally before it succeeded; request_id is the only
+-- way to line one of our answers up against the gateway own logs when it
+-- turns out to have been wrong.
+ALTER TABLE usage_reply ADD COLUMN IF NOT EXISTS attempts INT;
+ALTER TABLE usage_reply ADD COLUMN IF NOT EXISTS request_id TEXT;
 -- The monitor's hot query: one class, newest first.
 CREATE INDEX IF NOT EXISTS usage_log_class_at_idx ON usage_log (route_class, at DESC);
 `;
@@ -355,8 +363,8 @@ export class Catalog {
          RETURNING id
        )
        INSERT INTO usage_reply
-         (call_id, answer, result_count, top_hits, model, prompt_tokens, completion_tokens, ttft_ms, degraded, error)
-       SELECT c.id, $9, $10, $11::jsonb, $12, $13, $14, $15, $16, $17 FROM c WHERE $18`,
+         (call_id, answer, result_count, top_hits, model, prompt_tokens, completion_tokens, ttft_ms, degraded, error, attempts, request_id)
+       SELECT c.id, $9, $10, $11::jsonb, $12, $13, $14, $15, $16, $17, $18, $19 FROM c WHERE $20`,
       [
         // Clamped to the column widths in one place, so an oversized tool name
         // or path is truncated here rather than at every call site.
@@ -380,6 +388,11 @@ export class Catalog {
         reply?.ttftMs == null ? null : Math.round(reply.ttftMs),
         reply?.degraded ?? null,
         reply?.error?.slice(0, 500) ?? null,
+        reply?.attempts ?? null,
+        reply?.requestId?.slice(0, 120) ?? null,
+        // Always last: the guard that makes the reply INSERT select no rows.
+        // Appending new columns before it keeps that positional contract, which
+        // the write-path tests assert against.
         reply != null,
       ],
     );
@@ -857,7 +870,8 @@ export class Catalog {
               l.duration_ms, l.route_class,
               (r.call_id IS NOT NULL) AS has_reply,
               r.answer, r.result_count, r.top_hits, r.model,
-              r.prompt_tokens, r.completion_tokens, r.ttft_ms, r.degraded, r.error
+              r.prompt_tokens, r.completion_tokens, r.ttft_ms, r.degraded, r.error,
+              r.attempts, r.request_id
        FROM usage_log l LEFT JOIN usage_reply r ON r.call_id = l.id
        WHERE l.id = $1`,
       [id],
@@ -876,6 +890,8 @@ export class Catalog {
         ttftMs: row.ttft_ms ?? undefined,
         degraded: row.degraded ?? undefined,
         error: row.error ?? undefined,
+        attempts: row.attempts ?? undefined,
+        requestId: row.request_id ?? undefined,
       };
     }
     return detail;

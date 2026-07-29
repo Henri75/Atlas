@@ -2,6 +2,7 @@ import type { AppConfig } from './config.js';
 import {
   chatCompleteWithUsage,
   chatStream,
+  isSubstitution,
   type ChatMessage,
   type StreamMeta,
 } from './llm.js';
@@ -408,9 +409,7 @@ function toMetrics(meta: StreamMeta, requestedModel: string, totalMs: number): A
 
   return {
     model: served,
-    // Compared on the bare name: the gateway answers `google/gemma-4-31b-it`
-    // for a configured `gemma-4-31b-it`, and that is the same model, not a swap.
-    substituted: bareModel(served) !== bareModel(requestedModel),
+    substituted: isSubstitution(meta.servedModel, requestedModel),
     promptTokens: meta.usage?.promptTokens,
     completionTokens: completion,
     totalTokens: meta.usage?.totalTokens,
@@ -420,11 +419,6 @@ function toMetrics(meta: StreamMeta, requestedModel: string, totalMs: number): A
     attempts: meta.attempts,
     requestId: meta.requestId,
   };
-}
-
-/** `google/gemma-4-31b-it` → `gemma-4-31b-it`. Vendor prefixes are noise here. */
-function bareModel(m: string): string {
-  return m.split('/').pop()!.toLowerCase();
 }
 
 /** `[a]` → `project "a"`; `[a,b,c]` → `projects "a", "b" and "c"`. */
@@ -745,9 +739,10 @@ export class AskService {
       const { content: answer, usage } = await chatCompleteWithUsage(this.llmConfig, messages, {
         clientId: this.g2pClientId,
       });
-      // `model` is what the gateway actually served, which can differ from what
-      // was configured; reporting the request rather than the response would
-      // make a substitution invisible in the usage record.
+      // `model` is what the gateway actually served — read from its
+      // `x-g2p-reply-model` header, not the response body, which often just
+      // echoes the name that was requested. Reporting the request rather than
+      // the response would make every substitution invisible in the record.
       const served = usage?.model ?? this.llmConfig.model;
       return {
         answer,
@@ -758,11 +753,13 @@ export class AskService {
         retrieval,
         metrics: {
           model: served,
-          substituted: served !== this.llmConfig.model,
+          substituted: isSubstitution(usage?.model, this.llmConfig.model),
           promptTokens: usage?.promptTokens,
           completionTokens: usage?.completionTokens,
           totalTokens: usage?.totalTokens,
           totalMs: Date.now() - startedAt,
+          attempts: usage?.attempts,
+          requestId: usage?.requestId,
         },
       };
     } catch (e) {

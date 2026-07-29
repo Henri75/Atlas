@@ -1386,3 +1386,32 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-30 00:40 UTC] — The buffered ask path recorded the model we asked for, not the one that answered
+
+**What changed:**
+- `chatCompleteWithUsage` now reads the gateway's `x-g2p-reply-model` **response header** instead of `model` from the response body. It also captures `x-g2p-reply-attempts` and `x-request-id`.
+- New `readGatewayMeta(headers)` in `llm.ts`, shared by the buffered and streaming paths. `chatStream` was rewritten to use it, replacing its own inline header reads.
+- New `isSubstitution(served, requested)` + exported `bareModel`, now the single implementation. `toMetrics` (streaming) and `ask()` (buffered) both call it; `ask()` previously compared raw strings and `bareModel` was private to ask.ts.
+- New nullable `usage_reply.attempts` and `usage_reply.request_id`. The drawer shows the served model with an "N attempts" badge when the gateway failed over, and the request id as selectable text.
+- `LlmUsage` deliberately carries no `substituted` flag: judging it needs the *configured* model as the baseline, which only the caller has.
+
+**Why it is built this way:**
+- **The body's `model` is not authoritative.** A routing gateway picks the model by policy and the upstream echoes back whatever name it was given, so the body frequently reports the requested model. Only `x-g2p-reply-model` names what actually ran, provider-qualified. Reading the body attributes an answer to a model that may never have seen the question — exactly the substitution the record exists to expose.
+- **The two paths had drifted, and only one was right.** The streaming path read the header from the start (documented in api.md on 2026-07-12); the buffered path — which MCP uses, and therefore most real asks — was added later reading the body. One shared helper now makes the drift impossible.
+- **Substitution must be compared on the bare name.** The gateway answers `google/gemma-4-31b-it` for a configured `gemma-4-31b-it`: same model, provider-qualified route, not a swap. My first version compared raw strings against the body model — wrong baseline AND wrong comparison, which would have flagged a routing event on essentially every call.
+- Header reads happen *before* the body is parsed, so telemetry does not depend on the JSON succeeding, and `readGatewayMeta` never throws — a provider or stub without headers costs the metrics, not the answer.
+
+**Code/Files Modified:**
+- packages/core/src/llm.ts (`readGatewayMeta`, `bareModel`, `isSubstitution`, header-first read), packages/core/src/ask.ts, packages/core/src/catalog.ts (two columns + write/read), packages/core/src/usage.ts
+- packages/api/src/app.ts (both ask paths pass attempts/requestId), packages/ui/src/views/monitor/CallDrawer.tsx, packages/ui/src/types.ts
+- test/core/llmUsage.test.ts (+6: header wins over body, fallback when absent, attempts/request id, NaN attempts, no-headers response), test/core/insertEntries.test.ts
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** the user caught this from a single observation in the Stats tab — three model names in one window, one of them lacking the vendor prefix the others had. The inconsistency in the *data* was the tell that the two code paths disagreed.
+- **What Failed:** twice in this change, and the same way each time. First I read the model from the body because the OpenAI response shape has a `model` field and it looked authoritative. Then, fixing it, I computed `substituted` locally against that same body field with a raw string compare — reproducing the bug I was fixing, one field over. The existing test named "does not flag a vendor-prefixed name as a substitution" is what exposed it; the repo had already learned this lesson and written it down.
+- **Also failed:** positional param assertions in the write-path tests broke twice as columns were appended. Rewritten to locate values by content, and the guard param is now documented as always-last.
+- **Verified:** 962 tests / 72 files green; lint clean; live — same `/api/ask` route recorded `gemini-3-flash-preview` (id 443, before) and `google/gemini-3-flash-preview` (id 875, after) with attempts=1 and request_id `345d0f40-…`.
+
+**Status:**
+- Completed

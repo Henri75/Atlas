@@ -281,6 +281,8 @@ export interface UsageReply {
   ttftMs?: number;
   degraded?: boolean;
   error?: string;
+  attempts?: number;
+  requestId?: string;
 }
 
 export interface UsageCallRow {

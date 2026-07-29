@@ -105,6 +105,10 @@ export interface UsageReply {
   degraded?: boolean;
   /** The real failure message. Clients still receive a generic error. */
   error?: string;
+  /** Gateway-side retries; > 1 means it failed over before succeeding. */
+  attempts?: number;
+  /** Gateway request id — the handle for correlating a bad answer with its logs. */
+  requestId?: string;
 }
 
 export interface UsageTopHit {

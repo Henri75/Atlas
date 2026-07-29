@@ -165,8 +165,13 @@ describe('Catalog.recordCall — the telemetry write path', () => {
     expect(tool.length).toBeLessThanOrEqual(80);
     expect(path.length).toBeLessThanOrEqual(300);
     expect(query.length).toBeLessThanOrEqual(500);
-    const error = calls[0]!.params.at(-2) as string;
-    expect(error.length).toBeLessThanOrEqual(500);
+    // Located by content, not position: this list grows every time a reply
+    // column is added, and a positional assertion breaks on a change that is
+    // not a regression. (It did, twice.)
+    const error = calls[0]!.params.find(
+      (v): v is string => typeof v === 'string' && v.startsWith('eee'),
+    );
+    expect(error!.length).toBeLessThanOrEqual(500);
   });
 
   /**

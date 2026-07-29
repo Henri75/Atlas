@@ -350,6 +350,8 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     completionTokens: r.metrics?.completionTokens,
     ttftMs: r.metrics?.ttftMs,
     degraded: r.degraded,
+    attempts: r.metrics?.attempts,
+    requestId: r.metrics?.requestId,
   });
 
   /**

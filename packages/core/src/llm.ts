@@ -93,13 +93,87 @@ export class EmptyCompletionError extends Error {
   }
 }
 
+/**
+ * What the gateway says about the answer it just returned, read from response
+ * headers rather than the body.
+ *
+ * The distinction is not cosmetic. A routing gateway picks the model by policy,
+ * and the body's `model` field is whatever the upstream provider echoed — often
+ * the name that was *requested*. Only `x-g2p-reply-model` names what actually
+ * ran, provider-qualified. Reading the body attributes an answer to a model that
+ * may never have seen the question, which is exactly the substitution this is
+ * supposed to make visible.
+ *
+ * Header lookup is case-insensitive per the Headers spec. The gateway sends
+ * `X-G2p-Reply-Model`, not the `X-G2P-` you would expect — do not "fix" these
+ * into case-sensitive reads.
+ */
+export interface GatewayMeta {
+  /** Model that answered, per the gateway. Absent if it did not say. */
+  servedModel?: string;
+  /** Gateway-side retries. > 1 means it failed over internally before succeeding. */
+  attempts?: number;
+  /** Correlates this answer with the gateway's own logs. */
+  requestId?: string;
+}
+
+/**
+ * Read the gateway's reply headers off any response.
+ *
+ * Shared by the buffered and streaming paths so the two cannot drift: they did,
+ * and the buffered one — the path MCP uses, and therefore most real asks —
+ * silently recorded the requested model for weeks' worth of calls.
+ *
+ * Never throws: a provider (or a test stub) that omits headers should cost the
+ * metrics, not the answer.
+ */
+export function readGatewayMeta(headers: unknown): GatewayMeta {
+  const get = (name: string): string | undefined =>
+    (headers as Headers | undefined)?.get?.(name) ?? undefined;
+  const attempts = Number(get('x-g2p-reply-attempts'));
+  return {
+    servedModel: get('x-g2p-reply-model') || undefined,
+    attempts: Number.isFinite(attempts) && attempts > 0 ? attempts : undefined,
+    requestId: get('x-request-id') || undefined,
+  };
+}
+
+/** `google/gemma-4-31b-it` → `gemma-4-31b-it`. Vendor prefixes are noise here. */
+export function bareModel(m: string): string {
+  return m.split('/').pop()!.toLowerCase();
+}
+
+/**
+ * Did the gateway answer with a different model than the one requested?
+ *
+ * The single implementation, shared by the buffered and streaming paths. Compared
+ * on the bare name because the gateway answers `google/gemma-4-31b-it` for a
+ * configured `gemma-4-31b-it`, and that is the same model reached by a
+ * provider-qualified route — not a swap. A raw string comparison reports a
+ * routing event on every single call, which is indistinguishable from reporting
+ * nothing.
+ */
+export function isSubstitution(served: string | undefined, requested: string): boolean {
+  return Boolean(served) && bareModel(served!) !== bareModel(requested);
+}
+
 /** What the completion cost, as reported by the provider. */
 export interface LlmUsage {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
-  /** The model that actually answered; a gateway may substitute by routing policy. */
+  /**
+   * The model that actually answered. The gateway header wins over the body's
+   * `model` field, which may only echo what was asked for.
+   *
+   * Deliberately carries no `substituted` flag: judging that needs the
+   * *configured* model as the baseline, which only the caller knows. Deciding it
+   * here against the body's `model` was wrong twice over — wrong baseline, and a
+   * raw comparison that flagged every vendor prefix.
+   */
   model?: string;
+  attempts?: number;
+  requestId?: string;
 }
 
 export interface ChatCompleteOptions {
@@ -153,6 +227,9 @@ export async function chatCompleteWithUsage(
         // 429/5xx carry a retryable status; everything else fails fast.
         throw new HttpError(`LLM ${r.status}: ${text.slice(0, 500)}`, r.status);
       }
+      // Read BEFORE the body: headers are available immediately and this must
+      // not depend on the JSON parsing succeeding.
+      const gateway = readGatewayMeta(r.headers);
       const data = (await r.json()) as {
         choices?: { message?: { content?: string }; finish_reason?: string }[];
         model?: string;
@@ -168,13 +245,18 @@ export async function chatCompleteWithUsage(
       // Usage is advisory: a provider that omits it must not fail the call, so
       // the object is only built when something was actually reported.
       const u = data.usage;
+      const model = gateway.servedModel ?? data.model;
       const usage =
-        u || data.model
+        u || model || gateway.requestId
           ? {
               promptTokens: u?.prompt_tokens,
               completionTokens: u?.completion_tokens,
               totalTokens: u?.total_tokens,
-              model: data.model,
+              // Gateway header first: the body's `model` is often the requested
+              // name echoed back, which would hide every substitution.
+              model,
+              attempts: gateway.attempts,
+              requestId: gateway.requestId,
             }
           : undefined;
       return { content, usage };
@@ -340,15 +422,9 @@ export async function* chatStream(
 
   // Telemetry must never be able to break the answer it describes: a provider
   // (or a stub) that omits headers should cost us the metrics, not the reply.
-  // Header lookup is case-insensitive per the Headers spec — the gateway sends
-  // `X-G2p-Reply-Model`, not the `X-G2P-` you might expect. Do not "fix" this
-  // into a case-sensitive read.
-  const header = (name: string): string | undefined =>
-    response.headers?.get?.(name) ?? undefined;
-  const attempts = Number(header('x-g2p-reply-attempts'));
-  meta.servedModel = header('x-g2p-reply-model');
-  meta.attempts = Number.isFinite(attempts) && attempts > 0 ? attempts : undefined;
-  meta.requestId = header('x-request-id');
+  // Shared with the buffered path via readGatewayMeta — the two used to read
+  // these headers separately, and only one of them actually did.
+  Object.assign(meta, readGatewayMeta(response.headers));
   emitMeta();
 
   const reader = response.body.getReader();
