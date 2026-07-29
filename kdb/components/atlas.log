@@ -1084,3 +1084,34 @@
 
 **Status:**
 - Completed
+### [2026-07-29] - Improvement: close the three follow-ups the tokeniser fix surfaced
+
+**Objective:**
+- Fix the three items logged to the backlog while fixing the sparse tokeniser, each of which was a way the same class of failure could recur unseen.
+
+**Summary of Work:**
+- **updateSparse bisects.** Qdrant rejects an update batch containing an unknown id and does not say which one, so a single stale point cost every good point beside it. The slice is now halved until the bad ids stand alone; they are returned as `failedIds` and logged by name. The happy path is still one round trip.
+- **auditVectorCoverage reconciles per point id.** It compared `entry_id`s, so an entry holding 4 of its 5 chunk points read as fully covered — and was even adopted. Now it derives the expected point ids from the entry text (chunking is what decides how many there are) and an entry is covered only when every one is present. Partial losses are counted and reported separately from total ones, because total loss has innocent causes and a half-embedded entry does not.
+- **Pool L.** Neither existing pool could produce a literal-bearing question: A is thin real traffic, and B's generator is told not to reuse identifiers or verbatim phrases. Pool L inverts exactly that one rule — one literal quoted as the entry spells it, everything else paraphrased, leakage still enforced on the remainder — with a new `literals.ts` (shape detection, priority, `spellingIn`) and separate reporting.
+
+**Key Decisions & Rationale:**
+- The literal extractor is deliberately NOT built on `isLiteralToken` from core, though it answers a similar question. That predicate is part of the retrieval code Pool L exists to hold to account; sharing it would let a ranking change quietly reshape its own exam.
+- Chose to stream 158 MB of entry text in the audit rather than add a `chunk_count` column. The column would have been cheaper per run but only correct for rows written after it existed — useless for the 326k rows that predate it, which is the entire population the bug lives in. The audit is already gated behind 'the cheap count says something is missing', so it can afford the read.
+- Deleted `Catalog.entryCoverage()` rather than keeping it beside the replacement. It could only ever answer 'does this entry have any points', which is precisely the question that let entry 7707 look covered.
+- Priority order in the extractor puts measurements first: they are the shape that actually broke, while identifiers survived tokenisation intact.
+
+**Code/Files Modified:**
+- packages/core/src/qdrant.ts (bisection, allPointIds), catalog.ts (entriesWithCoverageAfter, entryCoverage removed)
+- packages/indexer/src/pipeline.ts (audit rewrite, failedIds logging), main.ts (partial reporting)
+- packages/eval/src/literals.ts (new), generate.ts (Pool L, goldFor extracted), pools.ts (leakage exemption), types.ts, report.ts, main.ts
+- test/core/updateSparse.test.ts, test/eval/literals.test.ts (new), test/eval/pools.test.ts, test/indexer/auditVectorCoverage.test.ts (new)
+- docs/adr/20260729-literals-survive-tokenisation.md, docs/adr/20260726-retrieval-quality-is-measured-not-argued.md (addendum)
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Test-first on each. The audit's zero-chunk test failed for a reason I had not predicted — a title alone still produces one chunk, so my 'empty entry' fixture was not empty — which turned one weak test into two precise ones. Writing the Pool L generator also exposed a real defect in the extractor I had just written and tested: `6.8` matched the version pattern, so a spaced '6.8 MB' would have yielded a useless literal. Neither would have surfaced from reading the code.
+- **What Failed:** Nothing shipped broken, but the first RED for `literals.ts` was a module-not-found error, which is a weak red — it proves the module is missing, not that each assertion discriminates. The version defect found later is exactly what that weak red failed to catch.
+- **Validated against the live corpus rather than assumed:** 200 sampled entries, 94% carry an extractable literal, mix 60 measurement / 65 identifier / 54 dotted / 5 version / 3 sha, each appearing in 1-41 entries out of ~327k.
+- 784 tests green, lint clean.
+
+**Status:**
+- Completed

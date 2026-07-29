@@ -59,8 +59,13 @@ export function mergeQueries(
  * the vocabulary the keyword branch of retrieval sees — a question could look
  * freshly worded to a human while sharing every term the BM25 branch cares about.
  */
-export function leakage(question: string, entryText: string): number {
-  const q = new Set(tokenize(question));
+export function leakage(question: string, entryText: string, exempt: string[] = []): number {
+  // Pool L quotes one literal from its entry deliberately — that verbatim token
+  // is what the pool exists to test — so it is excluded from both sides of the
+  // ratio rather than counted as an echo. Everything else is still measured:
+  // forgiving the literal must not turn into forgiving the sentence around it.
+  const exempted = new Set(exempt.flatMap((t) => tokenize(t)));
+  const q = new Set(tokenize(question).filter((t) => !exempted.has(t)));
   if (!q.size) return 0;
   const e = new Set(tokenize(entryText));
   let shared = 0;

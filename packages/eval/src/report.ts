@@ -73,7 +73,10 @@ export function scoreQuery(
     tookMs: m.tookMs,
   };
 
-  if (query.pool === 'B') {
+  // L is scored exactly like B — a known gold entry, no judge needed. It is a
+  // separate pool for *reporting*, not for measurement: the whole value is
+  // seeing literal-bearing questions move independently of the rest.
+  if (query.pool === 'B' || query.pool === 'L') {
     const gold = new Set(query.gold ?? []);
     return {
       ...base,
@@ -139,6 +142,7 @@ const METRICS_BY_POOL: Record<PoolId, MetricName[]> = {
   A: ['ndcg', 'precision', 'recall'],
   B: ['mrr', 'hit'],
   N: [],
+  L: ['mrr', 'hit'],
 };
 
 /** Per-class means for one pool under one variant. */
@@ -187,7 +191,7 @@ export function compare(
 ): Comparison[] {
   const byId = new Map(candidate.map((s) => [s.queryId, s]));
   const out: Comparison[] = [];
-  for (const pool of ['A', 'B'] as PoolId[]) {
+  for (const pool of ['A', 'B', 'L'] as PoolId[]) {
     const inPool = base.filter((s) => s.pool === pool);
     if (!inPool.length) continue;
     const classes = [...new Set(inPool.map((s) => s.class))].sort();
@@ -261,7 +265,7 @@ export function formatComparison(name: string, comps: Comparison[]): string {
  * useful a result as finding a signal that works.
  */
 export function formatSignals(rows: SignalRow[]): string {
-  const pools: PoolId[] = ['A', 'B', 'N'];
+  const pools: PoolId[] = ['A', 'B', 'L', 'N'];
   const metrics: { key: keyof SignalRow; label: string }[] = [
     { key: 'rrf1', label: 'rrf@1' },
     { key: 'rrfGap', label: 'rrf gap' },

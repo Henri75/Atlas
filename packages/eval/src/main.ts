@@ -143,14 +143,16 @@ program
 
 program
   .command('generate')
-  .description('build Pool B (known-item) and Pool N (verified negatives)')
+  .description('build Pool B (known-item), Pool L (literal-bearing) and Pool N (verified negatives)')
   .option('--pool-b <n>', 'how many known-item questions to generate', Number)
+  .option('--pool-l <n>', 'how many literal-bearing questions to generate', Number)
   .option('--pool-n <n>', 'how many negatives to generate', Number)
-  .action(async (opts: { poolB?: number; poolN?: number }) => {
+  .action(async (opts: { poolB?: number; poolL?: number; poolN?: number }) => {
     const cfg = evalConfig();
     console.log(
       await generatePools(cfg, {
         ...(opts.poolB ? { countB: opts.poolB } : {}),
+        ...(opts.poolL ? { countL: opts.poolL } : {}),
         ...(opts.poolN ? { countN: opts.poolN } : {}),
       }),
     );

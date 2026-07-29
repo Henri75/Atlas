@@ -2,6 +2,7 @@ import { EmptyCompletionError, chatComplete, isTransient, withRetry, type ChatMe
 import type { EvalConfig } from './config.js';
 import { JudgeFormatError, judgeQuery } from './judge.js';
 import { RELEVANT_AT } from './metrics.js';
+import { extractLiteral, literalShape, spellingIn } from './literals.js';
 import { LEAKAGE_THRESHOLD, expandGold, leakage, loadQueries, queryId, saveQueries } from './pools.js';
 import { candidatePool } from './retrieve.js';
 import { connect, mapLimit, type Stack } from './services.js';
@@ -33,6 +34,20 @@ const POOL_B_MIX: { sourceType: string; share: number }[] = [
   { sourceType: 'claude_session', share: 0.2 },
 ];
 
+/**
+ * Where Pool L draws from. Spread across types rather than weighted like B,
+ * because the shape under test is the literal, not the kind of entry carrying
+ * it — and the curated kdb sources are where measurements are actually written
+ * down ("6.8MB JSONB", "462-680ms cold").
+ */
+const POOL_L_MIX: { sourceType: string }[] = [
+  { sourceType: 'kdb_backlog' },
+  { sourceType: 'kdb_changelog' },
+  { sourceType: 'kdb_component' },
+  { sourceType: 'claude_session' },
+  { sourceType: 'git_commit' },
+];
+
 const GENERATOR_SYSTEM = `You write evaluation questions for a search engine over a software project's recorded history.
 
 You are shown ONE entry. Write the question that this entry is the best answer to — the question somebody would ask months later when they need this information back.
@@ -43,6 +58,33 @@ Hard rules:
 - Do not mention dates unless the question is genuinely about when something happened.
 - One question, 8-25 words, ending in a question mark.
 - It must be answerable from this entry, and specific enough that a different entry about a different subject would not answer it.
+
+Reply with ONLY the question text. No preamble, no quotes.`;
+
+/**
+ * Pool L inverts exactly one of Pool B's rules, and no others.
+ *
+ * B forbids reusing anything verbatim, because for B that is leakage. But real
+ * people quote the one thing they remember — "the 6.8MB json", "that v1.18.2
+ * bump" — and questions of that shape were entirely absent from the fixture. The
+ * 2026-07-29 tokeniser bug shredded every measurement in the corpus and no
+ * harness number moved.
+ *
+ * So: the literal appears verbatim, everything around it is the asker's own
+ * words, and leakage is still measured on that everything-else.
+ */
+const LITERAL_SYSTEM = `You write evaluation questions for a search engine over a software project's recorded history.
+
+You are shown ONE entry and ONE literal value taken from it (a size, a version, a commit hash, or a column/table name).
+
+Write the question somebody would ask months later, when the ONE thing they still remember is that literal.
+
+Hard rules:
+- The literal MUST appear in your question exactly as given, character for character.
+- Everything else must be in your own words. Do NOT reuse other identifiers, file names, error strings, or any verbatim phrase longer than three words from the entry.
+- Write as somebody who half-remembers this: vague about the details, precise about the literal. "why was that 6.8MB thing so slow?" is the register.
+- One question, 8-25 words, ending in a question mark.
+- It must be answerable from this entry.
 
 Reply with ONLY the question text. No preamble, no quotes.`;
 
@@ -131,14 +173,54 @@ function classFor(index: number): QueryClass {
   return QUERY_CLASSES[index % QUERY_CLASSES.length]!;
 }
 
+/**
+ * Gold set for a generated question: the source entry plus anything that is the
+ * same content recorded again.
+ *
+ * Siblings are included because reranking keeps the best-scoring member of a
+ * duplicate group, and that need not be the row the question was written from —
+ * scoring only the original would count a correct answer as a miss.
+ */
+async function goldFor(stack: Stack, entry: SourceEntry): Promise<number[]> {
+  const siblings = await stack.catalog.pool.query(
+    `SELECT e.id AS "entryId", p.slug AS "projectSlug", e.source_type AS "sourceType",
+            e.title, e.occurred_at AS "occurredAt"
+       FROM entries e JOIN projects p ON p.id = e.project_id
+      WHERE e.title = $1 AND e.source_type = $2`,
+    [entry.title, entry.sourceType],
+  );
+  const target = {
+    entryId: entry.id,
+    projectSlug: entry.slug,
+    sourceType: entry.sourceType,
+    title: entry.title,
+    ...(entry.occurredAt ? { occurredAt: entry.occurredAt } : {}),
+  };
+  return expandGold(
+    target as never,
+    siblings.rows.map((s) => ({
+      entryId: s.entryId,
+      projectSlug: s.projectSlug,
+      sourceType: s.sourceType,
+      title: s.title,
+      occurredAt: s.occurredAt?.toISOString(),
+    })) as never,
+  );
+}
+
 export interface GenerateOptions {
   countB?: number;
   countN?: number;
+  countL?: number;
 }
 
 export async function generatePools(cfg: EvalConfig, opts: GenerateOptions = {}): Promise<string> {
   const countB = opts.countB ?? 40;
   const countN = opts.countN ?? 12;
+  // Sized to make a per-shape reading possible rather than to match B: the
+  // useful statement is "measurements regressed, identifiers did not", and five
+  // source types at four each is the smallest set that can support it.
+  const countL = opts.countL ?? 20;
   const stack = await connect(cfg);
   try {
     const existing = await loadQueries(cfg.fixtures.queries);
@@ -196,33 +278,7 @@ export async function generatePools(cfg: EvalConfig, opts: GenerateOptions = {})
         if (known.has(id)) continue;
         known.add(id);
 
-        // Gold set = this entry plus anything that is the same content recorded
-        // again, because reranking keeps the best-scoring member of a duplicate
-        // group and that need not be this row.
-        const siblings = await stack.catalog.pool.query(
-          `SELECT e.id AS "entryId", p.slug AS "projectSlug", e.source_type AS "sourceType",
-                  e.title, e.occurred_at AS "occurredAt"
-             FROM entries e JOIN projects p ON p.id = e.project_id
-            WHERE e.title = $1 AND e.source_type = $2`,
-          [entry.title, entry.sourceType],
-        );
-        const target = {
-          entryId: entry.id,
-          projectSlug: entry.slug,
-          sourceType: entry.sourceType,
-          title: entry.title,
-          ...(entry.occurredAt ? { occurredAt: entry.occurredAt } : {}),
-        };
-        const gold = expandGold(
-          target as never,
-          siblings.rows.map((s) => ({
-            entryId: s.entryId,
-            projectSlug: s.projectSlug,
-            sourceType: s.sourceType,
-            title: s.title,
-            occurredAt: s.occurredAt?.toISOString(),
-          })) as never,
-        );
+        const gold = await goldFor(stack, entry);
 
         generated.push({
           id,
@@ -243,6 +299,94 @@ export async function generatePools(cfg: EvalConfig, opts: GenerateOptions = {})
         made++;
       }
     }
+
+    // ---- Pool L ----------------------------------------------------------
+    // Drawn across source types rather than one, because the shape being tested
+    // is the literal, not the kind of entry that carries it.
+    let madeL = 0;
+    let noLiteral = 0;
+    for (const { sourceType } of POOL_L_MIX) {
+      const want = Math.ceil(countL / POOL_L_MIX.length);
+      const pool = await sampleEntries(stack, sourceType, want * 2);
+      let made = 0;
+      for (const entry of pool) {
+        if (made >= want || madeL >= countL) break;
+        const literal = extractLiteral(`${entry.title} ${entry.body}`);
+        if (!literal) {
+          noLiteral++;
+          continue;
+        }
+        // Quote it as the entry spells it: a question asking about "6.8MB" when
+        // the entry says "6.8 MB" is a *different* and much harder test, and
+        // conflating the two would hide which one regressed.
+        const asWritten = spellingIn(`${entry.title} ${entry.body}`, literal) ?? literal;
+        const cls = classFor(index++);
+        let question: string;
+        try {
+          question = (
+            await complete(
+              cfg,
+              [
+                { role: 'system', content: LITERAL_SYSTEM },
+                {
+                  role: 'user',
+                  content:
+                    `Write a "${cls}" question built around the literal: ${asWritten}\n\nEntry:\n\n` +
+                    `${entry.slug} / ${entry.sourceType}\n${entry.title}\n${entry.body.slice(0, 2500)}`,
+                },
+              ],
+              1200,
+            )
+          )
+            .trim()
+            .replace(/^["'`]|["'`]$/g, '');
+        } catch (e) {
+          process.stderr.write(`  pool L generation failed for entry ${entry.id}: ${(e as Error).message}\n`);
+          continue;
+        }
+
+        // The literal is the pool. A question that dropped it is a Pool B
+        // question wearing the wrong label, and would quietly dilute the signal.
+        if (!question.toLowerCase().includes(literal.toLowerCase())) {
+          rejected++;
+          continue;
+        }
+        // Leakage is still enforced — on everything except the literal itself.
+        const overlap = leakage(question, `${entry.title} ${entry.body}`, [asWritten]);
+        if (overlap > LEAKAGE_THRESHOLD) {
+          rejected++;
+          continue;
+        }
+
+        const id = queryId(question, {});
+        if (known.has(id)) continue;
+        known.add(id);
+
+        generated.push({
+          id,
+          pool: 'L',
+          text: question,
+          class: cls,
+          filters: {},
+          provenance: {
+            source: 'generated',
+            at: new Date().toISOString(),
+            fromEntryId: entry.id,
+            fromSourceType: entry.sourceType,
+            generator: cfg.llm.model,
+          },
+          gold: await goldFor(stack, entry),
+          leakage: Number(overlap.toFixed(3)),
+          literal: asWritten,
+          literalShape: literalShape(literal) ?? undefined,
+        });
+        made++;
+        madeL++;
+      }
+    }
+    process.stderr.write(
+      `pool L: ${madeL} questions built around a literal (${noLiteral} entries had none)\n`,
+    );
 
     // ---- Pool N ----------------------------------------------------------
     // Name what the project *does* use, so the generator can avoid it. Taken

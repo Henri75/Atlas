@@ -255,3 +255,36 @@ describe('validateQueries', () => {
     expect(() => validateQueries({ ...file([]), version: 2 as never })).toThrow(/version/);
   });
 });
+
+/**
+ * Pool L quotes one literal from its source entry on purpose — that verbatim
+ * token is the whole point of the pool. Measured against the ordinary rule it
+ * would look like leakage, so the literal (and the sub-tokens it produces) is
+ * exempted; everything else is still held to the same standard.
+ */
+describe('leakage with an exemption', () => {
+  it('ignores the exempted literal when scoring overlap', () => {
+    const entry = 'the tags_with_counts column reached 6.8MB and was slow';
+    const question = 'why was the 6.8MB column slow';
+
+    const plain = leakage(question, entry);
+    const exempt = leakage(question, entry, ['6.8MB']);
+
+    expect(exempt).toBeLessThan(plain);
+  });
+
+  it('still counts every other shared word', () => {
+    // Only the literal is forgiven. A question that otherwise echoes its entry
+    // must still be rejected, or the pool becomes a keyword-matching exercise.
+    const entry = 'the tags_with_counts column reached 6.8MB and was slow';
+    const question = 'tags_with_counts column reached 6.8MB slow';
+
+    expect(leakage(question, entry, ['6.8MB'])).toBeGreaterThan(LEAKAGE_THRESHOLD);
+  });
+
+  it('is unchanged when nothing is exempted', () => {
+    const entry = 'the tags_with_counts column reached 6.8MB';
+    const question = 'why was the column slow';
+    expect(leakage(question, entry, [])).toBe(leakage(question, entry));
+  });
+});

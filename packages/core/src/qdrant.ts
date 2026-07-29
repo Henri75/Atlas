@@ -349,27 +349,57 @@ export class VectorStore {
    */
   async updateSparse(
     points: { id: string; sparse: SparseVector }[],
-  ): Promise<{ updated: number; failed: number }> {
+  ): Promise<{ updated: number; failed: number; failedIds: string[] }> {
     let updated = 0;
-    let failed = 0;
+    const failedIds: string[] = [];
     for (let i = 0; i < points.length; i += SPARSE_UPDATE_BATCH) {
-      const slice = points.slice(i, i + SPARSE_UPDATE_BATCH);
-      try {
-        await withRetry(() =>
-          this.client.updateVectors(this.collection, {
-            wait: false,
-            points: slice.map((p) => ({
-              id: p.id,
-              vector: { sparse: { indices: p.sparse.indices, values: p.sparse.values } },
-            })),
-          }),
-        );
-        updated += slice.length;
-      } catch {
-        failed += slice.length;
-      }
+      const r = await this.writeSparseSlice(points.slice(i, i + SPARSE_UPDATE_BATCH));
+      updated += r.updated;
+      failedIds.push(...r.failedIds);
     }
-    return { updated, failed };
+    return { updated, failed: failedIds.length, failedIds };
+  }
+
+  /**
+   * Write one slice, halving it on rejection until the bad ids stand alone.
+   *
+   * Qdrant rejects a batch containing an unknown id rather than skipping the
+   * offender, so without this a single stale point costs every good point beside
+   * it. Measured 2026-07-29: entry 7707 was missing one of its five chunk
+   * points, and that one point failed a 250-point batch on every repair pass —
+   * twice — until a per-entry run isolated it by hand.
+   *
+   * Bisection is the right shape because rejection is all-or-nothing and carries
+   * no indication of *which* id was bad: halving converges in log2(n) round
+   * trips and ends holding the answer. The happy path stays a single call, so
+   * this costs nothing until something is actually wrong.
+   */
+  private async writeSparseSlice(
+    slice: { id: string; sparse: SparseVector }[],
+  ): Promise<{ updated: number; failedIds: string[] }> {
+    if (!slice.length) return { updated: 0, failedIds: [] };
+    try {
+      await withRetry(() =>
+        this.client.updateVectors(this.collection, {
+          wait: false,
+          points: slice.map((p) => ({
+            id: p.id,
+            vector: { sparse: { indices: p.sparse.indices, values: p.sparse.values } },
+          })),
+        }),
+      );
+      return { updated: slice.length, failedIds: [] };
+    } catch {
+      // A single point that will not write is the bad point, by definition —
+      // there is nothing left to split, so name it and stop.
+      if (slice.length === 1) return { updated: 0, failedIds: [slice[0]!.id] };
+      const mid = slice.length >> 1;
+      const [a, b] = [
+        await this.writeSparseSlice(slice.slice(0, mid)),
+        await this.writeSparseSlice(slice.slice(mid)),
+      ];
+      return { updated: a.updated + b.updated, failedIds: [...a.failedIds, ...b.failedIds] };
+    }
   }
 
   /**
@@ -411,27 +441,33 @@ export class VectorStore {
   }
 
   /**
-   * Every distinct `entry_id` that currently has at least one point.
+   * Every **point id** the collection currently holds.
    *
    * The ground truth for the coverage audit: the catalog column records what we
-   * *believe* we embedded, and this is what the collection actually holds. Only
-   * the id payload is fetched, so the scroll stays cheap (measured ~5-10s for
-   * ~362k points); the ids are held in a Set, a few MB at this scale.
+   * *believe* we embedded, and this is what the collection actually holds.
+   *
+   * Point ids rather than `entry_id`s, because one entry becomes several points
+   * and "has at least one point" is not the same as "is fully embedded". An
+   * entry missing a single chunk answers fewer questions than it should while
+   * looking perfectly covered from the entry level — that is exactly how entry
+   * 7707 survived two repair passes (2026-07-29). Ids are deterministic
+   * (`deterministicUuid`), so the expected set is derivable and the comparison
+   * is exact.
+   *
+   * Cheaper than the entry-level version it replaced: no payload is fetched at
+   * all. ~366k uuid strings is a few tens of MB in a Set, at this scale.
    */
-  async allEntryIds(): Promise<Set<number>> {
-    const seen = new Set<number>();
+  async allPointIds(): Promise<Set<string>> {
+    const seen = new Set<string>();
     let offset: unknown;
     for (;;) {
       const res = await this.client.scroll(this.collection, {
         limit: 16_000,
-        with_payload: ['entry_id'],
+        with_payload: false,
         with_vector: false,
         ...(offset ? { offset: offset as never } : {}),
       });
-      for (const p of res.points) {
-        const id = (p.payload as { entry_id?: number } | null)?.entry_id;
-        if (typeof id === 'number') seen.add(id);
-      }
+      for (const p of res.points) seen.add(String(p.id));
       if (!res.next_page_offset) break;
       offset = res.next_page_offset;
     }

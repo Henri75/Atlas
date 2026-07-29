@@ -580,19 +580,6 @@ export class Catalog {
     await this.pool.query('UPDATE entries SET vectorized_in = NULL WHERE id = ANY($1)', [ids]);
   }
 
-  /**
-   * Every entry id with the collection it is currently believed to live in.
-   *
-   * The audit compares this against what Qdrant actually holds and writes only
-   * the difference. Returning the believed state (rather than ids alone) is what
-   * keeps a steady-state audit free: with coverage intact there is nothing to
-   * update, instead of re-marking all 323k rows.
-   */
-  async entryCoverage(): Promise<{ id: number; vectorizedIn: string | null }[]> {
-    const r = await this.pool.query('SELECT id, vectorized_in FROM entries');
-    return r.rows.map((row) => ({ id: row.id, vectorizedIn: row.vectorized_in }));
-  }
-
   /** Entries not searchable in `collection` — the reconciler's backlog size. */
   async countUncovered(collection: string): Promise<number> {
     const r = await this.pool.query(
@@ -824,6 +811,34 @@ export class Catalog {
       [collection, cursor, limit],
     );
     return r.rows.map(rowToEntry);
+  }
+
+  /**
+   * Page through every entry with its body and its coverage mark, for the deep
+   * audit.
+   *
+   * The audit has to derive the point ids each entry *should* have, and that
+   * needs the text — chunking is what decides how many points there are. That is
+   * 158 MB of title+body across ~327k rows on the current corpus, streamed once,
+   * which is affordable precisely because the audit is gated behind "the cheap
+   * count says something is missing" rather than run every boot.
+   *
+   * This replaced an `entryCoverage()` that returned every id and mark in a
+   * single query with no text. That view could only ever answer "does this entry
+   * have *any* points" — the question that let entry 7707 read as covered while
+   * a chunk was missing — so it is gone rather than kept alongside.
+   */
+  async entriesWithCoverageAfter(
+    cursor: number,
+    limit: number,
+  ): Promise<(Entry & { id: number; vectorizedIn: string | null })[]> {
+    const r = await this.pool.query(
+      `SELECT ${ENTRY_COLUMNS}, e.vectorized_in
+       FROM entries e JOIN projects p ON p.id = e.project_id
+       WHERE e.id > $1 ORDER BY e.id ASC LIMIT $2`,
+      [cursor, limit],
+    );
+    return r.rows.map((row) => ({ ...rowToEntry(row), vectorizedIn: row.vectorized_in }));
   }
 
   /** How many entries `vectorizedEntriesAfter` will walk — the rebuild's total. */

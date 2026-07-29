@@ -185,6 +185,17 @@ actually changes.
   as gold, so `20260726-retrieval-quality-is-measured-not-argued.md`'s harness
   fails if retrieval ever loses it again. Mining merges by id and never
   overwrites, so it survives regeneration.
+- **The harness gained the stratum that would have caught this.** One committed
+  case protects one question; the reason the bug shipped is that *no pool could
+  produce its shape*. Pool A is mined from thin real traffic, and Pool B's
+  generator is explicitly instructed not to reuse identifiers or verbatim
+  phrases — for B that is leakage. **Pool L** is generated like B but built
+  around a single literal quoted exactly as the entry spells it, with leakage
+  still enforced on every other word, and reported separately so
+  "measurements regressed, identifiers did not" is a readable result. Measured
+  over 200 sampled entries: 94% carry an extractable literal, the mix is 60
+  measurements / 65 identifiers / 54 dotted names / 5 versions / 3 shas, and the
+  literals appear in 1–41 entries out of ~327k, so they genuinely discriminate.
 
 ## Alternatives considered
 

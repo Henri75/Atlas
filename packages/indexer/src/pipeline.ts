@@ -394,17 +394,27 @@ async function scanDocs(
  *    (a dropped collection, an orphan-reclaim bug, a restore from an older
  *    snapshot). Clearing turns that into ordinary reconciler work.
  *
- * Deliberately not run on every boot — it costs a full scroll. It is the slow,
- * authoritative check behind the cheap `vectorized_in IS DISTINCT FROM` query.
+ * **Covered means every chunk, not any chunk.** This compared `entry_id`s and so
+ * could only see total loss: an entry missing one of its five points read as
+ * fully covered, and the audit would even *adopt* it. Entry 7707 (2026-07-29)
+ * sat that way through two repair passes — its one absent point rejected every
+ * write batch it landed in, and each boot the audit re-marked the entry as good.
+ * The symptom is invisible from outside: a partly-embedded entry is just an
+ * entry that answers fewer questions than it should.
+ *
+ * So the comparison is per point id. Ids are deterministic, so the expected set
+ * is derivable from the entry text — which is why this streams bodies (158 MB
+ * over ~327k rows on the current corpus) rather than reading the id column.
+ *
+ * Deliberately not run on every boot — it costs a full scroll plus that stream.
+ * It is the slow, authoritative check behind the cheap
+ * `vectorized_in IS DISTINCT FROM` query.
  */
 export async function auditVectorCoverage(
   deps: PipelineDeps,
-): Promise<{ adopted: number; cleared: number }> {
+): Promise<{ adopted: number; cleared: number; partial: number }> {
   const collection = deps.vectors.collection;
-  const [inQdrant, believed] = await Promise.all([
-    deps.vectors.allEntryIds(),
-    deps.catalog.entryCoverage(),
-  ]);
+  const inQdrant = await deps.vectors.allPointIds();
 
   // Write only the difference between what the column claims and what the
   // collection holds. Re-marking every row would make a steady-state audit cost
@@ -412,10 +422,34 @@ export async function auditVectorCoverage(
   // periodically — and the periodic run is the entire point.
   const adopt: number[] = [];
   const clear: number[] = [];
-  for (const { id, vectorizedIn } of believed) {
-    const present = inQdrant.has(id);
-    if (present && vectorizedIn !== collection) adopt.push(id);
-    else if (!present && vectorizedIn !== null) clear.push(id);
+  /** Marked-covered entries found to be missing *some* of their points. */
+  let partial = 0;
+
+  let cursor = 0;
+  for (;;) {
+    const rows = await deps.catalog.entriesWithCoverageAfter(cursor, AUDIT_PAGE);
+    if (!rows.length) break;
+    cursor = rows[rows.length - 1]!.id;
+
+    for (const row of rows) {
+      // Identical derivation to the write path, or this compares against ids
+      // that were never going to exist.
+      const chunks = chunk(`${row.title}\n\n${row.body}`);
+      let present = 0;
+      for (let seq = 0; seq < chunks.length; seq++) {
+        const id = deterministicUuid(row.projectSlug, row.sourcePath, String(row.id), String(seq));
+        if (inQdrant.has(id)) present++;
+      }
+      // An entry that yields no chunks has nothing that could be missing.
+      // Treating it as broken would make the reconciler retry it forever.
+      const complete = present === chunks.length;
+
+      if (complete && row.vectorizedIn !== collection) adopt.push(row.id);
+      else if (!complete && row.vectorizedIn !== null) {
+        if (present > 0) partial++;
+        clear.push(row.id);
+      }
+    }
   }
 
   // Chunked: `id = ANY($1)` with 300k parameters would blow past what the
@@ -427,8 +461,11 @@ export async function auditVectorCoverage(
   for (let i = 0; i < clear.length; i += CHUNK) {
     await deps.catalog.clearVectorized(clear.slice(i, i + CHUNK));
   }
-  return { adopted: adopt.length, cleared: clear.length };
+  return { adopted: adopt.length, cleared: clear.length, partial };
 }
+
+/** Entries per page while streaming bodies for the audit. */
+const AUDIT_PAGE = 500;
 
 /**
  * Should the reconciler run?
@@ -632,6 +669,17 @@ export async function rebuildSparseVectors(
       const r = await deps.vectors.updateSparse(batch);
       points += r.updated;
       skipped += r.failed;
+      // Bisection knows exactly which points Qdrant would not take; record them
+      // so the gap is a list of ids someone can act on rather than a count.
+      if (r.failedIds.length) {
+        await deps.catalog.logError(
+          null,
+          `entries>${cursor}`,
+          'sparse-rebuild',
+          `${r.failedIds.length} point(s) rejected: ${r.failedIds.slice(0, 20).join(', ')}` +
+            (r.failedIds.length > 20 ? ` … (+${r.failedIds.length - 20})` : ''),
+        );
+      }
     } catch (e) {
       // updateSparse already absorbs per-slice rejections; reaching here means
       // something broader (Qdrant unreachable). Record it and keep going —

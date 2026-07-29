@@ -32,7 +32,19 @@ export const QUERY_CLASSES: QueryClass[] = [
  * N — verified to have no answer in the corpus; the only pool that can calibrate
  *     a "found nothing relevant" signal.
  */
-export type PoolId = 'A' | 'B' | 'N';
+/**
+ * A — mined from real traffic. B — generated from a known entry, gold needs no
+ * judge. N — verified negatives. L — generated like B but built *around* a
+ * literal quoted verbatim from the entry (a size, version, sha, column name).
+ *
+ * L exists because neither A nor B can produce that shape: A is thin, and B's
+ * generator is explicitly told not to reuse identifiers or verbatim phrases,
+ * since for B that is leakage. The consequence was measured on 2026-07-29 — the
+ * tokeniser shredded every measurement in the corpus (`6.8MB` → `["8mb"]`),
+ * costing a real question all five of its answers, and every harness number
+ * stayed exactly the same.
+ */
+export type PoolId = 'A' | 'B' | 'N' | 'L';
 
 export interface QueryProvenance {
   /** Where the text came from. `generated` covers pools B and N. */
@@ -70,8 +82,16 @@ export interface EvalQuery {
    * reranking keeps the best-scoring member of a duplicate group.
    */
   gold?: number[];
-  /** Pool B: measured question↔entry term overlap; high means leakage. */
+  /** Pool B/L: measured question↔entry term overlap; high means leakage. */
   leakage?: number;
+  /**
+   * Pool L: the literal the question was built around, and what kind it is.
+   *
+   * Recorded so a regression can be read at a glance — "every measurement query
+   * lost recall, identifiers were fine" is a diagnosis; "pool L dropped" is not.
+   */
+  literal?: string;
+  literalShape?: string;
 }
 
 export interface QueryFile {

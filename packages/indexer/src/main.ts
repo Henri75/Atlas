@@ -140,14 +140,19 @@ async function main() {
    */
   let uncovered = await catalog.countUncovered(vectors.collection);
   if (uncovered > 0) {
-    const { adopted, cleared } = await auditVectorCoverage(deps);
+    const { adopted, cleared, partial } = await auditVectorCoverage(deps);
     // Counts are the *delta* the audit wrote, not totals: "adopted" is rows
     // whose vectors were already present but unmarked, "cleared" is rows marked
     // covered whose points are gone. Both zero means the column already matched
     // the collection and the uncovered entries are genuinely unembedded.
+    //
+    // `partial` is called out separately because it is the one with no innocent
+    // explanation: total loss follows a dropped collection or a restore, while a
+    // half-embedded entry means writes were accepted and then lost.
     console.log(
-      `[indexer] coverage audit: adopted ${adopted}, cleared ${cleared} ` +
-        `(against ${vectors.collection})`,
+      `[indexer] coverage audit: adopted ${adopted}, cleared ${cleared}` +
+        (partial ? ` (${partial} of them only PARTLY embedded)` : '') +
+        ` (against ${vectors.collection})`,
     );
     uncovered = await catalog.countUncovered(vectors.collection);
   }
@@ -309,11 +314,12 @@ async function main() {
         // it must run on its own schedule, not merely when something looks off.
         const lastAudit = Number(await catalog.getSetting(COVERAGE_AUDIT_KEY).catch(() => null)) || 0;
         if (Date.now() - lastAudit > AUDIT_INTERVAL_MS) {
-          const { adopted, cleared } = await auditVectorCoverage(deps);
+          const { adopted, cleared, partial } = await auditVectorCoverage(deps);
           await catalog.setSetting(COVERAGE_AUDIT_KEY, String(Date.now())).catch(() => {});
           if (adopted || cleared) {
             console.warn(
-              `[indexer] coverage audit corrected the catalog: adopted ${adopted}, cleared ${cleared}`,
+              `[indexer] coverage audit corrected the catalog: adopted ${adopted}, cleared ${cleared}` +
+                (partial ? ` (${partial} only PARTLY embedded)` : ''),
             );
           }
         }

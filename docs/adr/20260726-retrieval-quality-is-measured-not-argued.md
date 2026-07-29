@@ -212,6 +212,17 @@ traffic and shows much higher overlap. The true operating characteristic therefo
 sits somewhere between the two pools, and B4 must not quote the Pool A figure
 alone.
 
+> **Addendum, 2026-07-29.** That bias turned out to have a sharper edge than
+> "adversarially hard". Forbidding verbatim reuse means Pool B contains no
+> question built around a quoted literal — a size, a version, a sha, a column
+> name — and Pool A was too thin to supply any. So when the sparse tokeniser was
+> found to shred every measurement in the corpus (`6.8MB` → `["8mb"]`), costing a
+> real question all five of its answers, **no number in this harness moved.** The
+> instrument was blind to the failure by construction, not by accident.
+> **Pool L** now covers that shape: generated like B, but built *around* one
+> literal quoted exactly as the entry spells it, with leakage still enforced on
+> everything else. See `20260729-literals-survive-tokenisation.md`.
+
 **Two mechanical facts B4 needs, both measured rather than assumed.**
 
 Qdrant v1.18.2 returns only `id`, `payload`, `score` and `version` for a fused
