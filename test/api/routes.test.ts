@@ -167,6 +167,7 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     health: async () => ({ postgres: true, qdrant: true, redis: true, ollama: true }),
     vectorStats: async () => ({ points: 157_369, vectors: 314_201, segments: 7 }),
     embeddingsProvider: 'auto',
+    servingEmbedder: () => ({ name: 'ollama', model: 'nomic-embed-text', dim: 768 }),
     ...overrides,
   };
 }
@@ -242,6 +243,37 @@ describe('api routes', () => {
 
       const body = await (await buildApp(deps).request('/api/dashboard')).json();
       expect(body.embedderHealth.fallback).toBe(false);
+    });
+
+    /**
+     * The indexer's half and the API's half of the same race are separate
+     * fields because they fail separately. The API resolves its own embedder,
+     * in its own process, and `make restart-build` recreates both at once — so
+     * the API can end up unable to query a collection the indexer is filling
+     * perfectly well.
+     */
+    it('reports search as degraded when the API has no embedder for the active collection', async () => {
+      const deps = makeDeps({ servingEmbedder: () => null });
+      (deps.catalog as any).getSetting = async (k: string) =>
+        k === 'active_embedder' ? 'ollama/nomic-embed-text/768' : null;
+
+      const body = await (await buildApp(deps).request('/api/dashboard')).json();
+
+      // The indexer is healthy — that is precisely what made this invisible.
+      expect(body.embedderHealth.fallback).toBe(false);
+      expect(body.embedderHealth.name).toBe('ollama');
+      expect(body.embedderHealth.serving).toBeNull();
+      expect(body.embedderHealth.searchDegraded).toBe(true);
+    });
+
+    it('reports search as healthy when the API embedder matches', async () => {
+      const deps = makeDeps();
+      (deps.catalog as any).getSetting = async (k: string) =>
+        k === 'active_embedder' ? 'ollama/nomic-embed-text/768' : null;
+
+      const body = await (await buildApp(deps).request('/api/dashboard')).json();
+      expect(body.embedderHealth.serving).toMatchObject({ name: 'ollama', dim: 768 });
+      expect(body.embedderHealth.searchDegraded).toBe(false);
     });
 
     it('carries per-source detail, indexing activity, runs and archived-doc count', async () => {

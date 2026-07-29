@@ -137,6 +137,33 @@ async function main() {
   }
 
   /**
+   * Release job ids held by past failures.
+   *
+   * `removeOnFail: true` stops new ones accumulating, but it cannot free the
+   * ids already reserved — and a reserved id is not a stale entry, it is a
+   * source that will never be scanned again. On 2026-07-29 that was 48 of them,
+   * one per source, all failed during a single Postgres restart three days
+   * earlier: every project except deepcast had silently stopped indexing while
+   * the scheduler went on reporting 140 jobs enqueued a tick.
+   *
+   * Kept on every boot rather than made a one-off migration. It is a no-op once
+   * nothing is retained, and the failure it repairs is invisible from the
+   * outside — which is the argument for repairing it unconditionally rather
+   * than trusting that it cannot come back.
+   */
+  try {
+    const released = await queue.clean(0, 10_000, 'failed');
+    if (released.length) {
+      console.log(
+        `[indexer] released ${released.length} scan job id(s) held by past failures — ` +
+          'those sources can be scanned again',
+      );
+    }
+  } catch (e) {
+    console.warn(`[indexer] could not clean failed jobs: ${(e as Error).message}`);
+  }
+
+  /**
    * Any entry not embedded into the active collection is unsearchable, and a
    * normal scan will never fix it: entries are never re-inserted (dedup_key),
    * so nothing re-emits them. Vectors must be rebuilt from Postgres.
@@ -413,8 +440,11 @@ async function main() {
         'reconcile',
         { trigger: 'reconcile' } as unknown as ScanJobData,
         // A fixed id collapses duplicates while one is still pending, so a slow
-        // reconcile cannot accumulate a queue of copies of itself.
-        { jobId: 'reconcile', removeOnComplete: true, removeOnFail: 50, attempts: 1 },
+        // reconcile cannot accumulate a queue of copies of itself. It must be
+        // released on failure as well as on success — a retained id is a
+        // reserved id whatever state retains it, and 'reconcile' spent three
+        // days in the failed set on 2026-07-29 for exactly that reason.
+        { jobId: 'reconcile', removeOnComplete: true, removeOnFail: true, attempts: 1 },
       );
       await catalog.finishRun(runId, { enqueued });
       console.log(`[indexer] ${kind} tick: ${enqueued} scan jobs enqueued`);

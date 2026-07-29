@@ -96,11 +96,20 @@ export async function scheduleScans(
       await queue.add(`${data.projectSlug}/${key}`, data, {
         // The id is deterministic so an identical *pending* job is not queued
         // twice. It must be released the moment the job finishes: BullMQ
-        // treats an add() for a retained completed id as a silent no-op, which
-        // would stop every later scan of that source from ever running.
+        // treats an add() for a retained id as a silent no-op, which would stop
+        // every later scan of that source from ever running.
+        //
+        // Both exits, for the same reason. Retaining failures looked like free
+        // debugging history and cost three days of indexing on 2026-07-29: a
+        // Postgres restart failed one job per source, and the 48 retained
+        // failures reserved those ids permanently. Every project but deepcast
+        // stopped updating while the scheduler kept reporting 140 jobs enqueued
+        // a tick. A failed scan is retried by the next tick anyway — BullMQ has
+        // already spent `attempts` by the time it lands here — and the failure
+        // itself is recorded in `index_errors`, which outlives the queue.
         jobId: scanJobId(data.projectSlug, key, opts.full),
         removeOnComplete: true,
-        removeOnFail: 500,
+        removeOnFail: true,
         attempts: 3,
         backoff: { type: 'exponential', delay: 5000 },
       });

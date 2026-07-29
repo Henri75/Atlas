@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { collectionNameFor } from '@atlas/core';
 import {
   compareVersions,
+  createOllamaProvider,
   ollamaAvailable,
   ollamaHasModel,
   warnIfOllamaTooOld,
@@ -211,6 +212,112 @@ describe('ollamaAvailable', () => {
     );
 
     expect(await ollamaAvailable('http://x', { sleep: noSleep })).toBe(true);
+    expect(calls).toBe(2);
+  });
+});
+
+/**
+ * The *other* single-shot call on the auto path, and the one that survived the
+ * 2026-07-29 fix: `createOllamaProvider` ends with one `/api/embed` to learn the
+ * dimension. `autoSelect` catches anything it throws and returns the bundled CPU
+ * provider — so a single slow embed still starts the whole downgrade chain that
+ * hardening `/api/tags` was meant to stop.
+ *
+ * It is also the slowest call in the sequence, because it is the one that pays
+ * the model's cold-load cost. Measured on the incident host at load 18.8: 13.4s
+ * cold against 0.23s warm, with real indexing batches logged at 45.2s — those
+ * survive only because `pipeline.ts` wraps them in `withRetry`. Boot had no such
+ * wrapper.
+ */
+describe('createOllamaProvider dimension probe', () => {
+  const noSleep = async () => {};
+  const embedOk = {
+    ok: true,
+    status: 200,
+    json: async () => ({ embeddings: [Array.from({ length: 768 }, () => 0.1)] }),
+    text: async () => '',
+  };
+
+  it('resolves the dimension when the first probe succeeds', async () => {
+    const fn = vi.fn(async () => embedOk as unknown as Response);
+    vi.stubGlobal('fetch', fn);
+
+    const p = await createOllamaProvider('http://x', 'nomic-embed-text', { sleep: noSleep });
+    expect(p).toMatchObject({ name: 'ollama', model: 'nomic-embed-text', dim: 768 });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  /** The regression: a cold model load that overran the ceiling meant a CPU index. */
+  it('retries a timed-out probe instead of conceding the index to the CPU model', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        if (calls < 3) throw new Error('The operation was aborted due to timeout');
+        return embedOk as unknown as Response;
+      }),
+    );
+
+    const p = await createOllamaProvider('http://x', 'nomic-embed-text', { sleep: noSleep });
+    expect(p.dim).toBe(768);
+    expect(calls).toBe(3);
+  });
+
+  it('retries a 503 from an Ollama still loading its runner', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return (calls >= 2 ? embedOk : { ok: false, status: 503, text: async () => 'loading' }) as unknown as Response;
+      }),
+    );
+
+    expect((await createOllamaProvider('http://x', 'm', { sleep: noSleep })).dim).toBe(768);
+    expect(calls).toBe(2);
+  });
+
+  it('still throws once every attempt has failed, so an explicit provider fails loudly', async () => {
+    const fn = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+    vi.stubGlobal('fetch', fn);
+
+    await expect(createOllamaProvider('http://x', 'm', { attempts: 3, sleep: noSleep })).rejects.toThrow();
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  /**
+   * A 404 means the model is not there; no amount of waiting changes that, and
+   * retrying it delays the pull that would actually fix it.
+   */
+  it('does not retry a client error', async () => {
+    const fn = vi.fn(async () => ({ ok: false, status: 404, text: async () => 'model not found' }) as unknown as Response);
+    vi.stubGlobal('fetch', fn);
+
+    await expect(createOllamaProvider('http://x', 'nope', { sleep: noSleep })).rejects.toThrow();
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Steady-state embeds keep the tight ceiling and stay unretried *here* — the
+   * indexer wraps them in `withRetry` with its own budget, and nesting the two
+   * would multiply attempts on every batch of a 326k-entry rebuild.
+   */
+  it('leaves steady-state embeds unretried', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        if (calls === 1) return embedOk as unknown as Response;
+        throw new Error('The operation was aborted due to timeout');
+      }),
+    );
+
+    const p = await createOllamaProvider('http://x', 'm', { sleep: noSleep });
+    await expect(p.embed(['later'])).rejects.toThrow();
     expect(calls).toBe(2);
   });
 });

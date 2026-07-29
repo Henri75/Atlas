@@ -74,4 +74,31 @@ describe('scheduleScans job options', () => {
     expect(opts.attempts).toBe(3);
     expect(opts.backoff).toMatchObject({ type: 'exponential' });
   });
+
+  /**
+   * The same trap, on the other exit. `removeOnComplete: true` was fixed above;
+   * `removeOnFail: 500` sat on the next line and reserved the identical id for
+   * the identical reason — BullMQ no-ops add() for a retained id whatever state
+   * it is retained in.
+   *
+   * Found live on 2026-07-29: a Postgres restart on 07-26 failed one scan per
+   * source ("the database system is in recovery mode"), and the 48 retained
+   * failures then blocked every one of those sources from rescanning for three
+   * days. Every project except deepcast — whose jobs happened not to be in
+   * flight — silently stopped indexing. Nothing reported it; the scheduler kept
+   * logging "140 scan jobs enqueued" a tick, and all but a handful were dropped
+   * on the floor.
+   *
+   * A failed scan does not need retaining to be retried: the next tick is five
+   * minutes away, and BullMQ has already spent its three attempts.
+   */
+  it('releases the job id when the job fails, not just when it completes', async () => {
+    const add = await run();
+    expect(add).toHaveBeenCalled();
+    for (const call of add.mock.calls) {
+      const opts = (call as any)[2];
+      // Any retention count reserves the id; only true frees it.
+      expect(opts.removeOnFail).toBe(true);
+    }
+  });
 });

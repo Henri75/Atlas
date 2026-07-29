@@ -118,6 +118,18 @@ export function DashboardView({ onGoTo }: { onGoTo: (view: 'search') => void }) 
             </p>
           )}
 
+          {/* The other half of the same race, and the one with no other symptom:
+              the API resolves its own embedder, so it can lose that race while
+              the indexer above stays green. Search then answers every query from
+              the Postgres scan — slow, worse, and reported as working. */}
+          {data.embedderHealth?.searchDegraded && (
+            <p className="mt-2 text-[12px]" style={{ color: 'var(--color-report)' }}>
+              Dense search is off: the API has no embedder that can query{' '}
+              <code>{data.collection}</code>, so results come from keyword matching alone. It
+              re-checks every few minutes and recovers on its own once the provider is back.
+            </p>
+          )}
+
           <div className="mt-4 space-y-1 font-mono text-[11px] text-faint">
             <Row k="embedder" v={data.embedder} />
             {data.vectors && (

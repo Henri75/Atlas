@@ -36,7 +36,7 @@ COMPOSE := docker compose --env-file config/atlas.defaults.env $(if $(DOTENV),--
 # probe — otherwise every `make ps` would make a Doppler API round-trip.
 DOPPLER = $(shell doppler run --command 'true' >/dev/null 2>&1 && echo 'doppler run --')
 
-.PHONY: help install build test lint up down restart logs ps reindex reindex-full smoke config-check print-compose cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals
+.PHONY: help install build test lint up down restart restart-build embedder-warm logs ps reindex reindex-full smoke config-check print-compose cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals
 
 # The harness runs on the host, not in a container: a variant has to be a config
 # object rather than an image rebuild for an A/B to be possible at all. Ports come
@@ -102,8 +102,49 @@ restart: ## bounce app services only — does NOT pick up code or .env (see rest
 # and have no reason to bounce. They must already be running: `make up` is the
 # cold start. `mcp` is excluded for the reason `restart` excludes it — use
 # `make restart-mcp` when packages/mcp itself changed.
+#
+# The build and the recreate are separate steps so `embedder-warm` can sit
+# between them — see that target for why. `up --build` does the same two things
+# back to back with nowhere to stand.
 restart-build: ## rebuild + recreate app services — the one that applies config AND code
-	$(DOPPLER) $(COMPOSE) up -d --build --force-recreate --no-deps indexer api ui
+	$(DOPPLER) $(COMPOSE) build indexer api ui
+	@$(MAKE) --no-print-directory embedder-warm
+	$(DOPPLER) $(COMPOSE) up -d --force-recreate --no-deps indexer api ui
+
+# This target exists because `restart-build` used to create the exact condition
+# that broke it.
+#
+# The image build saturates the host, and compose then starts the containers the
+# instant it finishes — so every boot-time embedder probe runs at the peak the
+# build just produced. On 2026-07-29 that is what happened: at load 26 the probe
+# timed out, `auto` fell back to the bundled 384-dim model, and the indexer began
+# rebuilding 326k entries on CPU into a new collection.
+#
+# The first embed after an idle period is the expensive one: it pays the model's
+# cold load. Measured on this host at load 18.8 — 13.4s cold, 0.23s warm. Paying
+# that here, once, before any container starts, is what makes the containers'
+# probes trivial. The code guards (probe retries; the indexer refusing to migrate
+# the index; the API refusing an embedder that cannot query the live collection)
+# all still hold — this just stops them being needed on every restart.
+#
+# Never fatal. A host with no Ollama must still be able to restart its stack.
+embedder-warm: ## pre-load the embedding model so container boot probes don't race a cold start
+	@url=$$(grep -h '^OLLAMA_URL=' $(DOTENV) config/atlas.defaults.env 2>/dev/null | head -1 | cut -d= -f2-); \
+	model=$$(grep -h '^EMBEDDINGS_MODEL=' $(DOTENV) config/atlas.defaults.env 2>/dev/null | head -1 | cut -d= -f2-); \
+	url=$${url:-http://127.0.0.1:11434}; model=$${model:-nomic-embed-text}; \
+	url=$${url/host.docker.internal/127.0.0.1}; \
+	echo "→ warming $$model at $$url"; \
+	for i in 1 2 3 4 5 6; do \
+	  code=$$(curl -s -m 60 -o /dev/null -w '%{http_code}' -X POST "$$url/api/embed" \
+	    -H 'content-type: application/json' \
+	    -d "{\"model\":\"$$model\",\"input\":[\"warm\"]}" 2>/dev/null || true); \
+	  if [ "$$code" = "200" ]; then echo "  embedder warm (attempt $$i)"; exit 0; fi; \
+	  echo "  attempt $$i: HTTP $$code — retrying in 5s"; sleep 5; \
+	done; \
+	echo "  ⚠️  Ollama never served an embedding. Starting anyway: with EMBEDDINGS_PROVIDER=auto"; \
+	echo "     the services may resolve the bundled CPU model, in which case the indexer refuses"; \
+	echo "     to migrate the index and the API refuses to query with it — search stays on the"; \
+	echo "     collection it has. Fix Ollama and 'make restart-build' again."
 
 restart-mcp: ## restart the MCP server (WARNING: drops atlas_* tools from live agent sessions)
 	@echo "⚠️  This drops the atlas_* tools from every running Claude Code session."

@@ -186,6 +186,15 @@ export interface Dashboard extends Stats {
     dim: number | null;
     configured: string;
     fallback: boolean;
+    /**
+     * The embedder the API itself can query the active collection with, or null
+     * when it refused the one it resolved. The fields above describe the
+     * *indexer*; these two describe search, and the two can disagree — the API
+     * resolves its own provider, in its own process, and can lose that race
+     * alone.
+     */
+    serving: { name: string; model: string; dim: number } | null;
+    searchDegraded: boolean;
   };
   vectors: { points: number; vectors: number; segments: number } | null;
   sourceDetail: SourceDetailRow[];

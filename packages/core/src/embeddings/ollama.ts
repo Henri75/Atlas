@@ -1,4 +1,4 @@
-import { HttpError } from '../retry.js';
+import { HttpError, withRetry } from '../retry.js';
 import type { EmbeddingProvider } from './types.js';
 
 export interface ProbeOptions {
@@ -123,22 +123,64 @@ export async function ollamaPull(baseUrl: string, model: string): Promise<void> 
  */
 const EMBED_TIMEOUT_MS = 30_000;
 
+/**
+ * The first embed after a boot pays the model's cold-load cost, so it is the
+ * slowest call in the whole startup sequence — and the one whose failure is
+ * most expensive, because `autoSelect` reads a throw here as "no Ollama" and
+ * hands the entire index to the bundled CPU model.
+ *
+ * Steady-state embeds keep the tight ceiling for the reason `EMBED_TIMEOUT_MS`
+ * gives: a long one turns a fast retryable failure into a silent stall. That
+ * argument does not transfer to the probe. Its alternative to waiting is not a
+ * quick retry — it is a full re-embed of the catalog on a worse model — so the
+ * probe is allowed to be patient exactly once per boot.
+ *
+ * Measured on the host that hit this on 2026-07-29: 13.4s cold at load 18.8,
+ * 0.23s warm, with indexing batches logged at 45.2s under the same load.
+ */
+const PROBE_TIMEOUT_MS = 90_000;
+const PROBE_ATTEMPTS = 3;
+
 export async function createOllamaProvider(
   baseUrl: string,
   model: string,
+  probeOpts: ProbeOptions = {},
 ): Promise<EmbeddingProvider> {
-  const embed = async (texts: string[]): Promise<number[][]> => {
+  const embed = async (texts: string[], timeoutMs = EMBED_TIMEOUT_MS): Promise<number[][]> => {
     const r = await fetch(`${baseUrl}/api/embed`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model, input: texts }),
-      signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     // Carry the status so withRetry can classify 5xx/429 as transient.
     if (!r.ok) throw new HttpError(`ollama embed failed: ${await r.text()}`, r.status);
     const data = (await r.json()) as { embeddings: number[][] };
     return data.embeddings;
   };
-  const probe = await embed(['dimension probe']);
-  return { name: 'ollama', model, dim: probe[0]!.length, embed };
+
+  // Retried for the same reason `ollamaAvailable` is: the answer decides the
+  // collection, and therefore the index. Hardening the reachability probe alone
+  // left this one able to start the identical chain one step later. A 4xx is
+  // still fatal on the first attempt — a missing model does not arrive by
+  // waiting, and retrying it only delays the pull that would fix it.
+  const probe = await withRetry(
+    () => embed(['dimension probe'], probeOpts.timeoutMs ?? PROBE_TIMEOUT_MS),
+    {
+      attempts: probeOpts.attempts ?? PROBE_ATTEMPTS,
+      baseDelayMs: 1000,
+      sleep: probeOpts.sleep,
+      onRetry: (attempt, err) =>
+        console.warn(
+          `[embeddings] dimension probe against ${model} failed (attempt ${attempt}): ` +
+            `${(err as Error).message.slice(0, 200)} — retrying rather than conceding to the CPU model`,
+        ),
+    },
+  );
+  return {
+    name: 'ollama',
+    model,
+    dim: probe[0]!.length,
+    embed: (texts: string[]) => embed(texts),
+  };
 }

@@ -194,6 +194,14 @@ async function scanKdb(
   const backlogVerKey = `backlog_parser_version:${projectId}`;
   const storedBacklogVersion = await deps.catalog.getSetting(backlogVerKey).catch(() => null);
   const backlogResync = storedBacklogVersion !== String(BACKLOG_PARSER_VERSION);
+  // Stamped only if the backlog file came through cleanly. The resync gets
+  // exactly one chance: once the version is stored, `fileChanged` answers "no"
+  // forever and those rows keep deriving their status from v1 meta, with
+  // nothing to indicate it. This scan embeds, and embedding is what fails on a
+  // loaded host — the same reason `sparse_version` is stamped only on a
+  // completed pass. A project with no backlog.log has nothing to lose and
+  // stamps normally, so it does not force a re-parse of its other kdb files.
+  let backlogOk = true;
 
   for (const f of listKdbFiles(job.rootPath)) {
     try {
@@ -225,10 +233,18 @@ async function scanKdb(
         mtimeMs: Math.trunc(stat.mtimeMs), size: stat.size, byteOffset: stat.size,
       });
     } catch (e) {
+      if (f.sourceType === 'kdb_backlog') backlogOk = false;
       await deps.catalog.logError(projectId, f.path, 'kdb-parse', (e as Error).message);
     }
   }
-  await deps.catalog.setSetting(backlogVerKey, String(BACKLOG_PARSER_VERSION)).catch(() => {});
+  if (backlogOk) {
+    await deps.catalog.setSetting(backlogVerKey, String(BACKLOG_PARSER_VERSION)).catch(() => {});
+  } else {
+    console.warn(
+      `[indexer] backlog scan failed for ${job.projectSlug}; leaving the parser version unstamped ` +
+        'so the next scan retries the resync',
+    );
+  }
   return indexed;
 }
 

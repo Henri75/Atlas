@@ -51,6 +51,17 @@ export interface ApiDeps {
    * without knowing what was asked for.
    */
   embeddingsProvider: string;
+  /**
+   * The embedder *this process* can query the active collection with, or null
+   * when it refused the one it resolved.
+   *
+   * Distinct from `active_embedder`, which the indexer writes about itself. The
+   * two disagree exactly when the API lost the provider race on its own — and
+   * that disagreement is invisible in every other field: the indexer is fine,
+   * every dependency is reachable, and search has quietly moved to the Postgres
+   * scan.
+   */
+  servingEmbedder: () => { name: string; model: string; dim: number } | null;
   /** Evidence gathering + LLM judgment for backlog reviews. */
   backlogReview: BacklogReviewService;
   /** Fuzzy-link floor for legacy DONE:/RESOLVED: markers (config SSoT). */
@@ -209,10 +220,19 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     // 2026-07-29 fallback: everything was reachable, the vectors were just being
     // rebuilt by the wrong model. Degradation that looks healthy needs its own
     // field, not a boolean in with the dependencies.
-    const embedderHealth = embedderStatus(
-      deps.embeddingsProvider,
-      await deps.catalog.getSetting('active_embedder').catch(() => null),
-    );
+    //
+    // `serving` is this process's own answer to the same question. The indexer
+    // can be perfectly healthy while the API lost the provider race by itself,
+    // and every other field on this response would still read green.
+    const serving = deps.servingEmbedder();
+    const embedderHealth = {
+      ...embedderStatus(
+        deps.embeddingsProvider,
+        await deps.catalog.getSetting('active_embedder').catch(() => null),
+      ),
+      serving,
+      searchDegraded: !serving,
+    };
     return c.json({
       ...stats,
       chunks,

@@ -10,6 +10,7 @@ import {
   collectionNameFor,
   createEmbedder,
   dirSize,
+  embedderServesCollection,
   getConfig,
   mappingsFromConfig,
   ollamaAvailable,
@@ -30,21 +31,75 @@ async function main() {
   const catalog = new Catalog(cfg.databaseUrl);
   await catalog.migrate();
 
-  let embedder: EmbeddingProvider | null = null;
-  try {
-    embedder = await createEmbedder(cfg.embeddings, cfg.g2pClientId);
-  } catch (e) {
-    console.warn('[api] embedder unavailable, sparse/FTS only:', (e as Error).message);
-  }
-
   // Prefer the collection the indexer registered (survives provider races).
-  let collection = await catalog.getSetting('active_collection');
+  const published = await catalog.getSetting('active_collection');
+
+  /**
+   * Resolve an embedder that can actually query the published collection.
+   *
+   * The API runs its own `createEmbedder` in its own process, from the same
+   * `auto` config, against the same host — so it can lose the Ollama race
+   * independently of the indexer, and on `make restart-build` both are recreated
+   * at once and race it together. The indexer's downgrade guard cannot help
+   * here: it protects the index, and search is a different failure.
+   *
+   * A mismatched embedder is worse than none. Its dense vector is rejected by
+   * Qdrant (or, at an equal dimension, silently answered from an unrelated
+   * space), `SearchService` catches that and answers from the Postgres scan
+   * instead, and every query becomes a slow, degraded one with nothing
+   * reporting why. `null` costs the dense half and keeps the sparse half, which
+   * still queries the real collection and is honestly labelled `sparse-only`.
+   */
+  const resolveEmbedder = async (): Promise<EmbeddingProvider | null> => {
+    let candidate: EmbeddingProvider | null = null;
+    try {
+      candidate = await createEmbedder(cfg.embeddings, cfg.g2pClientId);
+    } catch (e) {
+      console.warn('[api] embedder unavailable, sparse/FTS only:', (e as Error).message);
+      return null;
+    }
+    // Re-read: the indexer may have published a collection since we started.
+    const active = (await catalog.getSetting('active_collection').catch(() => null)) ?? published;
+    const verdict = embedderServesCollection(candidate, active);
+    if (!verdict.serves) {
+      console.error(`[api] REFUSING the resolved embedder — ${verdict.reason}`);
+      return null;
+    }
+    console.log(`[api] embedder: ${candidate.name}/${candidate.model} dim=${candidate.dim}`);
+    return candidate;
+  };
+
+  let embedder = await resolveEmbedder();
+
+  let collection = published;
   if (!collection && embedder) {
     collection = collectionNameFor(embedder.name, embedder.model, embedder.dim);
   }
   const vectors = new VectorStore(cfg.qdrantUrl, collection ?? 'kdbscope_unset');
 
   const search = new SearchService(catalog, vectors, embedder, cfg.docs);
+
+  /**
+   * Self-heal. A refusal at boot is the right call but a bad resting state:
+   * without this, a five-second blip during `make restart-build` leaves the API
+   * on sparse-only until a human notices and restarts it. The indexer recovers
+   * on its own (it exits and compose brings it back); the API has no equivalent,
+   * so it re-resolves on a slow cadence until it has one that serves.
+   */
+  const EMBEDDER_RETRY_MS = 5 * 60_000;
+  if (!embedder) {
+    const timer = setInterval(() => {
+      void (async () => {
+        const next = await resolveEmbedder();
+        if (!next) return;
+        embedder = next;
+        search.setEmbedder(next);
+        clearInterval(timer);
+        console.log('[api] embedder recovered — dense search is back');
+      })();
+    }, EMBEDDER_RETRY_MS);
+    timer.unref?.();
+  }
   const ask = new AskService(search, catalog, cfg.llm, cfg.g2pClientId);
   const backlogReview = new BacklogReviewService(search, cfg.llm, cfg.g2pClientId);
 
@@ -101,6 +156,9 @@ async function main() {
     // recorded as actually serving, which is the only way to tell a deliberate
     // provider from `auto` having settled for one.
     embeddingsProvider: cfg.embeddings.provider,
+    // Read live, not captured: the self-heal loop can install one later.
+    servingEmbedder: () =>
+      embedder ? { name: embedder.name, model: embedder.model, dim: embedder.dim } : null,
     backlogReview,
     backlogMatchThreshold: cfg.backlogMatchThreshold,
 
