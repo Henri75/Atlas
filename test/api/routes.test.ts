@@ -106,6 +106,7 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     }),
     health: async () => ({ postgres: true, qdrant: true, redis: true, ollama: true }),
     vectorStats: async () => ({ points: 157_369, vectors: 314_201, segments: 7 }),
+    embeddingsProvider: 'auto',
     ...overrides,
   };
 }
@@ -152,6 +153,35 @@ describe('api routes', () => {
       expect(body.health).toEqual({ postgres: true, qdrant: true, redis: true, ollama: true });
       expect(body.vectors).toMatchObject({ points: 157_369, vectors: 314_201 });
       expect(body.storage.postgresBytes).toBe(245_298_879);
+    });
+
+    /**
+     * `health` reports reachability, which stayed entirely green on 2026-07-29
+     * while the indexer rebuilt the index on a fallback CPU model — everything
+     * *was* reachable. Degradation that looks healthy needs its own field.
+     */
+    it('reports which embedder is actually serving, and whether it is a fallback', async () => {
+      const deps = makeDeps();
+      (deps.catalog as any).getSetting = async (k: string) =>
+        k === 'active_embedder' ? 'bundled/Xenova/all-MiniLM-L6-v2/384' : null;
+
+      const body = await (await buildApp(deps).request('/api/dashboard')).json();
+
+      expect(body.embedderHealth).toMatchObject({
+        name: 'bundled',
+        dim: 384,
+        configured: 'auto',
+        fallback: true,
+      });
+    });
+
+    it('does not flag the preferred embedder as a fallback', async () => {
+      const deps = makeDeps();
+      (deps.catalog as any).getSetting = async (k: string) =>
+        k === 'active_embedder' ? 'ollama/nomic-embed-text/768' : null;
+
+      const body = await (await buildApp(deps).request('/api/dashboard')).json();
+      expect(body.embedderHealth.fallback).toBe(false);
     });
 
     it('carries per-source detail, indexing activity, runs and archived-doc count', async () => {

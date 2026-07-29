@@ -3,6 +3,7 @@
 # Configuration
 
 ## Revision History
+- 2026-07-29 17:50 UTC — `KDB_ALLOW_EMBEDDER_DOWNGRADE` and *Why `auto` will refuse to start*: the probe retries, and a fallback can no longer silently migrate the index.
 - 2026-07-29 14:35 UTC — `KDB_SPARSE_REBUILD`, the kill switch for the sparse re-tokenisation pass.
 - 2026-07-12 13:50 UTC — Product renamed to **Atlas**; documented why the `KDBSCOPE_*` / `kdbscope` identifiers survive the rename.
 - 2026-07-10 22:24 UTC — Doc staleness knobs: `KDB_DOCS_AGING_MONTHS`, `KDB_ARCHIVED_PENALTY`.
@@ -63,6 +64,38 @@ but rarely need to be.
 | `SCAN_INTERVAL_MIN` | `5` | incremental scan cadence |
 | `WORKER_CONCURRENCY` | `2` | parallel scan jobs. Every job embeds, and a local Ollama serves one request at a time — more workers only deepen its queue. Raise for a remote/batched endpoint. |
 | `KDB_SPARSE_REBUILD` | `true` | run the sparse re-tokenisation pass when `SPARSE_VERSION` moves ahead of the collection's stamp. Set `false` to stop a rebuild that is misbehaving without editing source: keyword search then runs on stale tokens (degraded, not broken — dense retrieval is unaffected) and the pass retries next boot. |
+| `KDB_ALLOW_EMBEDDER_DOWNGRADE` | `false` | permit `EMBEDDINGS_PROVIDER=auto` to move the index to a different collection after falling back to a non-preferred embedder. See below. |
+
+### Why `auto` will refuse to start
+
+The collection name encodes the embedding dimension, so resolving a different
+embedder means a *different collection* — and the boot sequence then re-embeds
+every entry into it, publishes it as active, and reclaims the previous one as an
+orphan. That is correct when you switch models deliberately, and catastrophic
+when `auto` merely failed to reach Ollama for a moment.
+
+It is not hypothetical. On 2026-07-29, with the host at load 26, the 2-second
+probe timed out while Ollama was running and reachable throughout; the indexer
+booted on the bundled 384-dim model and began rebuilding 326k entries.
+
+Two guards now:
+
+- the probe **retries** (3 attempts, backoff) before conceding, so a loaded host
+  gets the benefit of the doubt — a genuinely absent Ollama still answers in
+  about seven seconds;
+- the indexer **refuses to start** when `auto` falls back *and* a populated
+  collection exists under a different name. It exits non-zero; compose restarts
+  it, and by then the provider is usually up. Search is unaffected throughout,
+  because `active_collection` is exactly what the refusal declines to change.
+
+To switch models on purpose, set `EMBEDDINGS_PROVIDER` explicitly — an explicit
+provider is an instruction and is always honoured. `KDB_ALLOW_EMBEDDER_DOWNGRADE=true`
+is the escape hatch for letting a one-off `auto` downgrade through.
+
+`GET /api/dashboard` carries `embedderHealth` — which embedder is actually
+serving and whether it is a fallback — and the UI shows it beside the service
+list. `health` cannot express this: it measures reachability, and during that
+incident everything was reachable.
 
 ### The sparse re-tokenisation pass
 

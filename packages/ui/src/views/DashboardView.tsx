@@ -82,7 +82,41 @@ export function DashboardView({ onGoTo }: { onGoTo: (view: 'search') => void }) 
                 </span>
               </div>
             ))}
+            {data.embedderHealth?.name && (
+              <div className="flex items-center gap-2 text-[13px]">
+                <span
+                  className="size-2 rounded-full shrink-0"
+                  style={{
+                    background: data.embedderHealth.fallback
+                      ? 'var(--color-report)'
+                      : 'var(--color-git)',
+                  }}
+                  aria-hidden
+                />
+                <span className="flex-1 text-muted">embedder</span>
+                <span
+                  className="font-mono text-[11px]"
+                  style={{
+                    color: data.embedderHealth.fallback ? 'var(--color-report)' : 'var(--color-git)',
+                  }}
+                  title={`${data.embedderHealth.name}/${data.embedderHealth.model} (${data.embedderHealth.dim}d), configured: ${data.embedderHealth.configured}`}
+                >
+                  {data.embedderHealth.name}
+                </span>
+              </div>
+            )}
           </div>
+          {/* A fallback is not an outage — every service above stays green — so
+              it needs saying in words. On 2026-07-29 this state ran unnoticed
+              while the index was rebuilt on a CPU model. */}
+          {data.embedderHealth?.fallback && (
+            <p className="mt-2 text-[12px]" style={{ color: 'var(--color-report)' }}>
+              Running on a fallback embedder: <code>{data.embedderHealth.configured}</code> could not
+              reach its preferred provider and settled for <code>{data.embedderHealth.name}</code>.
+              Vectors are lower quality and indexing is far slower. Start the preferred provider
+              and restart the indexer.
+            </p>
+          )}
 
           <div className="mt-4 space-y-1 font-mono text-[11px] text-faint">
             <Row k="embedder" v={data.embedder} />

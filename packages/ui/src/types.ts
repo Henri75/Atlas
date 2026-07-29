@@ -174,6 +174,19 @@ export interface Dashboard extends Stats {
   sessions: number;
   storage: StorageUsage;
   health: Record<string, boolean>;
+  /**
+   * Which embedder is actually serving. Separate from `health` because it is
+   * not a reachability question: during the 2026-07-29 fallback every service
+   * showed running, correctly, while the index was being rebuilt by the wrong
+   * model.
+   */
+  embedderHealth: {
+    name: string | null;
+    model: string | null;
+    dim: number | null;
+    configured: string;
+    fallback: boolean;
+  };
   vectors: { points: number; vectors: number; segments: number } | null;
   sourceDetail: SourceDetailRow[];
   activity: ActivityPoint[];

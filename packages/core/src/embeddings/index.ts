@@ -96,3 +96,53 @@ async function autoSelect(cfg: AppConfig['embeddings']): Promise<EmbeddingProvid
     return createBundledProvider();
   }
 }
+
+/** The provider `auto` prefers; anything else means it fell back. */
+export const AUTO_PREFERRED_PROVIDER = 'ollama';
+
+export interface EmbedderStatus {
+  /** Provider actually serving, or null before the indexer has ever run. */
+  name: string | null;
+  model: string | null;
+  dim: number | null;
+  /** What the operator configured, verbatim. */
+  configured: string;
+  /** `auto` settled for something other than its preferred provider. */
+  fallback: boolean;
+}
+
+/**
+ * Read the `active_embedder` setting into something a health surface can show.
+ *
+ * "Running on a fallback embedder" used to exist only in `docker logs`, which is
+ * where it stayed on 2026-07-29 while the indexer began rebuilding the index on
+ * a CPU model. Every dashboard dependency showed healthy, correctly: it measured
+ * reachability, and everything was reachable. A degraded embedder is not an
+ * outage — it is worse, because nothing looks wrong while the vectors quietly
+ * get worse and the rebuild burns hours.
+ *
+ * Only `auto` can produce a fallback. Asking for `bundled` and getting `bundled`
+ * is the system working, and reporting that as degraded would train everyone to
+ * ignore the flag.
+ */
+export function embedderStatus(configured: string, activeEmbedder: string | null): EmbedderStatus {
+  const unknown = { name: null, model: null, dim: null, configured, fallback: false };
+  if (!activeEmbedder) return unknown;
+
+  // `${name}/${model}/${dim}`, where the *model* may itself contain slashes
+  // ("bundled/Xenova/all-MiniLM-L6-v2/384"). Only the first and last fields are
+  // positional; everything between them is the model.
+  const parts = activeEmbedder.split('/');
+  if (parts.length < 3) return unknown;
+  const name = parts[0]!;
+  const dim = Number(parts[parts.length - 1]);
+  if (!name || !Number.isFinite(dim)) return unknown;
+
+  return {
+    name,
+    model: parts.slice(1, -1).join('/'),
+    dim,
+    configured,
+    fallback: configured === 'auto' && name !== AUTO_PREFERRED_PROVIDER,
+  };
+}

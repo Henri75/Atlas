@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { collectionNameFor } from '@atlas/core';
 import {
   compareVersions,
+  ollamaAvailable,
   ollamaHasModel,
   warnIfOllamaTooOld,
 } from '../../packages/core/src/embeddings/ollama.js';
@@ -147,5 +148,69 @@ describe('openai-compatible embeddings client identity', () => {
 
   it('omits the header when explicitly opted out', async () => {
     expect((await create(''))['X-G2P-Client-Id']).toBeUndefined();
+  });
+});
+
+/**
+ * The probe that decides the embedding model — and therefore the collection,
+ * and therefore the whole index.
+ *
+ * It was a single fetch with a 2s timeout and no retry. On 2026-07-29, with the
+ * host at load 26, it lost that race while Ollama was running and reachable the
+ * whole time: the indexer booted on the bundled 384-dim model, created a new
+ * empty collection, and began re-embedding 326k entries. Left alone it would
+ * have published that collection and reclaimed the good one. A transient blip
+ * must not be able to migrate the index.
+ */
+describe('ollamaAvailable', () => {
+  const noSleep = async () => {};
+
+  it('accepts a healthy Ollama on the first try, without retrying', async () => {
+    const fn = vi.fn(async () => ({ ok: true }) as Response);
+    vi.stubGlobal('fetch', fn);
+
+    expect(await ollamaAvailable('http://x', { sleep: noSleep })).toBe(true);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  /** The regression. */
+  it('survives a transient failure and accepts on a later attempt', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        if (calls < 3) throw new Error('The operation was aborted due to timeout');
+        return { ok: true } as Response;
+      }),
+    );
+
+    expect(await ollamaAvailable('http://x', { sleep: noSleep })).toBe(true);
+    expect(calls).toBe(3);
+  });
+
+  it('concedes only after every attempt has failed', async () => {
+    const fn = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+    vi.stubGlobal('fetch', fn);
+
+    expect(await ollamaAvailable('http://x', { attempts: 3, sleep: noSleep })).toBe(false);
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('treats a non-ok response as a failed attempt, not as unreachable', async () => {
+    // A 503 while Ollama is still loading is exactly the case worth retrying.
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        return { ok: calls >= 2 } as Response;
+      }),
+    );
+
+    expect(await ollamaAvailable('http://x', { sleep: noSleep })).toBe(true);
+    expect(calls).toBe(2);
   });
 });

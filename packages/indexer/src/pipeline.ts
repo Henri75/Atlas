@@ -558,6 +558,59 @@ export async function backfillVectors(
 }
 
 /**
+ * Should this boot be allowed to move the index to a different collection?
+ *
+ * The collection name encodes the embedding dimension, so resolving a different
+ * embedder means a different collection — and the boot sequence then re-embeds
+ * every entry into it, publishes it as active, and reclaims the previous one as
+ * an orphan. That is exactly right when an operator switches models, and
+ * catastrophic when `auto` merely lost a race.
+ *
+ * On 2026-07-29 it lost that race: a 2s probe timed out on a host at load 26
+ * while Ollama was running and reachable, and the indexer began rebuilding 326k
+ * entries into a bundled 384-dim collection. Retrying the probe makes that
+ * unlikely; this makes it non-destructive, which is the part that has to hold
+ * when the unlikely thing happens anyway.
+ *
+ * The test is not "did the collection change" — it is "did anyone ask for
+ * this". An explicit `EMBEDDINGS_PROVIDER` is an instruction and always
+ * honoured. `auto` settling for its fallback is a guess, and a guess does not
+ * get to delete a populated index.
+ */
+export function embedderDowngrade(input: {
+  /** What the operator configured: 'auto', 'ollama', 'bundled', … */
+  configuredProvider: string;
+  /** What `createEmbedder` actually returned. */
+  resolvedName: string;
+  /** Collection implied by the resolved embedder. */
+  targetCollection: string;
+  activeCollection: string | null;
+  /** Entries the catalog believes are embedded in `activeCollection`. */
+  populatedEntries: number;
+  allowDowngrade: boolean;
+}): { refuse: boolean; reason?: string } {
+  if (input.allowDowngrade) return { refuse: false };
+  // Only `auto` can pick a provider nobody named.
+  if (input.configuredProvider !== 'auto') return { refuse: false };
+  if (!input.activeCollection) return { refuse: false };
+  if (input.activeCollection === input.targetCollection) return { refuse: false };
+  if (input.populatedEntries <= 0) return { refuse: false };
+
+  return {
+    refuse: true,
+    reason:
+      `EMBEDDINGS_PROVIDER=auto resolved to "${input.resolvedName}", which would move the index ` +
+      `from ${input.activeCollection} (${input.populatedEntries} entries embedded) to ` +
+      `${input.targetCollection} — re-embedding everything and then reclaiming the old ` +
+      'collection. Refusing, because nothing asked for this: `auto` falls back when its ' +
+      'preferred provider is unreachable, and a provider being briefly unreachable is not a ' +
+      'decision to rebuild the index. Start the preferred provider and boot again; or set ' +
+      'EMBEDDINGS_PROVIDER explicitly to make the switch deliberate; or set ' +
+      'KDB_ALLOW_EMBEDDER_DOWNGRADE=true to permit it this once.',
+  };
+}
+
+/**
  * What the re-tokenisation pass should do on this boot.
  *
  * A pure function because the inline version of it was wrong in a way nothing

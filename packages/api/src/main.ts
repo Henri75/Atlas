@@ -95,6 +95,10 @@ async function main() {
       }
     },
     pathMappings: mappingsFromConfig(cfg),
+    // What was *asked for*. The dashboard compares it against what the indexer
+    // recorded as actually serving, which is the only way to tell a deliberate
+    // provider from `auto` having settled for one.
+    embeddingsProvider: cfg.embeddings.provider,
 
     // Walking Qdrant's storage tree is the slow part; sizes move slowly, so a
     // short TTL keeps the dashboard fresh without re-crawling on every poll.

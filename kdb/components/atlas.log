@@ -1143,3 +1143,34 @@
 
 **Status:**
 - Completed
+### [2026-07-29] - Bugfix: a two-second probe could replace the entire index
+
+**Objective:**
+- Close the hazard found while testing `make restart-build`: the recreated indexer came up on the bundled CPU embedder while Ollama was running and reachable throughout.
+
+**Summary of Work:**
+- **Retry the probe.** `ollamaAvailable` was a single fetch with `AbortSignal.timeout(2000)` and no retry. Now 3 attempts with backoff, and a non-ok response counts as a failed attempt rather than a verdict (a 503 from an Ollama still loading its runner is exactly the case worth waiting for). A genuinely absent Ollama still answers in ~7s, once per boot.
+- **Refuse the downgrade.** New pure function `embedderDowngrade`: when the configured provider is `auto`, it resolved to something else, and a *populated* collection exists under a different name, the indexer logs why and exits non-zero. `restart: unless-stopped` brings it back, by which time the provider is usually up. An explicit `EMBEDDINGS_PROVIDER` is always honoured — the test is not 'did the collection change' but 'did anyone ask for this'. `KDB_ALLOW_EMBEDDER_DOWNGRADE=true` is the escape hatch.
+- **Surface it.** `embedderStatus()` parses the `active_embedder` setting (which was written and never read by anything) into `{name, model, dim, configured, fallback}`; `/api/dashboard` returns it as `embedderHealth` and the UI shows a dot beside the service list plus a sentence explaining what to do.
+
+**Key Decisions & Rationale:**
+- Exit rather than carry on. Continuing would mean either writing 384-dim vectors into a 768 collection (dimension errors) or proceeding with the rebuild, which is the thing being prevented. Exiting is the only option that leaves `active_collection` untouched, and that field is exactly what keeps search working while the indexer is down.
+- Only `auto` can trigger the refusal. Asking for `bundled` and getting `bundled` is the system working; reporting that as degraded would train everyone to ignore the flag.
+- `embedderHealth`, not `embedder`, on the dashboard: `Stats` already carries `embedder: string` and my object was spread *after* `deps.meta()`, so it would have silently overwritten the footer's value. The type checker caught it.
+- Kept the fallback itself. A first boot with no Ollama should still work; what changed is that a fallback can no longer *migrate an existing index*.
+
+**Code/Files Modified:**
+- packages/core/src/embeddings/ollama.ts (retry), embeddings/index.ts (embedderStatus), config.ts (allowEmbedderDowngrade)
+- packages/indexer/src/pipeline.ts (embedderDowngrade), main.ts (refusal at boot)
+- packages/api/src/app.ts + main.ts (embedderHealth), packages/ui/src/types.ts + views/DashboardView.tsx
+- test/core/embeddings.test.ts, test/core/embedderStatus.test.ts (new), test/indexer/embedderDowngrade.test.ts (new), test/api/routes.test.ts
+- docs/configuration.md, .env.example
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** The incident gave the tests their fixtures. Every one of them describes a real observed state rather than an invented one, and the probe test that matters ('survives a transient failure and accepts on a later attempt') failed before the fix in exactly the way the live system did.
+- **What Failed:** I nearly shipped a silent API break. Adding `embedder` to the dashboard response would have clobbered `meta().embedder` because of spread order — caught by tsc, not by me, and no test covered the footer's field.
+- **Also:** health-as-reachability was the deeper bug. Every service reported running throughout the incident, correctly. Degradation that looks healthy needs a field of its own.
+- 805 tests green, lint clean, UI builds.
+
+**Status:**
+- Completed

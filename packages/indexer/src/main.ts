@@ -18,6 +18,7 @@ import {
   needsBackfill,
   processScanJob,
   rebuildSparseVectors,
+  embedderDowngrade,
   restoreIndexingThreshold,
   sparseRebuildAction,
   type PipelineDeps,
@@ -89,10 +90,31 @@ async function main() {
   const embedder = await createEmbedder(cfg.embeddings, cfg.g2pClientId);
   console.log(`[indexer] embedder: ${embedder.name}/${embedder.model} dim=${embedder.dim}`);
 
-  const vectors = new VectorStore(
-    cfg.qdrantUrl,
-    collectionNameFor(embedder.name, embedder.model, embedder.dim),
-  );
+  const targetCollection = collectionNameFor(embedder.name, embedder.model, embedder.dim);
+
+  // Before anything writes: would this boot move the index somewhere nobody
+  // asked for? Checked here rather than later because everything after this
+  // point — ensure, backfill, publish, reclaim — is what does the damage.
+  const previousCollection = await catalog.getSetting('active_collection').catch(() => null);
+  const verdict = embedderDowngrade({
+    configuredProvider: cfg.embeddings.provider,
+    resolvedName: embedder.name,
+    targetCollection,
+    activeCollection: previousCollection,
+    populatedEntries: previousCollection ? await catalog.countVectorized(previousCollection) : 0,
+    allowDowngrade: cfg.allowEmbedderDowngrade,
+  });
+  if (verdict.refuse) {
+    // Exit rather than carry on: `restart: unless-stopped` brings the indexer
+    // back, and by then the provider is usually up — the probe retries only
+    // cover the first seven seconds. Serving continues throughout, because the
+    // API reads `active_collection`, which this refuses to change.
+    console.error(`[indexer] REFUSING TO START — ${verdict.reason}`);
+    await catalog.close?.().catch(() => {});
+    process.exit(1);
+  }
+
+  const vectors = new VectorStore(cfg.qdrantUrl, targetCollection);
   if (schemeChanged) {
     // Old points are keyed by the old scheme; they would never be overwritten.
     await vectors.drop();

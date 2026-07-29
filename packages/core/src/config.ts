@@ -51,6 +51,18 @@ const schema = z.object({
   sparseRebuild: z
     .union([z.boolean(), z.enum(['true', 'false']).transform((v) => v === 'true')])
     .default(true),
+  /**
+   * Permit `auto` to move the index to a different collection when it falls
+   * back to a non-preferred embedder.
+   *
+   * Off by default because the fallback is a guess, not an instruction, and the
+   * consequence is a full re-embed followed by the old collection being
+   * reclaimed. Set it only to make a one-off downgrade go through; the
+   * non-emergency way to switch models is an explicit `EMBEDDINGS_PROVIDER`.
+   */
+  allowEmbedderDowngrade: z
+    .union([z.boolean(), z.enum(['true', 'false']).transform((v) => v === 'true')])
+    .default(false),
   embeddings: z.object({
     provider: EmbeddingsProvider.default('auto'),
     model: z.string().default('nomic-embed-text'),
@@ -125,6 +137,7 @@ function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
     scanIntervalMin: opt(env.SCAN_INTERVAL_MIN),
     workerConcurrency: opt(env.WORKER_CONCURRENCY),
     sparseRebuild: opt(env.KDB_SPARSE_REBUILD),
+    allowEmbedderDowngrade: opt(env.KDB_ALLOW_EMBEDDER_DOWNGRADE),
     embeddings: {
       provider: opt(env.EMBEDDINGS_PROVIDER),
       model: opt(env.EMBEDDINGS_MODEL),

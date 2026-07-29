@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { editorUrl, lineFromSourceRef, toHostPath } from '@atlas/core';
+import { editorUrl, embedderStatus, lineFromSourceRef, toHostPath } from '@atlas/core';
 import type {
   AskService,
   Catalog,
@@ -35,6 +35,14 @@ export interface ApiDeps {
   health: () => Promise<Record<string, boolean>>;
   /** Vector count of the active collection, distinct from the chunk count. */
   vectorStats: () => Promise<{ points: number; vectors: number; segments: number } | null>;
+  /**
+   * The configured embeddings provider, verbatim ('auto', 'ollama', …).
+   *
+   * Needed to tell a fallback from a choice: only `auto` can settle for a
+   * provider nobody named, so the dashboard cannot judge the running embedder
+   * without knowing what was asked for.
+   */
+  embeddingsProvider: string;
 }
 
 export interface BackfillProgress {
@@ -184,6 +192,15 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
         deps.catalog.archivedDocsCount().catch(() => 0),
       ]);
     const pending = queue ? (queue.waiting ?? 0) + (queue.active ?? 0) + (queue.delayed ?? 0) : null;
+    // Which embedder is actually serving, and whether that is the one asked for.
+    // `health` answers reachability, which stayed green throughout the
+    // 2026-07-29 fallback: everything was reachable, the vectors were just being
+    // rebuilt by the wrong model. Degradation that looks healthy needs its own
+    // field, not a boolean in with the dependencies.
+    const embedderHealth = embedderStatus(
+      deps.embeddingsProvider,
+      await deps.catalog.getSetting('active_embedder').catch(() => null),
+    );
     return c.json({
       ...stats,
       chunks,
@@ -193,6 +210,7 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
       pending,
       storage,
       health,
+      embedderHealth,
       vectors,
       sourceDetail,
       activity,

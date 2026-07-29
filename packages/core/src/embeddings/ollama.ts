@@ -1,13 +1,48 @@
 import { HttpError } from '../retry.js';
 import type { EmbeddingProvider } from './types.js';
 
-export async function ollamaAvailable(baseUrl: string): Promise<boolean> {
-  try {
-    const r = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
-    return r.ok;
-  } catch {
-    return false;
+export interface ProbeOptions {
+  attempts?: number;
+  timeoutMs?: number;
+  /** Injected in tests so a probe never actually sleeps. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Is Ollama there? Asked more than once, because the answer decides the index.
+ *
+ * This used to be a single fetch with a 2s timeout. That looks harmless until
+ * you follow what a `false` sets in motion: `autoSelect` falls back to the
+ * bundled 384-dim model, the collection name encodes the dimension so a *new*
+ * empty collection is created, the backfill re-embeds every entry into it on a
+ * CPU model, `active_collection` is then republished, and `reclaimOrphans`
+ * deletes the good collection as an orphan. A two-second network blip is enough
+ * to start that, and on 2026-07-29 it did: the host was at load 26, the probe
+ * timed out while Ollama was running and reachable throughout, and the indexer
+ * booted on the bundled model and began rebuilding 326k entries.
+ *
+ * Retrying is the cheapest possible guard — a genuinely absent Ollama still
+ * answers in about seven seconds, once per boot, while a loaded host gets the
+ * benefit of the doubt it always deserved. A non-ok response counts as a failed
+ * attempt rather than a verdict, because a 503 from an Ollama still loading its
+ * runner is exactly the case worth waiting for.
+ */
+export async function ollamaAvailable(baseUrl: string, opts: ProbeOptions = {}): Promise<boolean> {
+  const attempts = opts.attempts ?? 3;
+  const timeoutMs = opts.timeoutMs ?? 2000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const r = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(timeoutMs) });
+      if (r.ok) return true;
+    } catch {
+      // Unreachable *this time*. Whether that is the truth is what the next
+      // attempt is for.
+    }
+    if (attempt < attempts) await sleep(250 * 2 ** (attempt - 1));
   }
+  return false;
 }
 
 /**
