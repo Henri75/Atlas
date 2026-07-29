@@ -46,8 +46,34 @@ down: ## stop the stack (data volumes are kept)
 # stateless, so it cannot push tools/list_changed — see packages/mcp/src/main.ts).
 # The mcp service is a thin stateless proxy to `api`, so it only needs a restart
 # when packages/mcp itself changes: use `make restart-mcp` for that.
-restart: ## restart app services (keeps infra running; leaves mcp connected)
+restart: ## bounce app services only — does NOT pick up code or .env (see restart-build)
 	$(COMPOSE) restart indexer api ui
+
+# The target to reach for after editing anything. `restart` reuses the running
+# container exactly as it is — same image, same environment — so it applies
+# neither of the two ways this stack changes:
+#
+#   code    packages/* is COPYed into the image and built there (docker/node.Dockerfile),
+#           so a source edit needs --build. A restart re-runs the old bundle.
+#   config  .env is read when the CONTAINER is created, not baked into the image,
+#           so it needs a recreate rather than a rebuild.
+#
+# --force-recreate is the part that is easy to get wrong. Compose records
+# `env_file` as a *path*, not as resolved values, so editing a variable only read
+# that way (KDB_SPARSE_REBUILD, LLM_MODEL, EMBEDDINGS_*) leaves the config hash
+# byte-identical and a plain `up -d` decides there is nothing to do — no error,
+# no warning, setting silently not applied. Measured 2026-07-29: identical
+# `compose config --hash=api` before and after. Variables compose interpolates
+# into `environment:` (OLLAMA_URL, API_PORT, CODE_ROOT_HOST) *do* move the hash,
+# so the same file behaves two different ways. Forcing the recreate removes the
+# distinction rather than asking anyone to remember it.
+#
+# --no-deps keeps --force-recreate off postgres/redis/qdrant, which are stateful
+# and have no reason to bounce. They must already be running: `make up` is the
+# cold start. `mcp` is excluded for the reason `restart` excludes it — use
+# `make restart-mcp` when packages/mcp itself changed.
+restart-build: env ## rebuild + recreate app services — the one that picks up code AND .env
+	$(COMPOSE) up -d --build --force-recreate --no-deps indexer api ui
 
 restart-mcp: ## restart the MCP server (WARNING: drops atlas_* tools from live agent sessions)
 	@echo "⚠️  This drops the atlas_* tools from every running Claude Code session."

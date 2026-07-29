@@ -1115,3 +1115,31 @@
 
 **Status:**
 - Completed
+### [2026-07-29] - Improvement: make restart-build, because 'make restart' applies nothing
+
+**Objective:**
+- Answer 'is make restart enough to pick up changes, and what about settings baked into the image?' — then close whatever gap the answer exposed.
+
+**Summary of Work:**
+- Corrected the premise first: settings are baked into the **container**, not the image. `.env` is read at container-creation time (`env_file:` + `environment:` in compose), so a config change needs a *recreate*, not a rebuild. Code is different — `packages/*` is COPYed into the image and built there, so it does need `--build`.
+- Measured the compose behaviour rather than assuming it. `docker compose config --hash=api` is **byte-identical** before and after appending `KDB_SPARSE_REBUILD=false` to .env, so `up -d` skips the recreate entirely: no error, no warning, setting silently not applied. The same test with `OLLAMA_URL` **does** move the hash. The difference is that compose interpolates `${OLLAMA_URL}` into `environment:` but records `env_file` as a path, not as resolved values.
+- Added `make restart-build` = `up -d --build --force-recreate --no-deps indexer api ui`. Always rebuilds, always recreates, so the interpolated/env_file distinction stops being something anyone has to remember.
+- Reworded `make restart`'s help from 'restart app services' to 'does NOT pick up code or .env (see restart-build)'.
+
+**Key Decisions & Rationale:**
+- `--force-recreate` rather than relying on `up -d`'s change detection: the detection is correct for interpolated vars and silently wrong for env_file ones, and a target that works for half the variables in a file is worse than no target.
+- `--no-deps` so `--force-recreate` cannot bounce postgres/redis/qdrant, which are stateful and have no reason to restart. Cost: infra must already be up, which is `make up`'s job and matches `restart`'s existing contract.
+- `mcp` stays excluded, same as `restart`. It is a thin stateless proxy to `api`, so core/api changes reach it without a restart, and recreating it drops the `atlas_*` tools from every live Claude Code session.
+- Kept `restart` rather than removing it: a plain bounce is still legitimate, it is just not what 'apply my change' means.
+
+**Code/Files Modified:**
+- Makefile (restart-build added, restart help corrected)
+- docs/operations.md (Applying a change section + revision history)
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Testing the claim with `compose config --hash` before writing the target, non-invasively (append to .env, hash, restore, diff to prove it was restored). The env_file result was the opposite of what I expected from `up -d`'s reputation, and it is the entire reason the target needs `--force-recreate`.
+- **What Failed:** Nothing, but the user's framing ('settings baked in image') would have led to a rebuild-only target that still silently dropped env_file changes — the plausible fix would not have worked.
+- Verified with `--dry-run`: recreates indexer/api/ui only, leaves mcp, postgres, redis and qdrant alone.
+
+**Status:**
+- Completed

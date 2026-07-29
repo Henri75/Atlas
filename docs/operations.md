@@ -3,6 +3,7 @@
 # Operations
 
 ## Revision History
+- 2026-07-29 17:05 UTC — Added `make restart-build` and *Applying a change*: `make restart` picks up neither code nor `.env`, and a plain `up -d` silently skips `env_file`-only variables because compose hashes the file's path rather than its contents.
 - 2026-07-17 15:49 UTC — Added *Scaling / concurrency*: many simultaneous agents are safe; don't replicate `api`/`mcp` without shared caching (`indexer` scales fine).
 - 2026-07-12 13:50 UTC — Renamed the product to **Atlas**: the CLI is `atlas` (was `kdbs`), MCP tools are `atlas_*` (was `kdb_*`). Datastore identifiers (Postgres db/role, Qdrant collection prefix, queue and lock keys, the id namespace) still say `kdbscope` **on purpose** — they key existing data, and renaming them forces a full re-index. The Compose project name is pinned to `kdb` so the checkout can be renamed without orphaning the volumes.
 - 2026-07-09 12:20 UTC — ID scheme migration; scan jobs release their id on completion.
@@ -14,10 +15,44 @@
 
 ```bash
 make up / make down / make ps / make logs
+make restart-build    # apply local changes — code AND .env (see below)
 make reindex          # incremental, now
 make reindex-full     # rebuild everything (dedup keys make it safe)
 make smoke            # 6 endpoint checks against the running stack
 ```
+
+### Applying a change: use `make restart-build`, not `make restart`
+
+`make restart` bounces the running containers exactly as they are — same image,
+same environment — so it applies **neither** kind of change this stack has:
+
+| you edited | why a restart misses it |
+|---|---|
+| `packages/*` | source is `COPY`ed into the image and built there, so the container re-runs the old bundle until the image is rebuilt |
+| `.env` | read when the **container is created**, not baked into the image, so it needs a recreate |
+
+A plain `docker compose up -d` is not enough for the second either, and this is
+the trap worth knowing: compose records `env_file` as a **path**, not as resolved
+values. Editing a variable read only that way — `KDB_SPARSE_REBUILD`,
+`LLM_MODEL`, `EMBEDDINGS_*` — leaves the config hash byte-identical, so compose
+decides nothing changed and skips the recreate. No error, no warning, setting
+silently not applied. Variables compose interpolates into `environment:`
+(`OLLAMA_URL`, `API_PORT`, `CODE_ROOT_HOST`) *do* move the hash and *are* picked
+up. Same file, two behaviours.
+
+`make restart-build` removes the distinction — it always rebuilds and always
+recreates:
+
+```bash
+make restart-build    # indexer + api + ui; infra and mcp untouched
+make restart-mcp      # only when packages/mcp changed (drops atlas_* from live agent sessions)
+```
+
+It leaves `postgres`/`redis`/`qdrant` alone (`--no-deps`), so they must already
+be running — `make up` is the cold start. `mcp` is excluded on purpose: it is a
+thin stateless proxy to `api`, so a change to core/api reaches it without a
+restart, and restarting it drops the `atlas_*` tools from every live Claude Code
+session.
 
 Freshness: the indexer scans every `SCAN_INTERVAL_MIN` (default 5) minutes;
 "Reindex now" in the UI / `atlas reindex` / `atlas_reindex` (MCP) trigger instantly.
