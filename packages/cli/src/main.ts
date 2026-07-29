@@ -188,6 +188,115 @@ program
     });
   });
 
+/** open = needs attention, resolved = settled, dropped = deliberately let go. */
+const statusPaint = (s: string) => (s === 'resolved' ? green : s === 'dropped' ? dim : yellow);
+
+function printBacklogItem(i: any) {
+  const paint = statusPaint(i.status);
+  const prov = i.provenance !== 'default' ? dim(` (${i.provenance})`) : '';
+  const lints = i.lints?.length ? ` ${red(`[${i.lints.join(', ')}]`)}` : '';
+  console.log(
+    `${dim(`L${String(i.line).padEnd(4)}`)} ${paint(i.status.padEnd(8))}${prov}${lints} ${dim(date(i.date))}${i.component ? ` ${yellow(i.component)}` : ''}\n` +
+      `      ${i.text.replace(/\s+/g, ' ').slice(0, 140)}`,
+  );
+}
+
+program
+  .command('backlog')
+  .argument('[project]', 'project slug; omit for a cross-project summary')
+  .option('--review', 'review open items against project history (Atlas LLM judges, sequential)')
+  .option('--item <line>', 'review one item by its line number (any status)')
+  .option('--limit <n>', 'max items per review run', '10')
+  .description('backlog status: what is open, resolved, dropped — optionally reviewed against the indexed history')
+  .action(async (project, o) => {
+    if (!project) {
+      const projects = await get('/api/projects');
+      const rows: any[] = [];
+      for (const p of projects) {
+        try {
+          const v = await get(`/api/projects/${p.slug}/backlog`);
+          if (v.items.length) rows.push({ slug: p.slug, ...v.counts });
+        } catch {
+          /* projects without kdb or with errors just don't appear */
+        }
+      }
+      out(rows, () => {
+        for (const r of rows) {
+          console.log(
+            `${bold(r.slug.padEnd(28))} ${yellow(`${String(r.open).padStart(4)} open`)}  ${green(`${String(r.resolved).padStart(4)} resolved`)}  ${dim(`${String(r.dropped).padStart(3)} dropped`)}`,
+          );
+        }
+      });
+      return;
+    }
+
+    const view = await get(`/api/projects/${project}/backlog`);
+
+    if (!o.review && !o.item) {
+      out(view, () => {
+        const c = view.counts;
+        console.log(
+          `${yellow(`${c.open} open`)}  ${green(`${c.resolved} resolved`)}  ${dim(`${c.dropped} dropped`)}\n${hr()}`,
+        );
+        for (const i of view.items) printBacklogItem(i);
+        if (view.unlinked.length) {
+          console.log(`${hr()}\n${red(`${view.unlinked.length} unlinked resolution marker(s)`)} ${dim('(no confident target — link by appending a structured RESOLVED [L<n>#<hash>] line)')}`);
+          for (const u of view.unlinked) {
+            console.log(`${dim(`L${u.line}`)} ${u.kind.toUpperCase()} ${u.text.replace(/\s+/g, ' ').slice(0, 120)}`);
+            for (const cand of u.candidates ?? []) {
+              console.log(dim(`      candidate L${cand.line} (${cand.score.toFixed(2)}): ${cand.text.slice(0, 90)}`));
+            }
+          }
+        }
+      });
+      return;
+    }
+
+    // Review mode: one API call per item, sequential — each is retrieval + an
+    // LLM judgment, and hammering the local model in parallel buys nothing.
+    let targets = o.item
+      ? view.items.filter((i: any) => i.line === Number(o.item))
+      : view.items.filter((i: any) => i.status === 'open');
+    if (!targets.length) {
+      console.error(red(o.item ? `no backlog item at line ${o.item}` : 'no open items to review'));
+      process.exitCode = 1;
+      return;
+    }
+    const limit = Math.max(1, Number(o.limit ?? 10));
+    const skipped = Math.max(0, targets.length - limit);
+    targets = targets.slice(0, limit);
+
+    const results: any[] = [];
+    for (const [n, item] of targets.entries()) {
+      if (!isJson()) {
+        console.log(`${dim(`[${n + 1}/${targets.length}]`)} ${bold(`L${item.line}`)} ${item.text.replace(/\s+/g, ' ').slice(0, 110)}`);
+      }
+      try {
+        const r = await post(`/api/projects/${project}/backlog/review`, {
+          line: item.line,
+          sourcePath: item.sourcePath,
+        });
+        results.push(r);
+        if (!isJson()) {
+          const v = r.verdict;
+          const paint = v.status === 'confirmed-resolved' ? green : v.status === 'confirmed-open' ? yellow : dim;
+          console.log(`   ${paint(v.status)} ${dim(`(${(v.confidence ?? 0).toFixed(2)})`)} ${v.reasoning ?? ''}`);
+          if (r.proposedLine) console.log(`   ${cyan('append:')} ${r.proposedLine}`);
+        }
+      } catch (e) {
+        // The API returns the evidence with an explicit llm_unavailable rather
+        // than a fabricated verdict; every later item would hit the same wall.
+        console.error(red(`review failed: ${(e as Error).message}`));
+        process.exitCode = 1;
+        break;
+      }
+    }
+    if (skipped && !isJson()) {
+      console.log(yellow(`${skipped} more open item(s) not reviewed — raise --limit`));
+    }
+    if (isJson()) console.log(JSON.stringify(results, null, 2));
+  });
+
 program
   .command('sessions')
   .argument('<project>')

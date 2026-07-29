@@ -77,6 +77,7 @@ How to use it well:
 - Finding facts/code history: atlas_search, then atlas_entry on the interesting hits (search returns snippets only).
 - "What/why/when" questions needing synthesis: atlas_ask, then verify via its cited sources.
 - Orienting in an unfamiliar project: atlas_projects → atlas_timeline → atlas_component_history.
+- Backlog triage: atlas_backlog shows what is open vs settled (with provenance); before re-investigating an item, check it. To review one: atlas_backlog_evidence → judge it yourself (you can read the code) → atlas_backlog_verdict, then append the returned proposedLine to the project's kdb/backlog.log via its blessed append helper.
 - Prefer UNSCOPED search/ask first. A feature often lives under a different project slug than you expect; a wrong 'project' filter is the main reason a real answer looks missing.
 - Slugs that look like flattened absolute paths (e.g. "users-nasta-documents-…") are a project's EARLIER LOCATION, from before its checkout moved. They are NOT duplicates — they hold the only copy of that period's history. They carry an aliasOf field naming the canonical project, and scoping to that canonical slug now includes them automatically, so scope normally and ignore the split.
 - Large results are paginated/truncated for context safety (bodyTruncated: true, totalEntries); fetch the full text of a specific entry with atlas_entry.
@@ -237,6 +238,55 @@ export const TOOLS: ToolDef[] = [
     },
     request: (a) => ({
       path: `/api/sessions/${encodeURIComponent(a.session_id)}${qs({ limit: a.limit ?? 50, offset: a.offset, max_body: a.max_body ?? 1500 })}`,
+    }),
+  },
+  {
+    name: 'atlas_backlog',
+    description:
+      "A project's backlog with derived statuses (open / resolved / dropped), computed from the append-only kdb/backlog.log: structured RESOLVED/DROPPED/REOPENED [L<n>#<hash>] markers link exactly; legacy DONE:/RESOLVED: lines link by fuzzy match (provenance: heuristic — weaker); recorded review verdicts overlay (provenance: reviewed). Items carry lints (unstructured, stale-review, not-written-back, broken-link…) and an `unlinked` bucket lists resolution markers with no confident target. Use this before re-investigating an item that may already be settled.",
+    schema: { project: z.string() },
+    request: (a) => ({ path: `/api/projects/${encodeURIComponent(a.project)}/backlog` }),
+  },
+  {
+    name: 'atlas_backlog_evidence',
+    description:
+      'Evidence bundle for ONE backlog item (by its line number from atlas_backlog): scoped hybrid search over the project\'s changelogs, component/session logs, commits and docs. YOU judge whether the item is resolved — you can read the actual code, which Atlas cannot. After judging, record your conclusion with atlas_backlog_verdict. Set judge:true to also get Atlas\'s own LLM verdict as a second opinion (slower, one LLM call).',
+    schema: {
+      project: z.string(),
+      line: z.number().int().min(1).describe('The item line number from atlas_backlog'),
+      k: z.number().int().min(1).max(20).optional().describe('Evidence hits (default 8)'),
+      judge: z.boolean().optional().describe('Also ask the Atlas LLM to judge (default false)'),
+    },
+    request: (a) => ({
+      path: `/api/projects/${encodeURIComponent(a.project)}/backlog/review`,
+      init: jsonPost({ line: a.line, k: a.k, judge: a.judge === true }),
+    }),
+  },
+  {
+    name: 'atlas_backlog_verdict',
+    description:
+      "Record your judgment on a backlog item after weighing the evidence (and, ideally, the code). Statuses: confirmed-resolved, confirmed-open, likely-resolved, inconclusive. The response's proposedLine is the exact marker line that makes the verdict durable — append it to the project's kdb/backlog.log via the project's own blessed append helper (bin/kdb_append or equivalent; NEVER direct file writes). Atlas never writes project files itself. Set propose to force a specific marker kind (e.g. 'dropped' for an obsolete item).",
+    schema: {
+      project: z.string(),
+      line: z.number().int().min(1).describe('The item line number from atlas_backlog'),
+      status: z.enum(['confirmed-open', 'likely-resolved', 'confirmed-resolved', 'inconclusive']),
+      confidence: z.number().min(0).max(1).optional().describe('Your confidence (default 0.5)'),
+      note: z.string().optional().describe('One-line reasoning; becomes the marker summary for propose'),
+      evidence: z.string().optional().describe('Short pointer for the marker line, e.g. "commit abc123"'),
+      citations: z.array(z.number().int()).optional().describe('entryIds you relied on'),
+      propose: z.enum(['resolved', 'dropped', 'reopened']).optional().describe('Force this marker kind in proposedLine'),
+    },
+    request: (a) => ({
+      path: `/api/projects/${encodeURIComponent(a.project)}/backlog/verdict`,
+      init: jsonPost({
+        line: a.line,
+        status: a.status,
+        confidence: a.confidence,
+        note: a.note,
+        evidence: a.evidence,
+        citations: a.citations,
+        propose: a.propose,
+      }),
     }),
   },
   {

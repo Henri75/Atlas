@@ -5,6 +5,9 @@ describe('MCP tool registry', () => {
   it('exposes the expected tools', () => {
     expect(TOOLS.map((t) => t.name).sort()).toEqual([
       'atlas_ask',
+      'atlas_backlog',
+      'atlas_backlog_evidence',
+      'atlas_backlog_verdict',
       'atlas_component_history',
       'atlas_components',
       'atlas_entry',
@@ -15,6 +18,30 @@ describe('MCP tool registry', () => {
       'atlas_status',
       'atlas_timeline',
     ]);
+  });
+
+  it('atlas_backlog_evidence defaults to evidence-only — the agent judges, not Atlas', () => {
+    const t = TOOLS.find((t) => t.name === 'atlas_backlog_evidence')!;
+    const { path, init } = t.request({ project: 'deepcast', line: 3 });
+    expect(path).toBe('/api/projects/deepcast/backlog/review');
+    expect(JSON.parse(init!.body as string)).toMatchObject({ line: 3, judge: false });
+  });
+
+  it('atlas_backlog_verdict posts the judgment with its optional marker override', () => {
+    const t = TOOLS.find((t) => t.name === 'atlas_backlog_verdict')!;
+    const { path, init } = t.request({
+      project: 'deepcast',
+      line: 3,
+      status: 'confirmed-resolved',
+      evidence: 'commit abc123',
+      propose: 'resolved',
+    });
+    expect(path).toBe('/api/projects/deepcast/backlog/verdict');
+    expect(JSON.parse(init!.body as string)).toMatchObject({
+      line: 3,
+      status: 'confirmed-resolved',
+      propose: 'resolved',
+    });
   });
 
   // The product is Atlas; "KDB" is one of the four things it indexes. Tools name
