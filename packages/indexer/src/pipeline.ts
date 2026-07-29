@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { basename } from 'node:path';
 import {
   Catalog,
+  BACKLOG_PARSER_VERSION,
   DOCS_PARSER_VERSION,
   GIT_LOG_FORMAT,
   VectorStore,
@@ -188,11 +189,18 @@ async function scanKdb(
   progress?: ProgressFn,
 ): Promise<number> {
   let indexed = 0;
+  // Parser-version bump → re-parse backlog files even when mtime/size say
+  // unchanged, and sync meta onto pre-existing rows (docs-backfill precedent).
+  const backlogVerKey = `backlog_parser_version:${projectId}`;
+  const storedBacklogVersion = await deps.catalog.getSetting(backlogVerKey).catch(() => null);
+  const backlogResync = storedBacklogVersion !== String(BACKLOG_PARSER_VERSION);
+
   for (const f of listKdbFiles(job.rootPath)) {
     try {
       const stat = statSync(f.path);
       const state = await deps.catalog.getScanState(projectId, f.sourceType, f.path);
-      if (!fileChanged(stat, state, job.full)) continue;
+      const force = f.sourceType === 'kdb_backlog' && backlogResync;
+      if (!fileChanged(stat, state, job.full || force)) continue;
       const text = readFileSync(f.path, 'utf8');
       const ctx = { projectSlug: job.projectSlug, sourcePath: f.path, component: f.component };
       let entries: Entry[];
@@ -209,6 +217,9 @@ async function scanKdb(
           }).map((e) => ({ ...e, sourceType: 'kdb_report' as const }));
       }
       const inserted = await deps.catalog.insertEntries(projectId, entries);
+      if (f.sourceType === 'kdb_backlog') {
+        await deps.catalog.syncBacklogMeta(projectId, entries);
+      }
       indexed += await indexEntries(deps, inserted, (c) => progress?.({ file: f.path, chunks: c }));
       await deps.catalog.setScanState(projectId, f.sourceType, f.path, {
         mtimeMs: Math.trunc(stat.mtimeMs), size: stat.size, byteOffset: stat.size,
@@ -217,6 +228,7 @@ async function scanKdb(
       await deps.catalog.logError(projectId, f.path, 'kdb-parse', (e as Error).message);
     }
   }
+  await deps.catalog.setSetting(backlogVerKey, String(BACKLOG_PARSER_VERSION)).catch(() => {});
   return indexed;
 }
 

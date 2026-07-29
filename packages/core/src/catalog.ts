@@ -121,6 +121,23 @@ CREATE TABLE IF NOT EXISTS usage_log (
 );
 CREATE INDEX IF NOT EXISTS usage_log_at_idx ON usage_log (at DESC);
 
+-- Backlog review verdicts. Durable working state (usage_log precedent): it
+-- survives reindexing, but the canonical durable record is the marker line the
+-- caller appends to the project's backlog.log — losing this table only loses
+-- verdicts never written back, and those items honestly revert to open.
+CREATE TABLE IF NOT EXISTS backlog_review (
+  project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_path TEXT NOT NULL,
+  line INT NOT NULL,
+  status TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  note TEXT,
+  citations JSONB NOT NULL DEFAULT '[]',
+  reviewer TEXT NOT NULL,
+  reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (project_id, source_path, line)
+);
+
 -- CREATE TABLE IF NOT EXISTS never adds a column to a table that already
 -- exists, so new columns need an explicit, idempotent ALTER.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS action_count INT NOT NULL DEFAULT 0;
@@ -291,6 +308,122 @@ export class Catalog {
         Math.round(row.durationMs),
       ],
     );
+  }
+
+  /** One row per (project, backlog file, line); a re-review replaces the verdict. */
+  async upsertBacklogVerdict(
+    projectId: number,
+    v: {
+      sourcePath: string;
+      line: number;
+      status: string;
+      confidence: number;
+      note?: string;
+      citations?: number[];
+      reviewer: string;
+    },
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO backlog_review (project_id, source_path, line, status, confidence, note, citations, reviewer, reviewed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())
+       ON CONFLICT (project_id, source_path, line) DO UPDATE
+       SET status=$4, confidence=$5, note=$6, citations=$7, reviewer=$8, reviewed_at=now()`,
+      [
+        projectId,
+        v.sourcePath,
+        v.line,
+        v.status,
+        v.confidence,
+        v.note?.slice(0, 2000) ?? null,
+        JSON.stringify(v.citations ?? []),
+        v.reviewer.slice(0, 80),
+      ],
+    );
+  }
+
+  async backlogVerdicts(projectId: number): Promise<
+    {
+      sourcePath: string;
+      line: number;
+      status: string;
+      confidence: number;
+      note?: string;
+      citations: number[];
+      reviewer: string;
+      reviewedAt: string;
+    }[]
+  > {
+    const r = await this.pool.query(
+      `SELECT source_path, line, status, confidence, note, citations, reviewer, reviewed_at
+       FROM backlog_review WHERE project_id=$1`,
+      [projectId],
+    );
+    return r.rows.map((row) => ({
+      sourcePath: row.source_path,
+      line: row.line,
+      status: row.status,
+      confidence: row.confidence,
+      note: row.note ?? undefined,
+      citations: row.citations ?? [],
+      reviewer: row.reviewer,
+      reviewedAt: new Date(row.reviewed_at).toISOString(),
+    }));
+  }
+
+  /** The project's kdb_backlog entries in file order, for the status view. */
+  async backlogEntries(projectId: number): Promise<
+    {
+      id: number;
+      body: string;
+      component?: string;
+      occurredAt?: string;
+      sourcePath: string;
+      sourceRef?: string;
+      meta?: Record<string, unknown>;
+    }[]
+  > {
+    const r = await this.pool.query(
+      `SELECT id, body, component, occurred_at, source_path, source_ref, meta
+       FROM entries WHERE project_id=$1 AND source_type='kdb_backlog'
+       ORDER BY source_path, id`,
+      [projectId],
+    );
+    return r.rows.map((row) => ({
+      id: Number(row.id),
+      body: row.body,
+      component: row.component ?? undefined,
+      occurredAt: row.occurred_at ? new Date(row.occurred_at).toISOString() : undefined,
+      sourcePath: row.source_path,
+      sourceRef: row.source_ref ?? undefined,
+      meta: row.meta ?? undefined,
+    }));
+  }
+
+  /** Newest indexed activity in the project — the freshness bar for stale-review badges. */
+  async latestActivityAt(projectId: number): Promise<string | undefined> {
+    const r = await this.pool.query(
+      `SELECT max(occurred_at) AS at FROM entries WHERE project_id=$1`,
+      [projectId],
+    );
+    return r.rows[0]?.at ? new Date(r.rows[0].at).toISOString() : undefined;
+  }
+
+  /**
+   * Re-parsing only inserts NEW dedup keys, so rows that already existed keep
+   * their old meta (no lineHash/marker). Fix them in place — Postgres only;
+   * the vector payload does not carry backlog meta. Docs-backfill precedent.
+   */
+  async syncBacklogMeta(projectId: number, entries: Entry[]): Promise<number> {
+    if (!entries.length) return 0;
+    const keys = entries.map((e) => Catalog.dedupKey(e));
+    const metas = entries.map((e) => JSON.stringify(e.meta ?? {}));
+    const r = await this.pool.query(
+      `UPDATE entries e SET meta = u.meta::jsonb
+       FROM unnest($2::text[], $3::text[]) AS u(dedup_key, meta)
+       WHERE e.project_id=$1 AND e.dedup_key = u.dedup_key AND e.meta <> u.meta::jsonb`,
+      [projectId, keys, metas],
+    );
+    return r.rowCount ?? 0;
   }
 
   /**
