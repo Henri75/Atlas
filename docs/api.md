@@ -3,6 +3,7 @@
 # REST API
 
 ## Revision History
+- 2026-07-29 21:20 UTC — **Usage monitoring**: **every** `/api/*` request is now logged (previously only `x-atlas-client` callers), with a new `route_class` column classifying the route (`query|read|write|status|admin|other`) so polling is separated at read time instead of discarded. Search and ask store what they replied — answer, result count, top hits, served model, tokens, TTFT — in a new 1:1 `usage_reply` table; `/api/ask/stream` records itself on close/cancel, so an aborted answer is kept at `status 499` with its partial text and a real duration. New routes: `GET /api/admin/usage/calls`, `GET /api/admin/usage/calls/:id`, `GET /api/admin/adoption`, `POST /api/admin/adoption/refresh`. `/api/admin/usage` gains `p50Ms`/`p95Ms`, per-tool percentiles, `byClass` and `byHour` (additively — existing fields unchanged). See `docs/adr/20260729-usage-telemetry-and-reply-capture.md`.
 - 2026-07-29 20:25 UTC — **Backlog review**: `GET /api/projects/:slug/backlog` derives per-item status (open/resolved/dropped, with provenance `structured|reviewed|heuristic` and lints) at request time from the indexed backlog; `POST …/backlog/review` gathers scoped evidence and (unless `judge:false`) stores an Atlas-LLM verdict; `POST …/backlog/verdict` records a caller's own verdict. Both POSTs answer with `proposedLine` — the exact `RESOLVED/DROPPED/REOPENED [L<n>#<hash6>]` marker to append via the project's blessed helper; Atlas never writes project files. Verdicts live in the `backlog_review` table (survives reindex; the appended marker line is the canonical durable record). See `docs/adr/20260729-backlog-status-derivation.md`.
 - 2026-07-17 15:49 UTC — Agent-safety batch: per-project routes (`/timeline`, `/components`, `/components/:name`, `/sessions`) **404 on an unknown slug** with a hint (an empty 200 read as "project has no data"). `/api/sessions/:id` accepts `limit`/`offset`/`max_body` and returns `totalEntries`; `/components/:name` accepts `limit`/`max_body`; bodies cut by `max_body` are flagged `bodyTruncated: true`. New **usage telemetry**: requests carrying `x-atlas-client` (mcp/cli) are logged to `usage_log`; aggregates at `GET /api/admin/usage?days=N`.
 - 2026-07-13 00:20 UTC — Multi-project filtering: `project` accepts a comma-separated set on GET (`project=a,b`) and an array in a JSON body; `scopeFallback.requested` is now a list and widening fires only when *none* of the selected projects match. New collection route `GET /api/timeline?projects=a,b` merges feeds chronologically; the per-project route is unchanged. Timeline items carry `projectSlug`.
@@ -37,12 +38,57 @@ Base: `http://127.0.0.1:8710`. JSON everywhere. No auth (localhost-only tool).
 | GET | `/api/entries/:id` | — | full entry row (404 if unknown) |
 | POST | `/api/admin/reindex` | `{project?, full?}` | `{enqueued}` |
 | GET | `/api/admin/errors` | — | last 50 index errors |
-| GET | `/api/admin/usage` | `days` (default 7) | agent-usage aggregates: `{days, calls, errors, clients, byTool[], byDay[]}` |
+| GET | `/api/admin/usage` | `days` (default 7), `class` (comma-separated) | usage aggregates: `{days, calls, errors, clients, p50Ms, p95Ms, byTool[], byDay[], byClass[], byHour[]}` |
+| GET | `/api/admin/usage/calls` | `class`, `client`, `tool`, `status` (`ok`\|`error`), `since`, `until`, `q`, `limit` (≤500), `offset` | `{calls[], total}`; each call carries `routeClass` and `hasReply` |
+| GET | `/api/admin/usage/calls/:id` | — | one call joined with its full reply (404 if unknown) |
+| GET | `/api/admin/adoption` | — | cached adoption report `{report, computedAt, pending?, tookMs?}` |
+| POST | `/api/admin/adoption/refresh` | — | `{enqueued}`; returns before the scan runs |
 
-**Usage telemetry:** a request that carries `x-atlas-client: mcp|cli` (and
-optionally `x-atlas-tool`) is recorded in the `usage_log` table — client, tool,
-path, query string, status and duration. Unlabeled requests (the UI, curl) are
-not recorded; the write is fire-and-forget and never slows the response.
+**Usage telemetry.** **Every** `/api/*` request is recorded in `usage_log` —
+client, tool, path, query, status, duration and `route_class`. The write is
+fire-and-forget and never slows the response.
+
+Callers identify themselves with `x-atlas-client` (`mcp`, `cli`, `ui`) and
+optionally `x-atlas-tool`; an unlabeled caller is logged as `unknown`, which
+means a curl or a script rather than an oversight.
+
+`route_class` classifies the **route**, never the intent — `/api/dashboard` is
+`status` whether a poll timer or a human hit it, and a column claiming otherwise
+would be inventing evidence:
+
+| Class | Routes |
+|---|---|
+| `query` | `/api/search`, `/api/ask`, `/api/ask/stream`, `…/backlog/review` |
+| `read` | `/api/projects*`, `/api/timeline`, `/api/sessions/:id`, `/api/entries/:id` |
+| `write` | `…/backlog/verdict` |
+| `status` | `/api/health`, `/api/stats`, `/api/dashboard` |
+| `admin` | `/api/admin/*` |
+| `other` | anything unmatched — a growing count means a route was added without a class |
+
+Polling is therefore *recorded* rather than discarded, and separated at read
+time: the Monitor UI hides `status` and `admin` by default. Because the value is
+a pure function of the path, `make usage-resync` recomputes the whole column
+whenever the classifier improves.
+
+**Replies.** Search and ask additionally store what came back, in a 1:1
+`usage_reply` table (`ON DELETE CASCADE`, so pruning only touches `usage_log`):
+the full answer, result count, top 5 hits with scores, the model that *actually*
+answered, prompt/completion tokens, TTFT, and a `degraded` flag. A call and its
+reply are written in one data-modifying CTE, so a reply can never half-land.
+
+`/api/ask/stream` records itself rather than going through the middleware, which
+measures around `await next()` — for a streaming response that resolves before
+the first token exists. It writes on stream close, or on **cancel** with the
+partial answer and `status = 499` (nginx's client-closed convention): a question
+abandoned mid-answer is a finding, not an absence.
+
+What is stored is the API's reply, **not** the MCP-formatted tool result the
+model saw, so this table cannot debug MCP formatting.
+
+**Adoption** is served from a cache the indexer fills. The analysis reads every
+Claude transcript on the machine (~2 minutes over 4400 sessions) and the API
+container has no transcript mount, so it cannot be computed on request. It
+refreshes daily (`KDB_ADOPTION_REFRESH_MIN`) and on demand.
 
 `mode` in search responses: `hybrid` (dense+sparse RRF), `sparse-only`
 (embedding provider unreachable), `fts` (Qdrant unreachable — Postgres fallback).

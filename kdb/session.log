@@ -244,3 +244,13 @@
 
 **AI Response Summary:**
 > Found and closed two surviving downgrade paths — the unretried boot dimension probe (13.4s cold at load 18.8, against a 30s ceiling) and the entirely unguarded API-side embedder, whose mismatch silently moved every search to the ~12s Postgres scan while the dashboard read healthy — plus a warm step in restart-build, which had been creating its own failure condition. Verified across two restarts at load 17 and 6.7: both stayed on ollama/768 with active_collection untouched. While verifying, found 48 retained FAILED scan jobs that had blocked every project but deepcast from indexing for three days, and fixed that along with four defects in the backlog feature found by running it against this repo's own backlog. 906 tests green; the last commit is not deployed because a concurrent session left the shared tree failing tsc.
+---
+### [2026-07-29 21:20 UTC]
+
+**User Prompt Summary:**
+> Implement a monitoring UI for Atlas: activity and usage, stats, and the ability to list and investigate the history of its usage — queries used, replies, etc. Clean, visual, modern UI. Self-review the design, fix/improve, write the spec, self-review the spec, fix/improve, then implement.
+
+**AI Response Summary:**
+> Brainstormed to four decisions (full replies going forward, no transcript backfill; log all traffic incl. polls; hand-rolled charts; new Monitor rail view with adoption included now), then checked feasibility before writing anything — which surfaced the two constraints that shaped the design: the usage middleware is structurally blind to a streamed reply (await next() resolves before the first token), and the API container has no transcript mount so adoption cannot run there. Self-review then killed three ideas (redundant `kind` column, an hour×weekday heatmap the data cannot fill, needless table virtualisation) and caught one real error of my own: I had claimed per-ask token costs came free from AskMetrics, true only for the UI's streaming path — the buffered route MCP uses discarded the `usage` object that was already on the wire. Shipped: route_class (resyncable, classifies the route not the intent), usage_reply written with the call in one CTE, self-recording stream that keeps aborted answers at 499, chatCompleteWithUsage, adoption as an indexer job, and a Monitor view with zero-dependency chart primitives. 923 tests green; verified live end to end.
+
+**Notable:** another Claude session was committing to this repo concurrently — it landed a commit onto my feature branch that updated the API test harness for my own in-progress refactor. Flagged to the user rather than absorbed silently.

@@ -1239,3 +1239,85 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-29] - Close the remaining embedder-downgrade paths; review the backlog feature against its own backlog
+
+**Objective:**
+- Establish whether `make restart-build` under host load can still downgrade the embedder and rebuild the index on the CPU model, and review the new backlog review feature.
+
+**Summary of Work:**
+- Root-caused the surviving downgrade path: `ollamaAvailable` retries since bdcc4f3, but `createOllamaProvider` still ended with ONE unretried `/api/embed` to learn the dimension, and `autoSelect` reads a throw from it as "no Ollama". It is the slowest boot call because it pays the model's cold load — measured 13.4s cold at load 18.8 vs 0.23s warm, with indexing batches logged at 45.2s that survive only because `pipeline.ts` wraps them in `withRetry`. Wrapped it, with its own longer ceiling (90s) and 4xx still fatal on the first attempt.
+- A failed `ollamaPull` no longer decides anything: `ollamaHasModel` is one unretried 5s call that answers "absent" about installed models under load, so the dimension probe is now the judge.
+- The API had NO guard and no log line. It resolves its own embedder in its own process, and `restart-build` recreates it alongside the indexer so both race the same loaded host. A 384-dim API against the 768-dim collection is silent: Qdrant rejects the dense query, `SearchService` catches it alongside "Qdrant is down", every search drops to the ~12s Postgres scan, and `/api/dashboard` still shows ollama/768 because `embedderHealth` reads what the INDEXER wrote about itself. Added `embedderServesCollection` (identity, not dimension — two models can share 768 and embed into unrelated spaces, which Qdrant answers with confident nonsense), refusal to sparse-only, a boot log line, five-minute self-heal, and `serving`/`searchDegraded` on the dashboard + UI.
+- `make restart-build` was manufacturing its own failure: the build saturates the host, then compose starts containers at that peak. Split build from recreate and warm the model between them (`make embedder-warm`, never fatal).
+- Found while verifying, unrelated to the above: 48 retained FAILED scan jobs were blocking every source from rescanning. `removeOnComplete: true` was already fixed for the same reason, with `removeOnFail: 500` on the next line reserving the identical deterministic id. A Postgres restart on 07-26 failed one job per source; every project except deepcast then stopped indexing for three days while the scheduler logged "140 scan jobs enqueued" a tick. Released on failure now, plus a boot clean that frees ids already held.
+- Backlog parser-version stamp was written unconditionally after a scan that embeds, so a loaded boot could fail the backlog file and still record the resync done — and it gets one chance before `fileChanged` says "no" forever. Stamped only on a clean pass, like `sparse_version`.
+- Reviewed the backlog feature by running it against this repo's own backlog. Fixed: `hydrate` returned one hit per Qdrant POINT so an entry with several matching chunks came back several times (live: 8 hits / 6 distinct, and the judge prompt renders one block per hit, so repetition read as corroboration); `proposeMarkerLine` emitted caller text verbatim into a file defined as one physical line per item (a newline would have split the marker and shifted every line below it) and cut mid-word; the confirmed-resolved path discarded the reviewer's note that the explicit `propose` path already preferred; and a same-day verdict outranked a same-day marker because markers are dated and verdicts timestamped, inverting the contract that the file is canonical.
+
+**Key Decisions & Rationale:**
+- The probe gets a LONGER timeout, against the rule `EMBED_TIMEOUT_MS` states. That rule is about steady state, where a long ceiling turns a fast retryable failure into a silent stall. The boot probe's alternative to waiting is not a fast retry, it is re-embedding the catalog on a worse model, so it is allowed to be patient once per boot.
+- A mismatched API embedder becomes `null` rather than fatal. Exiting would take down search, MCP and the UI; `null` keeps the sparse branch, which queries the real collection and is honestly labelled `sparse-only` — strictly better than today's dense-rejection-to-FTS.
+- Collection identity, not dimension, is the serving test. Equal dimensions from different models are the dangerous case: Qdrant returns 200.
+- Verdict-vs-marker ties go to the FILE. The marker line is the canonical durable record and the verdict table is working state; a reviewer appending REOPENED must not be overruled by a verdict recorded earlier the same day.
+- Deferred rather than fixed (backlogged): line-keyed view collapses two generations of rows after a rotation (verified unreachable today); evidence retrieval does not surface the commit that resolved an item even when indexed and vectorized; unlinked markers with zero candidates read as ambiguous when nothing exists to link.
+
+**Code/Files Modified:**
+- packages/core/src/embeddings/ollama.ts
+- packages/core/src/embeddings/index.ts
+- packages/core/src/search.ts
+- packages/core/src/backlog.ts
+- packages/api/src/main.ts
+- packages/api/src/app.ts
+- packages/indexer/src/main.ts
+- packages/indexer/src/pipeline.ts
+- packages/indexer/src/scheduler.ts
+- packages/ui/src/types.ts
+- packages/ui/src/views/DashboardView.tsx
+- Makefile
+- test/core/embeddings.test.ts, test/core/embedderServing.test.ts, test/core/search.test.ts, test/core/backlog.test.ts, test/api/routes.test.ts, test/indexer/scanBacklog.test.ts, test/indexer/scheduler.test.ts
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Two `make restart-build` runs at host load 17 and 6.7 both came up `ollama/nomic-embed-text dim=768` on indexer AND api, with `active_collection` unchanged. Boot released 48 stuck job ids and the blocked projects resumed indexing (kdb rescanned after three days; backlog entries 37 to 43 as the parser-version resync landed, all with lineHash, 8 markers detected). A Postgres restart at 19:36 UTC — the same event that caused the original outage — left ZERO stuck jobs, so the queue fix has been exercised by the real failure. Evidence bundles went 8 hits/6 distinct to 8/8, the two freed slots pulling in entries previously crowded out. The full write-back loop was dogfooded: derive to review to verdict to proposed line to blessed append to reindex, and L41 flipped to resolved via a hash-verified `ref` link, the hash matching an independent recomputation.
+- **What Failed:** Assumed the `stale-review` lint degenerated to always-on; measuring it showed `latestActivityAt` is a content timestamp while a review is stamped at wall-clock now, so a fresh verdict is normally newer — the lint is correct as written and was left alone. First attempt at the resync test used an embed failure, which sat through five `withRetry` attempts and timed out; failing at the upsert exercises the same abort in milliseconds. The first changelog line was appended without brackets round the timestamp and does not parse — inert, and the log is append-only, so a correctly-formatted line was appended after it.
+- **Not deployed:** the verdict-precedence fix (commit 0ec0027) is committed but NOT running. A concurrent session checked out `feature/usage-monitoring` mid-task and its in-progress refactor leaves the shared tree failing `tsc`, so rebuilding would have deployed someone else's broken code onto a working stack.
+
+**Status:**
+- Completed
+---
+### [2026-07-29 21:20 UTC] — Usage monitoring: log every call, keep the reply, show it
+
+**What changed:**
+- Every `/api/*` request is now recorded, polling included. The old rule (only `x-atlas-client` callers) kept `usage_log` clean by making the user's own use of Atlas invisible — a poor trade for a tool whose subject is what happened.
+- New `usage_log.route_class` (`query|read|write|status|admin|other`) from a pure `routeClass(path)` in `core/src/usage.ts`. Classifies the ROUTE, never the intent: nothing can honestly say whether a timer or a human hit `/api/dashboard`. Noise is separated at READ time (UI hides `status`/`admin`).
+- New 1:1 `usage_reply` table (`ON DELETE CASCADE`): full answer, result count, top 5 hits, served model, prompt/completion tokens, TTFT, degraded flag, real error message. Separate table because ~95% of rows (reads, polls, health) have no reply and a mostly-null TEXT column would be dragged through every aggregate on the hot table.
+- `catalog.recordCall(call, reply?)` writes both rows in ONE data-modifying CTE — atomic by definition, one round trip, and it keeps the existing fake-pool test harness usable (an explicit transaction would need `pool.connect()`).
+- `/api/ask/stream` records ITSELF (`usageDeferred` flag skips the middleware). It also records on **cancel**, so an aborted answer is kept with its partial prose at `status 499`.
+- `chatCompleteWithUsage()` in `llm.ts`; `chatComplete` delegates to it, so all four existing call sites are untouched. `AskResult.metrics` now populated on the buffered path.
+- Adoption moved from CLI-only to a `trigger:'adoption'` job on the existing scan queue, cached in `settings` under `adoption.report` (200-session cap), served by `GET /api/admin/adoption`.
+- New Monitor view (rail item 6, hotkey 6) with Overview/Calls/Adoption tabs; `components/charts.tsx` primitives (`Bars`, `Sparkline`, `HourStrip`, `StatTile`, `ShareBar`, `LatencyPair`) built from SVG + CSS custom properties — zero new dependencies.
+- `make usage-prune DAYS=n` and `make usage-resync`. Config SSoT: `KDB_USAGE_PAGE_SIZE`, `KDB_ADOPTION_REFRESH_MIN`, `KDB_USAGE_RETENTION_DAYS`.
+
+**Why it is built this way:**
+- **The middleware cannot see a streamed reply.** It measures around `await next()`, which for `/api/ask/stream` resolves the moment the ReadableStream is handed back — before a single token exists. Left to it, a 34-second answer logs ~10ms of time-to-headers and the text is unreachable. Verified: an aborted stream recorded 3998ms and 1097 chars of partial answer.
+- **The API container cannot see the transcripts.** `docker-compose.yml:16` mounts `~/.claude/projects` into the indexer alone, so an adoption route served from the API would have found an empty tree and reported zero sessions — a confident, wrong answer. Measured scan: 121s over 4445 sessions; serving that per request would hang every page load for two minutes.
+- **Token costs for agent asks were being discarded.** `chatComplete` receives the OpenAI-compatible `usage` object and types it away (declared only `{ choices }`), so MCP asks — most real asks — had no cost data while UI asks had full metrics. The data was always on the wire.
+- **Storing a derived column is safe because it is resyncable.** `route_class` is a pure function of the stored `path`; `resyncRouteClasses()` reclassified all 189 pre-existing rows out of `other` on first run (verified: `other` went to 0). Same pattern as the backlog parser-version resync.
+- **Percentiles, not just averages.** `atlas_search` averages 2245ms against a 1806ms median with one 31.9s call — the mean is what a single outlier eats.
+- Rejected: `usage_reply.kind` (duplicates `usage_log.path`, free to disagree with it); an hour×weekday heatmap (168 cells over ~185 monthly calls averages ~1/cell — a chart the data cannot fill, replaced by a 24-cell hour strip); a charting library (the palette is semantic, so a library would be themed toward what hand-rolled marks already are); middleware-INSERT-then-UPDATE (races: the write is fire-and-forget and unordered).
+
+**Code/Files Modified:**
+- packages/core/src/usage.ts (new), packages/core/src/catalog.ts, packages/core/src/llm.ts, packages/core/src/ask.ts, packages/core/src/types.ts, packages/core/src/adoption.ts, packages/core/src/config.ts, packages/core/src/index.ts
+- packages/api/src/app.ts, packages/api/src/main.ts, packages/indexer/src/main.ts
+- packages/ui/src/views/MonitorView.tsx (new), packages/ui/src/components/charts.tsx (new), packages/ui/src/components/Sidebar.tsx, packages/ui/src/App.tsx, packages/ui/src/api.ts, packages/ui/src/types.ts, packages/ui/src/format.ts
+- test/core/usageRouteClass.test.ts (new), test/core/llmUsage.test.ts (new), test/ui/charts.test.tsx (new), test/core/insertEntries.test.ts
+- Makefile, config/atlas.defaults.env, docs/api.md
+- Spec: docs/superpowers/specs/2026-07-29-atlas-usage-monitoring-design.md. ADR: docs/adr/20260729-usage-telemetry-and-reply-capture.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** checking feasibility BEFORE writing the spec caught both structural constraints (no transcript mount; middleware blind to streams) while they were still cheap design decisions rather than late rewrites. The config-coverage test earned its keep again — it failed immediately on three env vars added to `config.ts` but not to `atlas.defaults.env`.
+- **What Failed:** the first design claimed per-ask token costs came "free" from `AskMetrics`. True only for the UI's streaming path; the buffered route MCP actually uses had none. Caught in self-review by reading `chatComplete`'s return type rather than trusting the earlier claim.
+- **Verified:** 923 tests / 70 files green; lint clean; live stack — schema applied, search reply captured (5 hits), buffered ask captured (gemini-3-flash-preview, 2739/425 tokens, 1704-char answer), stream abort captured (499, 3998ms, 1097 chars), resync reclassified 189 rows, adoption computed 4445 sessions. UI builds and the Monitor view is present in the served bundle; **not** visually inspected in a browser (extension unavailable).
+- **Findings for the user:** Atlas fire rate is 0.119 — agents call it in only 12% of sessions where a documented trigger fired (top miss `why-after-lookup`, 158). Assessor is 0.431.
+
+**Status:**
+- Completed
