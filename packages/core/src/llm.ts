@@ -93,23 +93,42 @@ export class EmptyCompletionError extends Error {
   }
 }
 
+/** What the completion cost, as reported by the provider. */
+export interface LlmUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  /** The model that actually answered; a gateway may substitute by routing policy. */
+  model?: string;
+}
+
+export interface ChatCompleteOptions {
+  maxTokens?: number;
+  temperature?: number;
+  retry?: RetryOptions;
+  /** Deployment identity for G2P stats; omit to use the shared default. */
+  clientId?: string;
+}
+
 /**
- * Buffered completion. Retry classification is delegated to withRetry, which
- * reads `err.status`: hand-rolling it here previously matched on the message
- * text (`startsWith('LLM 4')`), which both retried a malformed body three
- * times and would have mislabelled a 429 as permanent.
+ * Buffered completion that also returns what it cost.
+ *
+ * The usage block was always on the wire — an OpenAI-compatible response carries
+ * `usage` and a resolved `model` — but the response type declared only
+ * `{ choices }`, so it was parsed and thrown away. That left the non-streaming
+ * ask path (the one MCP uses, and therefore most real asks) with no cost data at
+ * all, while the streaming path had full metrics.
+ *
+ * Retry classification is delegated to withRetry, which reads `err.status`:
+ * hand-rolling it here previously matched on the message text
+ * (`startsWith('LLM 4')`), which both retried a malformed body three times and
+ * would have mislabelled a 429 as permanent.
  */
-export async function chatComplete(
+export async function chatCompleteWithUsage(
   cfg: AppConfig['llm'],
   messages: ChatMessage[],
-  opts: {
-    maxTokens?: number;
-    temperature?: number;
-    retry?: RetryOptions;
-    /** Deployment identity for G2P stats; omit to use the shared default. */
-    clientId?: string;
-  } = {},
-): Promise<string> {
+  opts: ChatCompleteOptions = {},
+): Promise<{ content: string; usage?: LlmUsage }> {
   const url = `${cfg.baseUrl.replace(/\/$/, '')}/chat/completions`;
 
   return withRetry(
@@ -136,6 +155,8 @@ export async function chatComplete(
       }
       const data = (await r.json()) as {
         choices?: { message?: { content?: string }; finish_reason?: string }[];
+        model?: string;
+        usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
       };
       const choice = data.choices?.[0];
       const content = choice?.message?.content;
@@ -144,10 +165,34 @@ export async function chatComplete(
       // reasoning model look like a model with nothing to say, and on the Ask
       // path it surfaced as a blank answer marked successful.
       if (content.trim() === '') throw new EmptyCompletionError(choice?.finish_reason);
-      return content;
+      // Usage is advisory: a provider that omits it must not fail the call, so
+      // the object is only built when something was actually reported.
+      const u = data.usage;
+      const usage =
+        u || data.model
+          ? {
+              promptTokens: u?.prompt_tokens,
+              completionTokens: u?.completion_tokens,
+              totalTokens: u?.total_tokens,
+              model: data.model,
+            }
+          : undefined;
+      return { content, usage };
     },
     { attempts: 3, baseDelayMs: 1000, ...opts.retry },
   );
+}
+
+/**
+ * Buffered completion. Unchanged signature — the four call sites that only want
+ * the text keep working exactly as before.
+ */
+export async function chatComplete(
+  cfg: AppConfig['llm'],
+  messages: ChatMessage[],
+  opts: ChatCompleteOptions = {},
+): Promise<string> {
+  return (await chatCompleteWithUsage(cfg, messages, opts)).content;
 }
 
 /**

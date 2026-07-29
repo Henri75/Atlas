@@ -14,6 +14,16 @@ import {
 import { contentHash, deterministicUuid } from './ids.js';
 import { resolveProjectAlias } from './discovery.js';
 import { tokenize } from './sparse.js';
+import {
+  TOP_HITS_KEPT,
+  routeClass,
+  type RouteClass,
+  type UsageCall,
+  type UsageCallDetail,
+  type UsageCallRow,
+  type UsageReply,
+  type UsageStats,
+} from './usage.js';
 
 /**
  * Postgres catalog: projects, scan state, entries, sessions, errors, runs.
@@ -105,9 +115,11 @@ CREATE TABLE IF NOT EXISTS index_runs (
   stats JSONB NOT NULL DEFAULT '{}'
 );
 
--- Agent-facing usage telemetry: one row per MCP/CLI API call (requests that
--- carry an x-atlas-client header). UI traffic is deliberately not recorded —
--- its 30s status polling would drown the signal this table exists to carry.
+-- Usage telemetry: one row per API call. EVERY request is recorded, polling
+-- included — the earlier "only requests carrying x-atlas-client" rule kept this
+-- table clean by making the user's own use of Atlas invisible, a poor trade for
+-- a tool whose entire subject is what happened. Noise is separated at READ time
+-- by route_class instead (see core/src/usage.ts).
 CREATE TABLE IF NOT EXISTS usage_log (
   id BIGSERIAL PRIMARY KEY,
   at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -120,6 +132,27 @@ CREATE TABLE IF NOT EXISTS usage_log (
   duration_ms INT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS usage_log_at_idx ON usage_log (at DESC);
+
+-- What Atlas replied. A separate 1:1 table rather than columns on usage_log,
+-- because the overwhelming majority of rows (reads, polls, health checks) carry
+-- no reply at all, and a mostly-null TEXT column would be dragged through every
+-- aggregate query on the hot table.
+--
+-- ON DELETE CASCADE keeps pruning a single-table operation, and makes it
+-- impossible to end up holding answer text orphaned from the question that
+-- produced it.
+CREATE TABLE IF NOT EXISTS usage_reply (
+  call_id BIGINT PRIMARY KEY REFERENCES usage_log(id) ON DELETE CASCADE,
+  answer TEXT,
+  result_count INT,
+  top_hits JSONB,
+  model TEXT,
+  prompt_tokens INT,
+  completion_tokens INT,
+  ttft_ms INT,
+  degraded BOOLEAN,
+  error TEXT
+);
 
 -- Backlog review verdicts. Durable working state (usage_log precedent): it
 -- survives reindexing, but the canonical durable record is the marker line the
@@ -160,6 +193,18 @@ ALTER TABLE entries ADD COLUMN IF NOT EXISTS vectorized_in TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS alias_of INT REFERENCES projects(id);
 -- The reconciler's hot query. Partial, so it stays tiny while coverage is whole.
 CREATE INDEX IF NOT EXISTS entries_unvectorized ON entries (id) WHERE vectorized_in IS NULL;
+
+-- What kind of route this call hit: query | read | write | status | admin | other.
+-- Derived from the path by routeClass() (core/src/usage.ts), never by the caller,
+-- so it cannot disagree with itself across clients.
+--
+-- Storing a derived value is safe here precisely because it is a PURE function of
+-- a column we also keep: resyncRouteClasses() recomputes the whole column from
+-- path whenever the classifier improves, so an early misclassification is never
+-- baked in. Rows predating this column read as 'other' until that first resync.
+ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS route_class TEXT NOT NULL DEFAULT 'other';
+-- The monitor's hot query: one class, newest first.
+CREATE INDEX IF NOT EXISTS usage_log_class_at_idx ON usage_log (route_class, at DESC);
 `;
 
 export interface ScanState {
@@ -283,31 +328,86 @@ export class Catalog {
   }
 
   /**
-   * Record one agent-facing API call. Callers fire-and-forget this — usage
-   * telemetry must never be able to slow down or fail the request it measures.
+   * Record one API call and, when there is one, what Atlas replied.
+   *
+   * Callers fire-and-forget this — usage telemetry must never be able to slow
+   * down or fail the request it measures.
+   *
+   * Both rows go in ONE data-modifying CTE rather than an explicit transaction.
+   * A single statement is atomic by definition, so there is no BEGIN/COMMIT to
+   * leak and no connection to check out, and it costs one round trip instead of
+   * three. The alternative shape — insert the call here, UPDATE it with the
+   * reply later — races: this write is fire-and-forget and unordered, so the
+   * UPDATE could target a row that does not exist yet.
+   *
+   * The trailing `WHERE $18` is what makes the reply optional: a data-modifying
+   * CTE always runs, so the outer INSERT selects zero rows when there is nothing
+   * to say, and the call row is still written.
    */
-  async logUsage(row: {
-    client: string;
-    tool?: string;
-    method: string;
-    path: string;
-    query?: string;
-    status: number;
-    durationMs: number;
-  }): Promise<void> {
+  async recordCall(call: UsageCall, reply?: UsageReply): Promise<void> {
     await this.pool.query(
-      `INSERT INTO usage_log (client, tool, method, path, query, status, duration_ms)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      `WITH c AS (
+         INSERT INTO usage_log (client, tool, method, path, query, status, duration_ms, route_class)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         RETURNING id
+       )
+       INSERT INTO usage_reply
+         (call_id, answer, result_count, top_hits, model, prompt_tokens, completion_tokens, ttft_ms, degraded, error)
+       SELECT c.id, $9, $10, $11::jsonb, $12, $13, $14, $15, $16, $17 FROM c WHERE $18`,
       [
-        row.client.slice(0, 40),
-        row.tool?.slice(0, 80) ?? null,
-        row.method,
-        row.path.slice(0, 300),
-        row.query?.slice(0, 500) ?? null,
-        row.status,
-        Math.round(row.durationMs),
+        // Clamped to the column widths in one place, so an oversized tool name
+        // or path is truncated here rather than at every call site.
+        call.client.slice(0, 40),
+        call.tool?.slice(0, 80) ?? null,
+        call.method,
+        call.path.slice(0, 300),
+        call.query?.slice(0, 500) ?? null,
+        call.status,
+        Math.round(call.durationMs),
+        routeClass(call.path),
+        // `answer` is deliberately NOT truncated: it is the record this table
+        // exists for, it lives in TEXT, and the LLM's own max_tokens already
+        // bounds it. An error message is a different thing and is clamped.
+        reply?.answer ?? null,
+        reply?.resultCount ?? null,
+        reply?.topHits ? JSON.stringify(reply.topHits.slice(0, TOP_HITS_KEPT)) : null,
+        reply?.model?.slice(0, 120) ?? null,
+        reply?.promptTokens ?? null,
+        reply?.completionTokens ?? null,
+        reply?.ttftMs == null ? null : Math.round(reply.ttftMs),
+        reply?.degraded ?? null,
+        reply?.error?.slice(0, 500) ?? null,
+        reply != null,
       ],
     );
+  }
+
+  /**
+   * Recompute `route_class` for every row from its stored `path`.
+   *
+   * This is what makes storing a derived value safe: improving routeClass() (or
+   * adding a route that used to land in 'other') retro-applies to the whole
+   * history instead of leaving a permanent seam at the deploy boundary. Same
+   * shape as the backlog parser-version resync. Returns rows changed.
+   */
+  async resyncRouteClasses(): Promise<number> {
+    const r = await this.pool.query(`SELECT id, path FROM usage_log`);
+    const byClass = new Map<string, number[]>();
+    for (const row of r.rows as { id: number; path: string }[]) {
+      const cls = routeClass(row.path);
+      const ids = byClass.get(cls) ?? [];
+      ids.push(row.id);
+      byClass.set(cls, ids);
+    }
+    let changed = 0;
+    for (const [cls, ids] of byClass) {
+      const u = await this.pool.query(
+        `UPDATE usage_log SET route_class = $1 WHERE id = ANY($2::bigint[]) AND route_class <> $1`,
+        [cls, ids],
+      );
+      changed += u.rowCount ?? 0;
+    }
+    return changed;
   }
 
   /** One row per (project, backlog file, line); a re-review replaces the verdict. */
@@ -428,37 +528,215 @@ export class Catalog {
 
   /**
    * Aggregate the usage log for monitoring: who calls what, how often, how
-   * slow, and how often it errors. `tool` falls back to the path so CLI calls
-   * (which carry no tool header) still group meaningfully.
+   * slow, and how often it errors. `tool` falls back to the path so CLI and UI
+   * calls (which carry no tool header) still group meaningfully.
+   *
+   * Percentiles rather than averages alone, because the average is the one
+   * statistic a 95-second outlier can quietly dominate: `atlas_ask` averages
+   * ~35s against a much lower median, and reading only the mean makes every ask
+   * look slow. Both are returned so neither has to be inferred.
+   *
+   * `classes` filters which route classes count. The caller passes it because
+   * "how much is Atlas used" and "how much is Atlas polled" are different
+   * questions over the same table, and the answer must not silently pick one.
    */
-  async usageStats(days = 7) {
+  async usageStats(days = 7, classes?: RouteClass[]): Promise<UsageStats> {
     const interval = `${Math.min(Math.max(1, days), 365)} days`;
-    const [byTool, byDay, totals] = await Promise.all([
+    // An empty list would mean "no classes" and return nothing, which reads as
+    // "Atlas is unused" rather than "you filtered everything out". Treat it as
+    // unfiltered, matching the absent case.
+    const filter = classes?.length ? classes : null;
+    const args = [interval, filter];
+    const scope = `FROM usage_log
+       WHERE at > now() - $1::interval
+         AND ($2::text[] IS NULL OR route_class = ANY($2::text[]))`;
+
+    const [byTool, byDay, byClass, byHour, totals] = await Promise.all([
       this.pool.query(
         `SELECT client, coalesce(tool, path) AS tool, count(*)::int AS calls,
-                avg(duration_ms)::int AS avg_ms, max(duration_ms)::int AS max_ms,
+                avg(duration_ms)::int AS avg_ms,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms)::int AS p50_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::int AS p95_ms,
+                max(duration_ms)::int AS max_ms,
                 count(*) FILTER (WHERE status >= 400)::int AS errors,
                 max(at) AS last_at
-         FROM usage_log WHERE at > now() - $1::interval
+         ${scope}
          GROUP BY client, coalesce(tool, path)
          ORDER BY calls DESC`,
-        [interval],
+        args,
       ),
       this.pool.query(
         `SELECT to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, client, count(*)::int AS calls
-         FROM usage_log WHERE at > now() - $1::interval
+         ${scope}
          GROUP BY day, client ORDER BY day DESC`,
+        args,
+      ),
+      // Deliberately NOT filtered by `classes`: this breakdown is how the reader
+      // discovers what a filter is currently hiding. Filtering it would make the
+      // excluded classes disappear from the one view that names them.
+      this.pool.query(
+        `SELECT route_class, count(*)::int AS calls
+         FROM usage_log WHERE at > now() - $1::interval
+         GROUP BY route_class ORDER BY calls DESC`,
         [interval],
+      ),
+      this.pool.query(
+        `SELECT extract(hour FROM at AT TIME ZONE 'UTC')::int AS hour, count(*)::int AS calls
+         ${scope}
+         GROUP BY hour ORDER BY hour`,
+        args,
       ),
       this.pool.query(
         `SELECT count(*)::int AS calls,
                 count(*) FILTER (WHERE status >= 400)::int AS errors,
-                count(DISTINCT client)::int AS clients
-         FROM usage_log WHERE at > now() - $1::interval`,
-        [interval],
+                count(DISTINCT client)::int AS clients,
+                coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms), 0)::int AS p50_ms,
+                coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms), 0)::int AS p95_ms
+         ${scope}`,
+        args,
       ),
     ]);
-    return { days, ...totals.rows[0], byTool: byTool.rows, byDay: byDay.rows };
+
+    const t = totals.rows[0] ?? {};
+    return {
+      days,
+      calls: t.calls ?? 0,
+      errors: t.errors ?? 0,
+      clients: t.clients ?? 0,
+      p50Ms: t.p50_ms ?? 0,
+      p95Ms: t.p95_ms ?? 0,
+      byTool: byTool.rows.map((r: any) => ({
+        client: r.client,
+        tool: r.tool,
+        calls: r.calls,
+        avgMs: r.avg_ms ?? 0,
+        p50Ms: r.p50_ms ?? 0,
+        p95Ms: r.p95_ms ?? 0,
+        maxMs: r.max_ms ?? 0,
+        errors: r.errors,
+        lastAt: r.last_at ? new Date(r.last_at).toISOString() : '',
+      })),
+      byDay: byDay.rows,
+      byClass: byClass.rows.map((r: any) => ({ routeClass: r.route_class, calls: r.calls })),
+      byHour: byHour.rows,
+    };
+  }
+
+  /**
+   * One page of raw calls, newest first — the forensic view. At a few hundred
+   * calls a month the useful instrument is reading the actual traffic, not only
+   * summarising it.
+   *
+   * `hasReply` comes from an EXISTS rather than a join so the (potentially very
+   * large) answer text is never dragged into a list query. The body is fetched
+   * one row at a time by `usageCall`.
+   */
+  async listUsageCalls(opts: {
+    limit?: number;
+    offset?: number;
+    client?: string;
+    tool?: string;
+    classes?: RouteClass[];
+    status?: 'ok' | 'error';
+    since?: string;
+    until?: string;
+    q?: string;
+  } = {}): Promise<{ calls: UsageCallRow[]; total: number }> {
+    const limit = Math.min(Math.max(1, opts.limit ?? 100), 500);
+    const offset = Math.max(0, opts.offset ?? 0);
+    const where: string[] = [];
+    const p: unknown[] = [];
+    const add = (sql: string, val: unknown) => {
+      p.push(val);
+      where.push(sql.replace('$?', `$${p.length}`));
+    };
+
+    if (opts.client) add('client = $?', opts.client);
+    if (opts.tool) add('coalesce(tool, path) = $?', opts.tool);
+    if (opts.classes?.length) add('route_class = ANY($?::text[])', opts.classes);
+    if (opts.status === 'error') where.push('status >= 400');
+    if (opts.status === 'ok') where.push('status < 400');
+    if (opts.since) add('at >= $?::timestamptz', opts.since);
+    if (opts.until) add('at < $?::timestamptz', opts.until);
+    // Matches the question text, not the path: this box exists to answer "what
+    // did anyone ask about pgbouncer", and ILIKE keeps it a plain substring so
+    // a typed regex character cannot blow up the query.
+    if (opts.q) add('query ILIKE $?', `%${opts.q}%`);
+
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const [rows, count] = await Promise.all([
+      this.pool.query(
+        `SELECT l.id, l.at, l.client, l.tool, l.method, l.path, l.query, l.status,
+                l.duration_ms, l.route_class,
+                EXISTS (SELECT 1 FROM usage_reply r WHERE r.call_id = l.id) AS has_reply
+         FROM usage_log l ${clause}
+         ORDER BY l.at DESC, l.id DESC
+         LIMIT ${limit} OFFSET ${offset}`,
+        p,
+      ),
+      this.pool.query(`SELECT count(*)::int AS n FROM usage_log ${clause}`, p),
+    ]);
+
+    return {
+      calls: rows.rows.map((r: any) => this.toCallRow(r)),
+      total: count.rows[0]?.n ?? 0,
+    };
+  }
+
+  /** One call with its full reply, or null if the id is unknown. */
+  async usageCall(id: number): Promise<UsageCallDetail | null> {
+    const r = await this.pool.query(
+      `SELECT l.id, l.at, l.client, l.tool, l.method, l.path, l.query, l.status,
+              l.duration_ms, l.route_class,
+              (r.call_id IS NOT NULL) AS has_reply,
+              r.answer, r.result_count, r.top_hits, r.model,
+              r.prompt_tokens, r.completion_tokens, r.ttft_ms, r.degraded, r.error
+       FROM usage_log l LEFT JOIN usage_reply r ON r.call_id = l.id
+       WHERE l.id = $1`,
+      [id],
+    );
+    const row: any = r.rows[0];
+    if (!row) return null;
+    const detail: UsageCallDetail = this.toCallRow(row);
+    if (row.has_reply) {
+      detail.reply = {
+        answer: row.answer ?? undefined,
+        resultCount: row.result_count ?? undefined,
+        topHits: row.top_hits ?? undefined,
+        model: row.model ?? undefined,
+        promptTokens: row.prompt_tokens ?? undefined,
+        completionTokens: row.completion_tokens ?? undefined,
+        ttftMs: row.ttft_ms ?? undefined,
+        degraded: row.degraded ?? undefined,
+        error: row.error ?? undefined,
+      };
+    }
+    return detail;
+  }
+
+  private toCallRow(r: any): UsageCallRow {
+    return {
+      id: Number(r.id),
+      at: new Date(r.at).toISOString(),
+      client: r.client,
+      tool: r.tool ?? undefined,
+      method: r.method,
+      path: r.path,
+      query: r.query ?? undefined,
+      status: r.status,
+      durationMs: r.duration_ms,
+      routeClass: r.route_class as RouteClass,
+      hasReply: Boolean(r.has_reply),
+    };
+  }
+
+  /** Delete calls older than `days`. The unscheduled escape hatch; replies cascade. */
+  async pruneUsage(days: number): Promise<number> {
+    const r = await this.pool.query(
+      `DELETE FROM usage_log WHERE at < now() - $1::interval`,
+      [`${Math.max(1, Math.floor(days))} days`],
+    );
+    return r.rowCount ?? 0;
   }
 
   /**

@@ -2,15 +2,19 @@ import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import cron from 'node-cron';
 import {
+  ADOPTION_REPORT_KEY,
+  ADOPTION_SESSIONS_KEPT,
   Catalog,
   EXTRACTION_SCHEME,
   ID_SCHEME,
   PROJECT_GROUPING,
   SPARSE_VERSION,
   VectorStore,
+  analyzeAdoption,
   collectionNameFor,
   createEmbedder,
   getConfig,
+  type CachedAdoption,
 } from '@atlas/core';
 import {
   auditVectorCoverage,
@@ -40,6 +44,12 @@ const RECONCILE_MAX_ENTRIES = 100;
 /** How often the deep (scroll-based) coverage audit runs. */
 const AUDIT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const COVERAGE_AUDIT_KEY = 'coverage_audit_at';
+/**
+ * When adoption was last *enqueued*, not last completed. Deliberate: a scan that
+ * fails must not re-enqueue itself every five minutes, which is what keying off
+ * completion would do.
+ */
+const ADOPTION_TICK_KEY = 'adoption_enqueued_at';
 
 async function main() {
   const cfg = getConfig();
@@ -401,6 +411,29 @@ async function main() {
         await catalog.finishRun(runId, { enqueued });
         return { enqueued };
       }
+      /**
+       * Tool adoption. Runs here rather than in the API because it reads every
+       * Claude transcript on the machine and only this container mounts them.
+       * As a queued job it also gets BullMQ's lock renewal, which a multi-minute
+       * scan needs, and it never competes with a request for its own answer.
+       */
+      if (data.trigger === 'adoption') {
+        const t0 = Date.now();
+        const report = await analyzeAdoption({ root: cfg.claudeProjectsDir });
+        // The full session list is long and its tail is a list nobody reads.
+        // Capping keeps the cached blob small without touching the aggregates,
+        // which are computed over every session either way.
+        const payload: CachedAdoption = {
+          report: { ...report, sessions: report.sessions.slice(0, ADOPTION_SESSIONS_KEPT) },
+          computedAt: new Date().toISOString(),
+          tookMs: Date.now() - t0,
+        };
+        await catalog.setSetting(ADOPTION_REPORT_KEY, JSON.stringify(payload));
+        console.log(
+          `[indexer] adoption: ${report.sessionsScanned} sessions scanned in ${payload.tookMs}ms`,
+        );
+        return { sessionsScanned: report.sessionsScanned };
+      }
       const t0 = Date.now();
       // updateProgress renews the job lock; without it, files that take longer
       // than lockDuration trip BullMQ's stall watchdog and get re-queued.
@@ -448,6 +481,27 @@ async function main() {
       );
       await catalog.finishRun(runId, { enqueued });
       console.log(`[indexer] ${kind} tick: ${enqueued} scan jobs enqueued`);
+
+      /**
+       * Adoption on its own, much slower clock. It scans every transcript on the
+       * machine, and the answer — whether agents call Atlas when a trigger fires
+       * — moves over days, not minutes. Enqueuing it on every 5-minute tick
+       * would spend hours of CPU restating the same number.
+       *
+       * Staleness is checked here rather than in the job so a fixed jobId can
+       * still collapse duplicates: the check is what keeps the queue from seeing
+       * a candidate at all.
+       */
+      const last = Number(await catalog.getSetting(ADOPTION_TICK_KEY).catch(() => null)) || 0;
+      if (Date.now() - last > cfg.adoptionRefreshMin * 60_000) {
+        await catalog.setSetting(ADOPTION_TICK_KEY, String(Date.now())).catch(() => {});
+        await queue.add('adoption', { trigger: 'adoption' } as unknown as ScanJobData, {
+          jobId: 'adoption',
+          removeOnComplete: true,
+          removeOnFail: true,
+          attempts: 1,
+        });
+      }
     });
   };
 

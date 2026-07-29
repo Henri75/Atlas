@@ -182,6 +182,21 @@ cli-link: ## make the `atlas` command available on this machine
 kdb-rebuild: ## regenerate kdb/*.md views from kdb/*.log (never touches logs)
 	node bin/kdb_rebuild.mjs
 
+# --- usage telemetry ---------------------------------------------------------
+# Deliberately manual and unscheduled. At observed volume the whole table is
+# single-digit MB/year, so the default is to keep everything: silently discarding
+# the record the monitor exists to hold is the worse failure. Replies cascade
+# with their call, so this only ever needs to touch one table.
+usage-prune: ## delete usage telemetry older than DAYS (e.g. make usage-prune DAYS=90)
+	@test -n "$(DAYS)" || (echo "usage: make usage-prune DAYS=90" && exit 1)
+	docker compose exec -T postgres psql -U kdbscope -d kdbscope -c \
+	  "DELETE FROM usage_log WHERE at < now() - interval '$(DAYS) days';"
+
+usage-resync: ## recompute route_class for every recorded call from its path
+	docker compose exec -T api node -e "import('@atlas/core').then(async (m) => { \
+	  const c = new m.Catalog(process.env.KDBSCOPE_DATABASE_URL || 'postgres://kdbscope:kdbscope@postgres:5432/kdbscope'); \
+	  console.log('reclassified', await c.resyncRouteClasses(), 'calls'); await c.close(); })"
+
 # --- retrieval evaluation (docs/superpowers/specs/2026-07-26-retrieval-eval-harness-design.md)
 # `eval` makes no LLM calls: it is retrieval + rerank + metrics, so it is free,
 # deterministic and safe to run constantly. The two steps that cost money

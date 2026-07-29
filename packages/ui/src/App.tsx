@@ -10,6 +10,7 @@ import { SearchView } from './views/SearchView';
 import { TimelineView } from './views/TimelineView';
 import { ComponentsView } from './views/ComponentsView';
 import { SessionsView } from './views/SessionsView';
+import { MonitorView } from './views/MonitorView';
 
 /**
  * Shell. Two axes, deliberately kept apart:
@@ -82,9 +83,9 @@ export default function App() {
         e.preventDefault();
         setView('search');
         setTimeout(() => searchRef.current?.focus(), 0);
-      } else if (!typing && ['1', '2', '3', '4', '5'].includes(e.key)) {
+      } else if (!typing && ['1', '2', '3', '4', '5', '6'].includes(e.key)) {
         setView(
-          (['search', 'dashboard', 'timeline', 'components', 'sessions'] as View[])[
+          (['search', 'dashboard', 'timeline', 'components', 'sessions', 'monitor'] as View[])[
             Number(e.key) - 1
           ]!,
         );
@@ -117,8 +118,9 @@ export default function App() {
     scope.project === null ? SINGLE_PROJECT_VIEWS[view] : undefined;
 
   // The dashboard is global by definition; a scope bar over it would imply a
-  // filter it does not apply.
-  const showScope = view !== 'dashboard';
+  // filter it does not apply. Monitor is the same: its subject is Atlas's own
+  // traffic, which has no project dimension at all.
+  const showScope = view !== 'dashboard' && view !== 'monitor';
 
   return (
     <div className="flex min-h-screen">
@@ -173,6 +175,7 @@ export default function App() {
               onProject={(slug) => scope.set([slug])}
             />
           )}
+          {view === 'monitor' && <MonitorView />}
           {view === 'sessions' && (
             <SessionsView
               project={scope.project}

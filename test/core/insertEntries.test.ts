@@ -98,53 +98,100 @@ describe('Catalog.insertEntries — the idempotent write path', () => {
 });
 
 /**
- * logUsage is the write path added for agent telemetry. Concurrent agents each
- * append their own row, so it must be a single independent INSERT — no
- * read-modify-write that two callers could interleave — and it must clamp its
- * inputs so an oversized tool name or path can't blow the column widths.
+ * recordCall is the telemetry write path. Concurrent agents each append their
+ * own call, so it must be ONE statement — no read-modify-write two callers could
+ * interleave, and no separate reply INSERT that could be orphaned by a crash
+ * between the two. It must also clamp its inputs so an oversized tool name or
+ * path cannot blow the column widths.
  */
-describe('Catalog.logUsage — the telemetry write path', () => {
-  it('is one plain INSERT (nothing to race between concurrent callers)', async () => {
+describe('Catalog.recordCall — the telemetry write path', () => {
+  const call = {
+    client: 'mcp',
+    tool: 'atlas_search',
+    method: 'GET',
+    path: '/api/search',
+    query: 'q=pgbouncer',
+    status: 200,
+    durationMs: 12.7,
+  };
+
+  it('writes call and reply in one statement (never two that could half-land)', async () => {
     const { cat, calls } = fakeCatalog();
-    await cat.logUsage({
-      client: 'mcp',
-      tool: 'atlas_search',
-      method: 'GET',
-      path: '/api/search',
-      query: 'q=x',
-      status: 200,
-      durationMs: 12.7,
-    });
+    await cat.recordCall(call, { resultCount: 3 });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.sql).toContain('INSERT INTO usage_log');
-    // No SELECT/UPDATE — a lone append can't corrupt under concurrency.
-    expect(calls[0]!.sql).not.toMatch(/\bSELECT\b|\bUPDATE\b/);
+    expect(calls[0]!.sql).toContain('INSERT INTO usage_reply');
+    // Never an UPDATE: this write is fire-and-forget and unordered, so an
+    // update-the-row-later shape could target a row not yet inserted.
+    expect(calls[0]!.sql).not.toMatch(/\bUPDATE\b/);
     // duration is rounded to an int for the INT column.
     expect(calls[0]!.params).toContain(13);
   });
 
+  it('still writes the call row when there is no reply', async () => {
+    const { cat, calls } = fakeCatalog();
+    await cat.recordCall({ client: 'ui', method: 'GET', path: '/api/stats', status: 200, durationMs: 3 });
+    expect(calls).toHaveLength(1);
+    // The final param is the guard that makes the reply INSERT select no rows.
+    expect(calls[0]!.params.at(-1)).toBe(false);
+  });
+
+  it('classifies the route itself rather than trusting the caller', async () => {
+    const { cat, calls } = fakeCatalog();
+    await cat.recordCall(call);
+    expect(calls[0]!.params).toContain('query');
+
+    const { cat: cat2, calls: calls2 } = fakeCatalog();
+    await cat2.recordCall({ ...call, path: '/api/stats' });
+    expect(calls2[0]!.params).toContain('status');
+  });
+
   it('clamps oversized fields to their column widths', async () => {
     const { cat, calls } = fakeCatalog();
-    await cat.logUsage({
-      client: 'x'.repeat(200),
-      tool: 't'.repeat(200),
-      method: 'GET',
-      path: '/p'.repeat(400),
-      query: 'q'.repeat(1000),
-      status: 200,
-      durationMs: 1,
-    });
+    await cat.recordCall(
+      {
+        client: 'x'.repeat(200),
+        tool: 't'.repeat(200),
+        method: 'GET',
+        path: '/p'.repeat(400),
+        query: 'q'.repeat(1000),
+        status: 200,
+        durationMs: 1,
+      },
+      { error: 'e'.repeat(2000) },
+    );
     const [client, tool, , path, query] = calls[0]!.params as string[];
     expect(client.length).toBeLessThanOrEqual(40);
     expect(tool.length).toBeLessThanOrEqual(80);
     expect(path.length).toBeLessThanOrEqual(300);
     expect(query.length).toBeLessThanOrEqual(500);
+    const error = calls[0]!.params.at(-2) as string;
+    expect(error.length).toBeLessThanOrEqual(500);
   });
 
-  it('stores a null tool/query when the caller omits them', async () => {
+  /**
+   * The answer is the record this table exists for, it lives in TEXT, and the
+   * LLM's own max_tokens already bounds it. Clamping it would silently destroy
+   * the evidence at exactly the moment an answer got interesting.
+   */
+  it('does not truncate the answer', async () => {
     const { cat, calls } = fakeCatalog();
-    await cat.logUsage({ client: 'cli', method: 'GET', path: '/api/stats', status: 200, durationMs: 3 });
-    const params = calls[0]!.params;
-    expect(params).toContain(null);
+    const answer = 'a'.repeat(20_000);
+    await cat.recordCall(call, { answer });
+    expect(calls[0]!.params).toContain(answer);
+  });
+
+  it('keeps only the top hits, so telemetry never becomes a second index', async () => {
+    const { cat, calls } = fakeCatalog();
+    const topHits = Array.from({ length: 40 }, (_, i) => ({
+      entryId: i,
+      score: 1 - i / 100,
+      title: `hit ${i}`,
+      projectSlug: 'atlas',
+      sourceType: 'kdb_changelog',
+    }));
+    await cat.recordCall(call, { topHits });
+    const stored = (calls[0]!.params as string[]).find((v) => typeof v === 'string' && v.startsWith('['));
+    expect(JSON.parse(stored!)).toHaveLength(5);
   });
 });

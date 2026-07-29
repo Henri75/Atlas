@@ -1,5 +1,10 @@
 import type { AppConfig } from './config.js';
-import { chatComplete, chatStream, type ChatMessage, type StreamMeta } from './llm.js';
+import {
+  chatCompleteWithUsage,
+  chatStream,
+  type ChatMessage,
+  type StreamMeta,
+} from './llm.js';
 import type { SearchService } from './search.js';
 import type { Catalog } from './catalog.js';
 import { extractDateWindow, paddedWindow } from './questionDates.js';
@@ -736,10 +741,30 @@ export class AskService {
       };
     }
     try {
-      const answer = await chatComplete(this.llmConfig, messages, {
+      const startedAt = Date.now();
+      const { content: answer, usage } = await chatCompleteWithUsage(this.llmConfig, messages, {
         clientId: this.g2pClientId,
       });
-      return { answer, sources, model: this.llmConfig.model, degraded: false, scopeFallback, retrieval };
+      // `model` is what the gateway actually served, which can differ from what
+      // was configured; reporting the request rather than the response would
+      // make a substitution invisible in the usage record.
+      const served = usage?.model ?? this.llmConfig.model;
+      return {
+        answer,
+        sources,
+        model: this.llmConfig.model,
+        degraded: false,
+        scopeFallback,
+        retrieval,
+        metrics: {
+          model: served,
+          substituted: served !== this.llmConfig.model,
+          promptTokens: usage?.promptTokens,
+          completionTokens: usage?.completionTokens,
+          totalTokens: usage?.totalTokens,
+          totalMs: Date.now() - startedAt,
+        },
+      };
     } catch (e) {
       // LLM down: still useful — return the retrieved sources with an explanation.
       return {

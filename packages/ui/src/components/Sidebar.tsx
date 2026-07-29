@@ -1,7 +1,7 @@
 import type { Stats } from '../types';
 import { compact, duration, exact, relativeTime } from '../format';
 
-export type View = 'dashboard' | 'search' | 'timeline' | 'components' | 'sessions';
+export type View = 'dashboard' | 'search' | 'timeline' | 'components' | 'sessions' | 'monitor';
 
 /**
  * The rail answers one question: *how* am I looking? Projects — *what* am I
@@ -19,6 +19,9 @@ const VIEWS: { key: View; label: string; hotkey: string; icon: string }[] = [
   { key: 'timeline', label: 'Timeline', hotkey: '3', icon: '⋮' },
   { key: 'components', label: 'Components', hotkey: '4', icon: '◧' },
   { key: 'sessions', label: 'Sessions', hotkey: '5', icon: '✳' },
+  // Last in the rail because it is about Atlas rather than about your projects —
+  // the only view whose subject is the tool itself.
+  { key: 'monitor', label: 'Monitor', hotkey: '6', icon: '◔' },
 ];
 
 /**

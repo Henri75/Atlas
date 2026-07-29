@@ -37,6 +37,29 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 
+/**
+ * Where the indexer parks the computed report and the API reads it.
+ *
+ * The analysis walks every Claude transcript on the machine — an 11 GB corpus —
+ * and only the indexer mounts `~/.claude/projects`. So it is computed there,
+ * cached here, and served by an API container that could not do the scan itself
+ * if it wanted to.
+ */
+export const ADOPTION_REPORT_KEY = 'adoption.report';
+
+/** Sessions kept in the cached report. The tail is a list nobody reads. */
+export const ADOPTION_SESSIONS_KEPT = 200;
+
+/** What `GET /api/admin/adoption` returns. */
+export interface CachedAdoption {
+  report: AdoptionReport | null;
+  computedAt: string | null;
+  /** True when no report exists yet — distinct from a report finding nothing. */
+  pending?: boolean;
+  /** How long the scan took, so an expensive refresh is visibly expensive. */
+  tookMs?: number;
+}
+
 export interface TriggerHit {
   /** Which documented trigger matched. */
   rule: string;

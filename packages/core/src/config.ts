@@ -95,6 +95,20 @@ const schema = z.object({
     .default({ agingMonths: DEFAULT_AGING_MONTHS, archivedPenalty: DEFAULT_ARCHIVED_PENALTY }),
   /** Minimum token containment for linking a legacy DONE:/RESOLVED: line to its item. */
   backlogMatchThreshold: z.coerce.number().min(0).max(1).default(0.5),
+  /** Rows per page in the usage call log. */
+  usagePageSize: z.coerce.number().int().min(10).max(500).default(100),
+  /**
+   * Minutes between adoption recomputes. Daily by default: the scan reads every
+   * transcript on the machine, and whether agents honour a trigger changes over
+   * days, not minutes.
+   */
+  adoptionRefreshMin: z.coerce.number().int().min(5).default(1440),
+  /**
+   * Days of usage telemetry to keep. 0 means keep everything, which is the
+   * default — at observed volume the whole table is single-digit MB/year, and
+   * silently discarding the record a monitor exists to hold is the worse failure.
+   */
+  usageRetentionDays: z.coerce.number().int().min(0).default(0),
   apiPort: z.coerce.number().int().default(8710),
   mcpPort: z.coerce.number().int().default(8711),
   apiUrl: z.string().default('http://api:8710'),
@@ -162,6 +176,9 @@ function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
       archivedPenalty: opt(env.KDB_ARCHIVED_PENALTY),
     },
     backlogMatchThreshold: opt(env.KDB_BACKLOG_MATCH_THRESHOLD),
+    usagePageSize: opt(env.KDB_USAGE_PAGE_SIZE),
+    adoptionRefreshMin: opt(env.KDB_ADOPTION_REFRESH_MIN),
+    usageRetentionDays: opt(env.KDB_USAGE_RETENTION_DAYS),
     apiPort: opt(env.API_PORT),
     mcpPort: opt(env.MCP_PORT),
     apiUrl: opt(env.KDBSCOPE_API_URL),

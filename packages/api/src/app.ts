@@ -1,6 +1,10 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import {
+  ADOPTION_REPORT_KEY,
+  ROUTE_CLASSES,
+  STATUS_CLIENT_ABORTED,
+  TOP_HITS_KEPT,
   editorUrl,
   embedderStatus,
   lineFromSourceRef,
@@ -9,14 +13,20 @@ import {
   toHostPath,
 } from '@atlas/core';
 import type {
+  AskMetrics,
+  AskResult,
   AskService,
+  AskSource,
   BacklogReviewService,
   Catalog,
   EntryKind,
   PathMapping,
+  RouteClass,
+  SearchHit,
   SearchService,
   SourceType,
   StorageUsage,
+  UsageReply,
 } from '@atlas/core';
 
 /**
@@ -29,6 +39,12 @@ export interface ApiDeps {
   ask: AskService;
   /** Enqueue scan jobs; returns number of jobs enqueued. */
   enqueueScan: (opts: { project?: string; full?: boolean }) => Promise<number>;
+  /**
+   * Ask the indexer to recompute the adoption report. Separate from enqueueScan
+   * because it is not a scan: it reads transcripts this container cannot see and
+   * writes a cached report, rather than touching the index at all.
+   */
+  enqueueAdoption: () => Promise<number>;
   /** Point count of the active Qdrant collection (0 when unavailable). */
   vectorCount: () => Promise<number>;
   /** Read at request time — the active collection can change at runtime. */
@@ -75,26 +91,45 @@ export interface BackfillProgress {
 }
 
 /**
- * Slot a handler fills with the text its request asked about, for usage
- * telemetry.
+ * Slots a handler fills for usage telemetry.
  *
- * GET routes carry the query in the URL, which the middleware can read for
- * itself. POST routes carry it in the body, and reading the body in middleware
- * either consumes the stream or depends on Hono's internal body cache. So the
- * handler — which has already parsed it — hands it over explicitly.
+ * `usageQuery`: the text this request asked about. GET routes carry it in the
+ * URL, which the middleware can read for itself. POST routes carry it in the
+ * body, and reading the body in middleware either consumes the stream or depends
+ * on Hono's internal body cache. So the handler — which has already parsed it —
+ * hands it over explicitly.
+ *
+ * `usageReply`: what Atlas answered. Same reasoning, one step later: only the
+ * handler has the result in hand.
+ *
+ * `usageDeferred`: set by a route that records ITSELF. Only the streaming ask
+ * needs it — see the route for why the middleware cannot do that job.
+ *
+ * `usageError`: the real failure message, stashed by the error handler so the
+ * client can still receive a generic 500 while the log keeps the truth.
  */
-type UsageVars = { usageQuery?: string };
+type UsageVars = {
+  usageQuery?: string;
+  usageReply?: UsageReply;
+  usageDeferred?: boolean;
+  usageError?: string;
+};
 
 export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
   const app = new Hono<{ Variables: UsageVars }>();
   app.use('/api/*', cors());
 
   /**
-   * Usage telemetry for agent traffic. Only requests that identify themselves
-   * (x-atlas-client: mcp | cli) are recorded: agents are what we monitor, and
-   * the UI's 30-second status polling would bury them in noise. The write is
-   * fire-and-forget — telemetry must never slow down or fail the call it
-   * measures, so errors are swallowed after a console note.
+   * Usage telemetry. EVERY `/api/*` request is recorded, polling included.
+   *
+   * The previous rule — record only requests carrying `x-atlas-client` — kept
+   * the table clean by making the user's own use of Atlas invisible, which is a
+   * poor trade for a tool whose entire subject is what happened. Noise is
+   * separated at READ time by `route_class` (core/src/usage.ts) instead, so the
+   * rows exist and the reader chooses.
+   *
+   * The write is fire-and-forget: telemetry must never slow down or fail the
+   * call it measures, so errors are swallowed after a console note.
    *
    * `usageQuery` matters more than it looks: every `atlas_ask` call ever made
    * recorded an empty `query`, because ask is a POST and only the URL was read.
@@ -103,24 +138,33 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
    * dropped on the floor.
    */
   app.use('/api/*', async (c, next) => {
-    const client = c.req.header('x-atlas-client');
-    if (!client) return next();
     const startedAt = Date.now();
     await next();
+    // A route that records itself has already promised to write a complete row
+    // with an accurate duration; writing one here too would double-count it.
+    if (c.get('usageDeferred')) return;
+
     const url = new URL(c.req.url);
+    const error = c.get('usageError');
+    const reply = c.get('usageReply');
     void deps.catalog
-      .logUsage({
-        client,
-        tool: c.req.header('x-atlas-tool'),
-        method: c.req.method,
-        path: url.pathname,
-        // Whatever the handler recorded, else the URL query for GET routes.
-        // `logUsage` truncates to the column width, so a long question is
-        // clipped in one place rather than at every call site.
-        query: c.get('usageQuery') ?? (url.search ? url.search.slice(1) : undefined),
-        status: c.res.status,
-        durationMs: Date.now() - startedAt,
-      })
+      .recordCall(
+        {
+          // An unlabelled caller is real and worth naming: a curl, a script, or
+          // an agent following the "fall back to the REST API" instruction.
+          client: c.req.header('x-atlas-client') ?? 'unknown',
+          tool: c.req.header('x-atlas-tool'),
+          method: c.req.method,
+          path: url.pathname,
+          // Whatever the handler recorded, else the URL query for GET routes.
+          // `recordCall` truncates to the column width, so a long question is
+          // clipped in one place rather than at every call site.
+          query: c.get('usageQuery') ?? (url.search ? url.search.slice(1) : undefined),
+          status: c.res.status,
+          durationMs: Date.now() - startedAt,
+        },
+        error ? { ...reply, error } : reply,
+      )
       .catch((e: unknown) => console.error('[api] usage log failed:', e));
   });
 
@@ -267,7 +311,41 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
       },
       Math.min(Number(c.req.query('limit') ?? 20), 100),
     );
+    c.set('usageReply', searchReply(result.hits));
     return c.json({ ...result, hits: result.hits.map(withSource) });
+  });
+
+  /**
+   * Turn a result into the reply we keep. Deliberately lossy: enough to judge
+   * later whether the answer was any good, never enough to be a second index.
+   */
+  const searchReply = (hits: SearchHit[]): UsageReply => ({
+    resultCount: hits.length,
+    topHits: hits.slice(0, TOP_HITS_KEPT).map((h) => ({
+      entryId: h.entryId,
+      score: h.score,
+      title: h.title,
+      projectSlug: h.projectSlug,
+      sourceType: h.sourceType,
+    })),
+  });
+
+  const askReply = (r: AskResult): UsageReply => ({
+    answer: r.answer,
+    resultCount: r.sources.length,
+    // Ask sources are cited, not scored, so `score` is honestly absent rather
+    // than filled with a placeholder that would sort as a real ranking.
+    topHits: r.sources.slice(0, TOP_HITS_KEPT).map((s) => ({
+      entryId: s.entryId,
+      title: s.title,
+      projectSlug: s.projectSlug,
+      sourceType: s.sourceType,
+    })),
+    model: r.metrics?.model ?? r.model,
+    promptTokens: r.metrics?.promptTokens,
+    completionTokens: r.metrics?.completionTokens,
+    ttftMs: r.metrics?.ttftMs,
+    degraded: r.degraded,
   });
 
   /**
@@ -295,6 +373,7 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
       Math.min(Number(body.k ?? 12), 30),
       sanitizeHistory(body.history),
     );
+    c.set('usageReply', askReply(result));
     return c.json(result);
   });
 
@@ -303,12 +382,22 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
    * then `done`. Errors after headers are sent surface as a final `done`
    * with degraded: true (the generator handles it), so the client always
    * terminates cleanly.
+   *
+   * This route records its OWN usage. The middleware cannot: it measures around
+   * `await next()`, which here resolves the moment the ReadableStream is handed
+   * back — before a single token exists. Left to the middleware this route would
+   * log time-to-headers as its duration (milliseconds, for an answer that takes
+   * half a minute) and could never see the answer text at all.
    */
   app.post('/api/ask/stream', async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const question = typeof body.question === 'string' ? body.question.trim() : '';
+    // Deliberately BEFORE usageDeferred is set: an early 400 returns here, and
+    // the middleware must still log it. Setting the flag on entry would make
+    // every malformed request vanish from the record entirely.
     if (!question) return c.json({ error: 'question is required' }, 400);
     c.set('usageQuery', question);
+    c.set('usageDeferred', true);
 
     const events = deps.ask.askStream(
       question,
@@ -317,16 +406,74 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
       sanitizeHistory(body.history),
     );
 
+    const startedAt = Date.now();
+    let answer = '';
+    let sources: AskSource[] = [];
+    let meta: { model?: string; degraded?: boolean; metrics?: AskMetrics } = {};
+    let recorded = false;
+
+    /**
+     * Written once, on whichever end arrives first. `recorded` guards the case
+     * where cancel fires after close — one question must produce one row.
+     *
+     * If the process dies mid-stream neither path runs and nothing is written.
+     * That is deliberate: the alternative, inserting a row up front, would
+     * misreport every interrupted answer as a completed one.
+     */
+    const record = (status: number) => {
+      if (recorded) return;
+      recorded = true;
+      void deps.catalog
+        .recordCall(
+          {
+            client: c.req.header('x-atlas-client') ?? 'unknown',
+            tool: c.req.header('x-atlas-tool'),
+            method: 'POST',
+            path: '/api/ask/stream',
+            query: question,
+            status,
+            durationMs: Date.now() - startedAt,
+          },
+          {
+            answer,
+            resultCount: sources.length,
+            topHits: sources.slice(0, TOP_HITS_KEPT).map((s) => ({
+              entryId: s.entryId,
+              title: s.title,
+              projectSlug: s.projectSlug,
+              sourceType: s.sourceType,
+            })),
+            model: meta.metrics?.model ?? meta.model,
+            promptTokens: meta.metrics?.promptTokens,
+            completionTokens: meta.metrics?.completionTokens,
+            ttftMs: meta.metrics?.ttftMs,
+            degraded: meta.degraded,
+          },
+        )
+        .catch((e: unknown) => console.error('[api] usage log failed:', e));
+    };
+
     const stream = new ReadableStream({
       async pull(controller) {
         const { value, done } = await events.next();
         if (done) {
           controller.close();
+          record(200);
           return;
         }
+        // Accumulate as it goes, so an abort still has whatever was produced.
+        if (value.type === 'sources') sources = value.sources;
+        else if (value.type === 'delta') answer += value.text;
+        else if (value.type === 'done') meta = value;
         controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`));
       },
-      cancel: () => void events.return?.(undefined),
+      cancel: () => {
+        void events.return?.(undefined);
+        // A question asked and abandoned mid-answer is a finding, not an
+        // absence: it says the reply was not worth waiting for. 499 is nginx's
+        // client-closed convention, in an INT column we own.
+        record(STATUS_CLIENT_ABORTED);
+      },
     });
 
     return new Response(stream, {
@@ -652,15 +799,87 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     c.json({ errors: await deps.catalog.recentErrors() }),
   );
 
-  /** Aggregated agent-usage telemetry: who calls what, latency, error rate. */
-  app.get('/api/admin/usage', async (c) => {
-    const days = Number(c.req.query('days') ?? 7);
-    return c.json(await deps.catalog.usageStats(Number.isFinite(days) ? days : 7));
+  /**
+   * Parse a `class` filter ("query,read"). Unknown names are dropped rather
+   * than 400ing: a monitoring filter is a view preference, and failing the whole
+   * request over one stale bookmark would be a poor trade.
+   */
+  const parseClasses = (raw?: string): RouteClass[] | undefined => {
+    const list = (raw ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s): s is RouteClass => (ROUTE_CLASSES as readonly string[]).includes(s));
+    return list.length ? list : undefined;
+  };
+
+  const parseDays = (raw?: string) => {
+    const n = Number(raw ?? 7);
+    return Number.isFinite(n) ? n : 7;
+  };
+
+  /** Aggregated usage telemetry: who calls what, latency, error rate. */
+  app.get('/api/admin/usage', async (c) =>
+    c.json(await deps.catalog.usageStats(parseDays(c.req.query('days')), parseClasses(c.req.query('class')))),
+  );
+
+  /** Raw calls, newest first — the forensic view behind the aggregates. */
+  app.get('/api/admin/usage/calls', async (c) => {
+    const num = (k: string) => (c.req.query(k) ? Number(c.req.query(k)) : undefined);
+    const status = c.req.query('status');
+    return c.json(
+      await deps.catalog.listUsageCalls({
+        limit: num('limit'),
+        offset: num('offset'),
+        client: c.req.query('client') || undefined,
+        tool: c.req.query('tool') || undefined,
+        classes: parseClasses(c.req.query('class')),
+        status: status === 'ok' || status === 'error' ? status : undefined,
+        since: c.req.query('since') || undefined,
+        until: c.req.query('until') || undefined,
+        q: c.req.query('q') || undefined,
+      }),
+    );
+  });
+
+  /** One call with the full reply Atlas gave it. */
+  app.get('/api/admin/usage/calls/:id', async (c) => {
+    const call = await deps.catalog.usageCall(Number(c.req.param('id')));
+    if (!call) return c.json({ error: 'call not found' }, 404);
+    return c.json(call);
+  });
+
+  /**
+   * Tool adoption. Served from cache only: the analysis walks every Claude
+   * transcript on the machine, and this container cannot even see them —
+   * `~/.claude/projects` is mounted into the indexer alone. The indexer computes
+   * it and stores the report; this route just reads it.
+   */
+  app.get('/api/admin/adoption', async (c) => {
+    const raw = await deps.catalog.getSetting(ADOPTION_REPORT_KEY).catch(() => null);
+    if (!raw) {
+      // An absent report and an empty one are different findings. Saying so
+      // keeps "not computed yet" from rendering as "nobody uses Atlas".
+      return c.json({ report: null, computedAt: null, pending: true });
+    }
+    try {
+      return c.json(JSON.parse(raw));
+    } catch {
+      return c.json({ report: null, computedAt: null, pending: true });
+    }
+  });
+
+  /** Ask the indexer to recompute adoption; returns before it finishes. */
+  app.post('/api/admin/adoption/refresh', async (c) => {
+    const enqueued = await deps.enqueueAdoption();
+    return c.json({ enqueued });
   });
 
   app.onError((err, c) => {
-    // Details go to the service log only — clients get a generic error.
+    // Details go to the service log only — clients get a generic error. The
+    // message is stashed for telemetry so the usage record keeps the truth the
+    // response body is not allowed to carry.
     console.error('[api] error:', err);
+    c.set('usageError', (err as Error)?.message ?? String(err));
     return c.json({ error: 'internal error' }, 500);
   });
 

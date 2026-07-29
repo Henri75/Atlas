@@ -237,3 +237,139 @@ export const SOURCE_META: Record<SourceType, { label: string; color: string }> =
   git_commit: { label: 'COMMIT', color: 'var(--color-git)' },
   doc: { label: 'DOC', color: 'var(--color-doc)' },
 };
+
+/* ---------------------------------------------------------------------------
+ * Usage monitoring. Mirrors core/src/usage.ts — the UI cannot import from core
+ * (it builds for the browser), so these shapes are restated and must move
+ * together with it.
+ * ------------------------------------------------------------------------- */
+
+export type RouteClass = 'query' | 'read' | 'write' | 'status' | 'admin' | 'other';
+
+/**
+ * Route classes and how the monitor presents them. `noise: true` is hidden by
+ * default — polling is recorded in full but would otherwise dominate every
+ * count, which is the whole reason the classification exists.
+ */
+export const ROUTE_CLASS_META: Record<
+  RouteClass,
+  { label: string; hint: string; color: string; noise?: boolean }
+> = {
+  query: { label: 'query', hint: 'search & ask — consumes the index', color: 'var(--color-kdb)' },
+  read: { label: 'read', hint: 'navigation and follow-up reads', color: 'var(--color-claude)' },
+  write: { label: 'write', hint: 'mutates durable state', color: 'var(--color-git)' },
+  status: { label: 'status', hint: 'health and polling', color: 'var(--color-faint)', noise: true },
+  admin: { label: 'admin', hint: 'operations, incl. this page', color: 'var(--color-doc)', noise: true },
+  other: { label: 'other', hint: 'unclassified — a route was added without a class', color: 'var(--color-report)' },
+};
+
+export interface UsageTopHit {
+  entryId: number;
+  score?: number;
+  title: string;
+  projectSlug: string;
+  sourceType: string;
+}
+
+export interface UsageReply {
+  answer?: string;
+  resultCount?: number;
+  topHits?: UsageTopHit[];
+  model?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  ttftMs?: number;
+  degraded?: boolean;
+  error?: string;
+}
+
+export interface UsageCallRow {
+  id: number;
+  at: string;
+  client: string;
+  tool?: string;
+  method: string;
+  path: string;
+  query?: string;
+  status: number;
+  durationMs: number;
+  routeClass: RouteClass;
+  hasReply: boolean;
+}
+
+export interface UsageCallDetail extends UsageCallRow {
+  reply?: UsageReply;
+}
+
+export interface UsageToolStat {
+  client: string;
+  tool: string;
+  calls: number;
+  avgMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  errors: number;
+  lastAt: string;
+}
+
+export interface UsageStats {
+  days: number;
+  calls: number;
+  errors: number;
+  clients: number;
+  p50Ms: number;
+  p95Ms: number;
+  byTool: UsageToolStat[];
+  byDay: { day: string; client: string; calls: number }[];
+  byClass: { routeClass: RouteClass; calls: number }[];
+  byHour: { hour: number; calls: number }[];
+}
+
+export interface TriggerHit {
+  rule: string;
+  tool: 'assessor' | 'atlas';
+  excerpt: string;
+  at?: string;
+}
+
+export interface ToolAdoption {
+  sessionsUsed: number;
+  totalCalls: number;
+  sessionsMissed: number;
+  /** null when nothing qualified — "no opportunity" is not "never fired". */
+  fireRate: number | null;
+  topMissedRules: { rule: string; count: number }[];
+}
+
+export interface SessionAdoption {
+  sessionId: string;
+  project: string;
+  cwd?: string;
+  startedAt?: string;
+  endedAt?: string;
+  turns: number;
+  assessorCalls: number;
+  atlasCalls: number;
+  triggers: TriggerHit[];
+  missedAssessor: TriggerHit[];
+  missedAtlas: TriggerHit[];
+  admittedNotThoughtOf: boolean;
+}
+
+export interface AdoptionReport {
+  generatedAt: string;
+  sessionsScanned: number;
+  sessionsWithTriggers: number;
+  assessor: ToolAdoption;
+  atlas: ToolAdoption;
+  sessions: SessionAdoption[];
+}
+
+export interface CachedAdoption {
+  report: AdoptionReport | null;
+  computedAt: string | null;
+  /** True when no report exists yet — distinct from a report that found nothing. */
+  pending?: boolean;
+  tookMs?: number;
+}

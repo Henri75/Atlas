@@ -59,6 +59,22 @@ export function duration(totalSeconds: number | null | undefined): string {
   return `${h}h ${String(m % 60).padStart(2, '0')}m`;
 }
 
+/**
+ * Milliseconds → "12ms" / "2.2s" / "1m 36s". For latencies, which span four
+ * orders of magnitude here: an entry read is ~19ms and an ask can pass 95s.
+ *
+ * Separate from `duration()` (which takes seconds) rather than a unit flag,
+ * because the sub-second range is the whole point — "0s" for a 19ms read would
+ * be the same lie as rounding a disk size to zero.
+ */
+export function millis(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)}s`;
+  return duration(s);
+}
+
 /** "2026-07-09T23:20:04Z" → "3 minutes ago". Empty for a missing stamp. */
 export function relativeTime(iso: string | undefined, now = Date.now()): string {
   if (!iso) return 'never';

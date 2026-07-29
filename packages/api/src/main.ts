@@ -192,6 +192,21 @@ async function main() {
       );
       return 1;
     },
+    /**
+     * Same queue, different trigger — the worker already branches on it for
+     * 'manual' and 'reconcile'. The work has to happen over there: adoption
+     * reads ~/.claude/projects, which is mounted into the indexer only.
+     */
+    enqueueAdoption: async () => {
+      await queue.add(
+        'adoption',
+        { trigger: 'adoption' },
+        // A fixed id would collapse repeat refreshes onto one pending job and
+        // make the button silently do nothing the second time it is pressed.
+        { jobId: `adoption--${Date.now()}` },
+      );
+      return 1;
+    },
   });
 
   serve({ fetch: app.fetch, port: cfg.apiPort, hostname: '0.0.0.0' }, (info) => {

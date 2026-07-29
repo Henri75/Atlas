@@ -254,6 +254,12 @@ export interface AskResult {
   scopeFallback?: ScopeFallback;
   /** What was measured and how retrieval ran; absent only on a total miss. */
   retrieval?: RetrievalReport;
+  /**
+   * What the completion cost. Absent when the LLM never answered (no match, or
+   * a degraded reply built from sources alone), so its presence is itself the
+   * signal that a real generation happened.
+   */
+  metrics?: import('./ask.js').AskMetrics;
 }
 
 export interface TimelineItem {

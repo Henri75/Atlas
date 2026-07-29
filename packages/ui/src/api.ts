@@ -1,6 +1,7 @@
 import type {
   AskMetrics,
   AskResult,
+  CachedAdoption,
   ComponentRow,
   Dashboard,
   ProjectRow,
@@ -8,12 +9,23 @@ import type {
   SessionRow,
   Stats,
   TimelineItem,
+  UsageCallDetail,
+  UsageCallRow,
+  UsageStats,
 } from './types';
 
 /** Typed fetch client. Same-origin /api (nginx proxies to the api service). */
 
+/**
+ * Every request identifies itself. The API records all traffic now, and an
+ * unlabelled caller is logged as `unknown` — which should mean "a curl or a
+ * script", not "the UI forgot to say so". Naming ourselves keeps `unknown` a
+ * meaningful category instead of a bucket the browser quietly fills.
+ */
+const CLIENT_HEADERS = { 'x-atlas-client': 'ui' };
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path);
+  const res = await fetch(path, { headers: CLIENT_HEADERS });
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json() as Promise<T>;
 }
@@ -21,7 +33,7 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -55,7 +67,7 @@ export async function* askStream(
 ): AsyncGenerator<AskEvent, void, unknown> {
   const res = await fetch('/api/ask/stream', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS },
     body: JSON.stringify(body),
     signal,
   });
@@ -113,4 +125,13 @@ export const api = {
   dashboard: () => get<Dashboard>('/api/dashboard'),
   reindex: (body: Record<string, unknown> = {}) =>
     post<{ enqueued: number }>('/api/admin/reindex', body),
+
+  /** Aggregated usage. `classes` empty means unfiltered, not "nothing". */
+  usage: (days: number, classes: string[]) =>
+    get<UsageStats>(`/api/admin/usage${qs({ days, class: classes.join(',') })}`),
+  usageCalls: (params: Record<string, unknown>) =>
+    get<{ calls: UsageCallRow[]; total: number }>(`/api/admin/usage/calls${qs(params)}`),
+  usageCall: (id: number) => get<UsageCallDetail>(`/api/admin/usage/calls/${id}`),
+  adoption: () => get<CachedAdoption>('/api/admin/adoption'),
+  refreshAdoption: () => post<{ enqueued: number }>('/api/admin/adoption/refresh', {}),
 };
