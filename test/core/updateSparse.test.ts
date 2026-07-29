@@ -54,20 +54,20 @@ describe('VectorStore.updateSparse', () => {
   });
 
   it('keeps going past a rejected slice and counts what it lost', async () => {
-    // 192 points = three slices of 64; the middle one is rejected outright.
+    // 1536 points = three slices of SPARSE_UPDATE_BATCH; the middle is rejected.
     // withRetry gives a non-retryable error one attempt, so calls are 0,1,2.
     const fake = fakeClient(new Set([1]));
 
-    const r = await storeWith(fake.client).updateSparse(points(192));
+    const r = await storeWith(fake.client).updateSparse(points(1536));
 
     // The third slice must still have been attempted — that is the whole point.
     expect(fake.calls).toHaveLength(3);
-    expect(r).toEqual({ updated: 128, failed: 64 });
+    expect(r).toEqual({ updated: 1024, failed: 512 });
   });
 
   it('never silently under-reports: updated + failed covers every point', async () => {
     const fake = fakeClient(new Set([0, 2]));
-    const r = await storeWith(fake.client).updateSparse(points(192));
-    expect(r.updated + r.failed).toBe(192);
+    const r = await storeWith(fake.client).updateSparse(points(1536));
+    expect(r.updated + r.failed).toBe(1536);
   });
 });

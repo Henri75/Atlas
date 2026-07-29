@@ -7,6 +7,19 @@ import { withRetry } from './retry.js';
 const UPSERT_BATCH = 64;
 
 /**
+ * Points per sparse-only update. Deliberately far larger than `UPSERT_BATCH`.
+ *
+ * 64 is sized for *dense* vectors — 768 floats a point, so a batch is ~200 kB.
+ * A sparse vector is a few dozen term/value pairs, two orders of magnitude
+ * smaller, and the batch size is not what bounds it. What bounds a re-tokenise
+ * is the number of write *operations*: Qdrant applies them one at a time behind
+ * the optimizer, so 326k points at 64 each is ~5,100 operations to work through.
+ * Measured on the 2026-07-29 rebuild, that pass sent in 646s and was still
+ * applying hours later on a loaded host. Same bytes, ~8x fewer operations.
+ */
+const SPARSE_UPDATE_BATCH = 512;
+
+/**
  * Qdrant wrapper: one collection per embedding config, named vectors
  * 'dense' + 'sparse'. Sparse uses the server-side IDF modifier so clients
  * only ship term frequencies. Hybrid queries fuse both branches with RRF.
@@ -305,8 +318,8 @@ export class VectorStore {
   ): Promise<{ updated: number; failed: number }> {
     let updated = 0;
     let failed = 0;
-    for (let i = 0; i < points.length; i += UPSERT_BATCH) {
-      const slice = points.slice(i, i + UPSERT_BATCH);
+    for (let i = 0; i < points.length; i += SPARSE_UPDATE_BATCH) {
+      const slice = points.slice(i, i + SPARSE_UPDATE_BATCH);
       try {
         await withRetry(() =>
           this.client.updateVectors(this.collection, {
