@@ -248,9 +248,21 @@ export function buildBacklogView(
       if (opts.latestActivityAt && verdict.reviewedAt < opts.latestActivityAt) {
         item.view.lints.push('stale-review');
       }
-      // The file wins unless the verdict is strictly newer than the last marker's date.
-      const markerTime = last ? (last.date ?? '9999-12-31T00:00:00Z') : undefined;
-      const verdictWins = !last || verdict.reviewedAt > markerTime!;
+      // The file wins unless the verdict is from a strictly later DAY.
+      //
+      // Compared at their own granularity, not as raw strings. A marker is
+      // dated, a verdict is timestamped, and comparing the two directly reads
+      // every marker as midnight — so any verdict from the same day beat it,
+      // including one recorded hours earlier in real time. That inverts the
+      // contract the write-back convention rests on: the marker line is the
+      // canonical durable record and the verdict table is working state, so
+      // someone appending REOPENED must not be overruled by a verdict that
+      // predates it. Ties go to the file.
+      //
+      // An undated marker keeps the sentinel: nothing can be shown to be newer
+      // than a signal with no date, so nothing overrides it.
+      const markerDay = last ? (last.date?.slice(0, 10) ?? '9999-12-31') : undefined;
+      const verdictWins = !last || verdict.reviewedAt.slice(0, 10) > markerDay!;
       if (verdictWins) {
         if (verdict.status === 'confirmed-resolved') {
           item.view.status = 'resolved';

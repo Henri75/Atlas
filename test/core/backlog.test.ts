@@ -150,6 +150,64 @@ describe('buildBacklogView', () => {
     expect(buildBacklogView(entriesFrom(marked), [newer]).items[0]!.status).toBe('open');
   });
 
+  /**
+   * Markers carry a date, verdicts carry a timestamp, and comparing them
+   * directly reads every same-day marker as midnight — so any verdict recorded
+   * that day beat it, including one recorded hours *earlier* in real time.
+   *
+   * That inverts the contract the whole write-back convention rests on. The
+   * marker line in backlog.log is the canonical durable record; the verdict
+   * table is working state that survives reindexing. Appending REOPENED and
+   * watching an older verdict keep the item resolved would make the file the
+   * weaker signal precisely when someone reached for it.
+   *
+   * Ties go to the file: a verdict must be from a strictly later day, the
+   * finest granularity a marker can express.
+   */
+  it('a same-day marker beats a verdict recorded that same day', () => {
+    const item = '- [2026-05-05] fix the thing';
+    const reopened = `${item}\n- [2026-07-20] REOPENED [L1#${hashOf(item)}]: it came back`;
+    const sameDay: BacklogVerdict = {
+      sourcePath: PATH, line: 1, status: 'confirmed-resolved', confidence: 0.9,
+      reviewer: 'agent:claude-code', reviewedAt: '2026-07-20T09:15:00Z',
+    };
+    const view = buildBacklogView(entriesFrom(reopened), [sameDay]);
+    expect(view.items[0]!.status).toBe('open');
+    expect(view.items[0]!.provenance).toBe('structured');
+  });
+
+  it('still lets a verdict from a later day override the marker', () => {
+    const item = '- [2026-05-05] fix the thing';
+    const reopened = `${item}\n- [2026-07-20] REOPENED [L1#${hashOf(item)}]: it came back`;
+    const nextDay: BacklogVerdict = {
+      sourcePath: PATH, line: 1, status: 'confirmed-resolved', confidence: 0.9,
+      reviewer: 'agent:claude-code', reviewedAt: '2026-07-21T09:15:00Z',
+    };
+    const view = buildBacklogView(entriesFrom(reopened), [nextDay]);
+    expect(view.items[0]!.status).toBe('resolved');
+    expect(view.items[0]!.provenance).toBe('reviewed');
+    // The file does not say resolved, so the verdict needs writing back.
+    expect(view.items[0]!.lints).toContain('not-written-back');
+  });
+
+  /**
+   * The agreeing case, which is what write-back produces: verdict says
+   * resolved, the appended marker says resolved. The file is the record, so it
+   * is the file that should be credited — and nothing is outstanding.
+   */
+  it('credits the file when a written-back verdict agrees with its marker', () => {
+    const item = '- [2026-05-05] fix the thing';
+    const marked = `${item}\n- [2026-07-20] RESOLVED [L1#${hashOf(item)}]: fixed`;
+    const verdict: BacklogVerdict = {
+      sourcePath: PATH, line: 1, status: 'confirmed-resolved', confidence: 0.9,
+      reviewer: 'agent:claude-code', reviewedAt: '2026-07-20T09:15:00Z',
+    };
+    const view = buildBacklogView(entriesFrom(marked), [verdict]);
+    expect(view.items[0]!.status).toBe('resolved');
+    expect(view.items[0]!.provenance).toBe('structured');
+    expect(view.items[0]!.lints).not.toContain('not-written-back');
+  });
+
   it('badges a verdict as stale-review when the project has newer activity', () => {
     const verdict: BacklogVerdict = {
       sourcePath: PATH, line: 1, status: 'confirmed-open', confidence: 0.8,
