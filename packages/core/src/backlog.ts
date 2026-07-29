@@ -1,4 +1,5 @@
 import type { BacklogMarker } from './parsers/kdbLog.js';
+import type { SearchHit } from './types.js';
 
 /**
  * Query-time derivation of backlog status (spec 2026-07-29). The parser stores
@@ -56,6 +57,8 @@ export interface BacklogItemView {
   text: string;
   component?: string;
   date?: string;
+  /** Hash of the physical line, echoed into proposed marker refs. */
+  lineHash?: string;
   status: 'open' | 'resolved' | 'dropped';
   provenance: 'structured' | 'reviewed' | 'heuristic' | 'default';
   markers: AppliedMarker[];
@@ -157,6 +160,7 @@ export function buildBacklogView(
         text: entry.body,
         component: entry.component,
         date: entry.occurredAt,
+        lineHash: entry.meta?.lineHash as string | undefined,
         status: 'open',
         provenance: 'default',
         markers: [],
@@ -265,4 +269,147 @@ export function buildBacklogView(
   const counts = { open: 0, resolved: 0, dropped: 0 };
   for (const i of items) counts[i.view.status]++;
   return { items: items.map((i) => i.view), unlinked, counts };
+}
+
+export interface BacklogProjectView {
+  items: (BacklogItemView & { sourcePath: string })[];
+  unlinked: (UnlinkedMarkerView & { sourcePath: string })[];
+  counts: BacklogView['counts'];
+  latestActivityAt?: string;
+}
+
+/**
+ * Assemble the status view for one project from the catalog. In practice a
+ * project has exactly one backlog.log (the scanner matches that name only),
+ * but line refs are per-file, so grouping by sourcePath keeps the derivation
+ * honest if that ever changes.
+ */
+export async function loadBacklogView(
+  catalog: {
+    projectIdBySlug(slug: string): Promise<number | null>;
+    backlogEntries(projectId: number): Promise<(BacklogSourceEntry & { sourcePath: string })[]>;
+    backlogVerdicts(projectId: number): Promise<(Omit<BacklogVerdict, 'status'> & { status: string })[]>;
+    latestActivityAt(projectId: number): Promise<string | undefined>;
+  },
+  slug: string,
+  opts: BacklogViewOpts = {},
+): Promise<BacklogProjectView | null> {
+  const projectId = await catalog.projectIdBySlug(slug);
+  if (projectId === null) return null;
+  const [entries, verdicts, latestActivityAt] = await Promise.all([
+    catalog.backlogEntries(projectId),
+    catalog.backlogVerdicts(projectId),
+    catalog.latestActivityAt(projectId),
+  ]);
+  const byPath = new Map<string, (BacklogSourceEntry & { sourcePath: string })[]>();
+  for (const e of entries) {
+    const group = byPath.get(e.sourcePath) ?? [];
+    group.push(e);
+    byPath.set(e.sourcePath, group);
+  }
+  const out: BacklogProjectView = {
+    items: [],
+    unlinked: [],
+    counts: { open: 0, resolved: 0, dropped: 0 },
+    latestActivityAt,
+  };
+  for (const [sourcePath, group] of byPath) {
+    const view = buildBacklogView(
+      group,
+      (verdicts as BacklogVerdict[]).filter((v) => v.sourcePath === sourcePath),
+      { ...opts, latestActivityAt },
+    );
+    out.items.push(...view.items.map((i) => ({ ...i, sourcePath })));
+    out.unlinked.push(...view.unlinked.map((u) => ({ ...u, sourcePath })));
+    out.counts.open += view.counts.open;
+    out.counts.resolved += view.counts.resolved;
+    out.counts.dropped += view.counts.dropped;
+  }
+  return out;
+}
+
+/**
+ * The exact line a caller should append to the project's backlog.log to make
+ * a verdict durable. Emitting it from one place keeps every surface (CLI,
+ * MCP, API) protocol-conformant, hash included.
+ */
+export function proposeMarkerLine(
+  kind: BacklogMarker['kind'],
+  item: { line: number; lineHash?: string },
+  summary: string,
+  /** YYYY-MM-DD. Passed in, not computed — server and tests own the clock. */
+  date: string,
+  evidence?: string,
+): string {
+  const ref = item.lineHash ? `L${item.line}#${item.lineHash}` : `L${item.line}`;
+  const tail = evidence ? ` (evidence: ${evidence})` : '';
+  return `- [${date}] ${kind.toUpperCase()} [${ref}]: ${summary}${tail}`;
+}
+
+export interface JudgeVerdict {
+  status: BacklogVerdict['status'];
+  confidence: number;
+  reasoning: string;
+  /** Short human evidence note for the proposed marker line. */
+  evidence?: string;
+  citations: number[];
+}
+
+const JUDGE_STATUSES = new Set(['confirmed-open', 'likely-resolved', 'confirmed-resolved', 'inconclusive']);
+
+/**
+ * Written for the mid-size models that serve Ask: numbered evidence blocks,
+ * explicit date framing, JSON-only output with a fixed schema.
+ */
+export function buildBacklogJudgePrompt(
+  item: { line: number; text: string; date?: string },
+  hits: SearchHit[],
+): string {
+  const blocks = hits.map((h) => {
+    const date = h.occurredAt ? ` (${h.occurredAt.slice(0, 10)})` : '';
+    return `[${h.entryId}] ${h.sourceType}${date}\n${h.snippet}`;
+  });
+  return [
+    `Backlog item (logged ${item.date?.slice(0, 10) ?? 'undated'}, line ${item.line}):`,
+    item.text,
+    '',
+    'Evidence from the project history (changelogs, session logs, commits):',
+    blocks.length ? blocks.join('\n\n') : '(nothing relevant was found)',
+    '',
+    'Did later work address this item? Judge ONLY from the evidence above.',
+    'Answer with JSON only, no prose around it:',
+    '{"status": "confirmed-resolved" | "likely-resolved" | "confirmed-open" | "inconclusive",',
+    ' "confidence": 0.0-1.0,',
+    ' "reasoning": "<one or two sentences>",',
+    ' "evidence": "<short pointer, e.g. changelog 2026-05-08 or commit abc123>",',
+    ' "citations": [<entry ids of the blocks you relied on>]}',
+    'Use confirmed-resolved only when the evidence names this exact problem as done.',
+    'Use confirmed-open when the evidence shows it was NOT addressed. When the evidence is silent, use inconclusive.',
+  ].join('\n');
+}
+
+/** Tolerant of fences and stray prose; anything unparseable becomes inconclusive. */
+export function parseJudgeVerdict(raw: string, validEntryIds: Set<number>): JudgeVerdict {
+  const inconclusive: JudgeVerdict = {
+    status: 'inconclusive',
+    confidence: 0,
+    reasoning: 'model output was not a valid verdict',
+    citations: [],
+  };
+  const json = /\{[\s\S]*\}/.exec(raw)?.[0];
+  if (!json) return inconclusive;
+  try {
+    const v = JSON.parse(json);
+    if (!JUDGE_STATUSES.has(v.status)) return inconclusive;
+    return {
+      status: v.status,
+      confidence: Math.min(1, Math.max(0, Number(v.confidence) || 0)),
+      reasoning: typeof v.reasoning === 'string' ? v.reasoning.slice(0, 1000) : '',
+      evidence: typeof v.evidence === 'string' ? v.evidence.slice(0, 200) : undefined,
+      citations: (Array.isArray(v.citations) ? v.citations : [])
+        .filter((c: unknown) => typeof c === 'number' && validEntryIds.has(c)),
+    };
+  } catch {
+    return inconclusive;
+  }
 }

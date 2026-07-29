@@ -7,11 +7,13 @@ const timelineCalls: { slug: string | string[]; opts: unknown }[] = [];
 const sessionDetailCalls: { opts: unknown }[] = [];
 const componentHistoryCalls: { limit?: number }[] = [];
 const usageRows: unknown[] = [];
+const verdictUpserts: { projectId: number; v: unknown }[] = [];
 beforeEach(() => {
   timelineCalls.length = 0;
   sessionDetailCalls.length = 0;
   componentHistoryCalls.length = 0;
   usageRows.length = 0;
+  verdictUpserts.length = 0;
 });
 
 function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
@@ -87,9 +89,67 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
         },
       ],
       archivedDocsCount: async () => 812,
+      projectIdBySlug: async (slug: string) => (slug === 'deepcast' ? 1 : null),
+      backlogEntries: async () => [
+        {
+          id: 11,
+          body: 'fix the Makefile build-local target',
+          occurredAt: '2026-05-06T00:00:00Z',
+          sourcePath: '/data/code/DeepCast/kdb/backlog.log',
+          sourceRef: 'line:1',
+          meta: { lineHash: 'abc123' },
+        },
+        {
+          id: 12,
+          body: 'RESOLVED [L1#abc123]: Makefile build-local fixed',
+          occurredAt: '2026-05-08T00:00:00Z',
+          sourcePath: '/data/code/DeepCast/kdb/backlog.log',
+          sourceRef: 'line:2',
+          meta: {
+            lineHash: 'def456',
+            marker: { kind: 'resolved', targetLine: 1, targetHash: 'abc123' },
+          },
+        },
+        {
+          id: 13,
+          body: 'add retry to the embed path',
+          occurredAt: '2026-05-09T00:00:00Z',
+          sourcePath: '/data/code/DeepCast/kdb/backlog.log',
+          sourceRef: 'line:3',
+          meta: { lineHash: '0f0f0f' },
+        },
+      ],
+      backlogVerdicts: async () => [],
+      latestActivityAt: async () => '2026-07-28T00:00:00Z',
+      upsertBacklogVerdict: async (projectId: number, v: unknown) => {
+        verdictUpserts.push({ projectId, v });
+      },
     } as any,
     search: { search: async () => ({ hits: [], mode: 'hybrid', degraded: false, tookMs: 5 }) } as any,
     ask: { ask: async () => ({ answer: '42 [1]', sources: [], model: 'm', degraded: false }) } as any,
+    backlogReview: {
+      evidence: async () => [
+        {
+          entryId: 42,
+          score: 0.9,
+          projectSlug: 'deepcast',
+          sourceType: 'kdb_changelog',
+          title: 'x',
+          snippet: 'build-local now calls docker compose build',
+          occurredAt: '2026-05-08T00:00:00Z',
+          sourcePath: '/data/code/DeepCast/kdb/changelog.log',
+        },
+      ],
+      judge: async () => ({
+        status: 'confirmed-resolved',
+        confidence: 0.9,
+        reasoning: 'changelog says done',
+        evidence: 'changelog 2026-05-08',
+        citations: [42],
+        model: 'test-model',
+      }),
+    } as any,
+    backlogMatchThreshold: 0.5,
     enqueueScan: vi.fn(async () => 1),
     vectorCount: async () => 123,
     meta: () => ({ embedder: 'ollama/nomic-embed-text', collection: 'kdbscope_x' }),
@@ -743,5 +803,120 @@ describe('usage telemetry', () => {
     // query stays empty rather than recording whitespace as a real question.
     expect(usageRows[0]).toMatchObject({ status: 400 });
     expect((usageRows[0] as { query?: string }).query).toBeUndefined();
+  });
+});
+
+describe('backlog routes', () => {
+  it('GET /api/projects/:slug/backlog derives statuses and attaches editor links', async () => {
+    const res = await buildApp(makeDeps()).request('/api/projects/deepcast/backlog');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.counts).toEqual({ open: 1, resolved: 1, dropped: 0 });
+    const resolved = body.items.find((i: any) => i.line === 1);
+    expect(resolved).toMatchObject({ status: 'resolved', provenance: 'structured' });
+    expect(resolved.hostPath).toContain('/Users/nasta/__CODING NEW/DeepCast');
+    expect(body.items.find((i: any) => i.line === 3)).toMatchObject({ status: 'open' });
+  });
+
+  it('404s on an unknown slug with a hint', async () => {
+    const res = await buildApp(makeDeps()).request('/api/projects/nope/backlog');
+    expect(res.status).toBe(404);
+  });
+
+  it('POST review judges, stores the verdict, and proposes a write-back line', async () => {
+    const res = await buildApp(makeDeps()).request('/api/projects/deepcast/backlog/review', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ line: 3 }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.verdict).toMatchObject({ status: 'confirmed-resolved' });
+    expect(body.evidence[0]).toMatchObject({ entryId: 42 });
+    expect(verdictUpserts[0]).toMatchObject({ projectId: 1 });
+    expect((verdictUpserts[0]!.v as any).reviewer).toBe('atlas-llm:test-model');
+    expect(body.proposedLine).toMatch(/^- \[\d{4}-\d{2}-\d{2}\] RESOLVED \[L3#0f0f0f\]: add retry/);
+  });
+
+  it('POST review with judge:false returns evidence only and stores nothing', async () => {
+    const res = await buildApp(makeDeps()).request('/api/projects/deepcast/backlog/review', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ line: 3, judge: false }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.verdict).toBeUndefined();
+    expect(body.evidence).toHaveLength(1);
+    expect(verdictUpserts).toHaveLength(0);
+  });
+
+  it('POST review returns the evidence with an explicit error when the LLM is down', async () => {
+    const deps = makeDeps();
+    (deps.backlogReview as any).judge = async () => {
+      throw new Error('connect ECONNREFUSED');
+    };
+    const res = await buildApp(deps).request('/api/projects/deepcast/backlog/review', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ line: 3 }),
+    });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error).toBe('llm_unavailable');
+    expect(body.evidence).toHaveLength(1);
+    expect(verdictUpserts).toHaveLength(0);
+  });
+
+  it('POST review 404s on a line with no item', async () => {
+    const res = await buildApp(makeDeps()).request('/api/projects/deepcast/backlog/review', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ line: 99 }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('POST verdict records the caller verdict under its client id', async () => {
+    const res = await buildApp(makeDeps()).request('/api/projects/deepcast/backlog/verdict', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-atlas-client': 'mcp' },
+      body: JSON.stringify({
+        line: 3,
+        status: 'confirmed-resolved',
+        confidence: 0.95,
+        note: 'verified in code',
+        evidence: 'commit abc123',
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect((verdictUpserts[0]!.v as any).reviewer).toBe('agent:mcp');
+    expect(body.proposedLine).toContain('RESOLVED [L3#0f0f0f]');
+    expect(body.proposedLine).toContain('(evidence: commit abc123)');
+  });
+
+  it('POST verdict rejects unknown statuses', async () => {
+    const res = await buildApp(makeDeps()).request('/api/projects/deepcast/backlog/verdict', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ line: 3, status: 'kinda-done' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST verdict honors an explicit propose kind', async () => {
+    const res = await buildApp(makeDeps()).request('/api/projects/deepcast/backlog/verdict', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-atlas-client': 'mcp' },
+      body: JSON.stringify({
+        line: 3,
+        status: 'confirmed-open',
+        propose: 'dropped',
+        note: 'superseded by the retry work',
+      }),
+    });
+    const body = await res.json();
+    expect(body.proposedLine).toContain('DROPPED [L3#0f0f0f]: superseded by the retry work');
   });
 });

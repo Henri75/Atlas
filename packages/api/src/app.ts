@@ -1,8 +1,16 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { editorUrl, embedderStatus, lineFromSourceRef, toHostPath } from '@atlas/core';
+import {
+  editorUrl,
+  embedderStatus,
+  lineFromSourceRef,
+  loadBacklogView,
+  proposeMarkerLine,
+  toHostPath,
+} from '@atlas/core';
 import type {
   AskService,
+  BacklogReviewService,
   Catalog,
   EntryKind,
   PathMapping,
@@ -43,6 +51,10 @@ export interface ApiDeps {
    * without knowing what was asked for.
    */
   embeddingsProvider: string;
+  /** Evidence gathering + LLM judgment for backlog reviews. */
+  backlogReview: BacklogReviewService;
+  /** Fuzzy-link floor for legacy DONE:/RESOLVED: markers (config SSoT). */
+  backlogMatchThreshold: number;
 }
 
 export interface BackfillProgress {
@@ -404,6 +416,179 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     const missing = await requireProject(c.req.param('slug'));
     if (missing) return missing;
     return c.json({ sessions: await deps.catalog.sessionsList(c.req.param('slug')) });
+  });
+
+  /**
+   * Backlog status view, derived at request time (docs-staleness precedent):
+   * marker linking, fuzzy legacy matching and verdict overlay always reflect
+   * the current matcher — nothing here is frozen into the index.
+   */
+  app.get('/api/projects/:slug/backlog', async (c) => {
+    const slug = c.req.param('slug');
+    const missing = await requireProject(slug);
+    if (missing) return missing;
+    const view = await loadBacklogView(deps.catalog, slug, {
+      threshold: deps.backlogMatchThreshold,
+    });
+    if (!view) return c.json({ error: 'project not found' }, 404);
+    return c.json({
+      ...view,
+      items: view.items.map((i) => withSource({ ...i, sourceRef: `line:${i.line}` })),
+      unlinked: view.unlinked.map((u) => withSource({ ...u, sourceRef: `line:${u.line}` })),
+    });
+  });
+
+  const VERDICT_STATUSES = new Set([
+    'confirmed-open',
+    'likely-resolved',
+    'confirmed-resolved',
+    'inconclusive',
+  ]);
+  const MARKER_KINDS = new Set(['resolved', 'dropped', 'reopened']);
+
+  /**
+   * The write-back line for a verdict — the piece that makes it durable once
+   * the caller appends it to the project's backlog.log. Only emitted when the
+   * verdict actually warrants a marker: confirmed-resolved → RESOLVED, and
+   * confirmed-open against a file that says resolved → REOPENED.
+   */
+  const markerProposalFor = (
+    item: { line: number; lineHash?: string; text: string; status: string },
+    verdict: { status: string; evidence?: string; reasoning?: string },
+  ): string | undefined => {
+    const today = new Date().toISOString().slice(0, 10);
+    if (verdict.status === 'confirmed-resolved') {
+      return proposeMarkerLine('resolved', item, item.text.slice(0, 120), today, verdict.evidence);
+    }
+    if (verdict.status === 'confirmed-open' && item.status === 'resolved') {
+      const why = verdict.reasoning?.slice(0, 120) || 'review found it unresolved';
+      return proposeMarkerLine('reopened', item, why, today, verdict.evidence);
+    }
+    return undefined;
+  };
+
+  const findBacklogItem = async (slug: string, line: number, sourcePath?: string) => {
+    const view = await loadBacklogView(deps.catalog, slug, {
+      threshold: deps.backlogMatchThreshold,
+    });
+    return view?.items.find((i) => i.line === line && (!sourcePath || i.sourcePath === sourcePath));
+  };
+
+  /**
+   * Review one item: gather evidence from the project's other sources, then
+   * (unless judge:false) let the LLM rule on it. Evidence-only serves MCP
+   * agents — a coding agent judges better than the mid-size Ask model, and can
+   * verify in the code itself. LLM failures return the evidence with an
+   * explicit error rather than a fabricated verdict (ask answer-trust ADR).
+   */
+  app.post('/api/projects/:slug/backlog/review', async (c) => {
+    const slug = c.req.param('slug');
+    const missing = await requireProject(slug);
+    if (missing) return missing;
+    const body = await c.req.json().catch(() => ({}));
+    const line = Number(body.line);
+    if (!Number.isInteger(line) || line < 1) {
+      return c.json({ error: 'line (a positive integer) is required' }, 400);
+    }
+    const item = await findBacklogItem(slug, line, body.sourcePath);
+    if (!item) {
+      return c.json(
+        { error: `no backlog item at line ${line} — list items via GET /api/projects/${slug}/backlog` },
+        404,
+      );
+    }
+    c.set('usageQuery', `backlog L${line}: ${item.text.slice(0, 200)}`);
+    const evidence = await deps.backlogReview.evidence(
+      slug,
+      item.text,
+      Math.min(Number(body.k ?? 8), 20),
+    );
+    const base = { item, evidence: evidence.map(withSource) };
+    if (body.judge === false) return c.json(base);
+    try {
+      const verdict = await deps.backlogReview.judge(
+        { line: item.line, text: item.text, date: item.date },
+        evidence,
+      );
+      const projectId = await deps.catalog.projectIdBySlug(slug);
+      if (projectId !== null) {
+        await deps.catalog.upsertBacklogVerdict(projectId, {
+          sourcePath: item.sourcePath,
+          line: item.line,
+          status: verdict.status,
+          confidence: verdict.confidence,
+          note: verdict.reasoning,
+          citations: verdict.citations,
+          reviewer: `atlas-llm:${verdict.model}`,
+        });
+      }
+      return c.json({ ...base, verdict, proposedLine: markerProposalFor(item, verdict) });
+    } catch (e) {
+      return c.json(
+        { ...base, error: 'llm_unavailable', detail: (e as Error).message.slice(0, 300) },
+        503,
+      );
+    }
+  });
+
+  /**
+   * Record a caller's own verdict (MCP agents after they judged the evidence,
+   * possibly against the code itself). The response's proposedLine is what the
+   * caller appends via the project's blessed helper — Atlas never writes
+   * project files.
+   */
+  app.post('/api/projects/:slug/backlog/verdict', async (c) => {
+    const slug = c.req.param('slug');
+    const missing = await requireProject(slug);
+    if (missing) return missing;
+    const body = await c.req.json().catch(() => ({}));
+    const line = Number(body.line);
+    if (!Number.isInteger(line) || line < 1) {
+      return c.json({ error: 'line (a positive integer) is required' }, 400);
+    }
+    if (!VERDICT_STATUSES.has(body.status)) {
+      return c.json({ error: `status must be one of: ${[...VERDICT_STATUSES].join(', ')}` }, 400);
+    }
+    if (body.propose !== undefined && !MARKER_KINDS.has(body.propose)) {
+      return c.json({ error: `propose must be one of: ${[...MARKER_KINDS].join(', ')}` }, 400);
+    }
+    const item = await findBacklogItem(slug, line, body.sourcePath);
+    if (!item) {
+      return c.json(
+        { error: `no backlog item at line ${line} — list items via GET /api/projects/${slug}/backlog` },
+        404,
+      );
+    }
+    const projectId = await deps.catalog.projectIdBySlug(slug);
+    if (projectId === null) return c.json({ error: 'project not found' }, 404);
+    const client = c.req.header('x-atlas-client') ?? 'unknown';
+    await deps.catalog.upsertBacklogVerdict(projectId, {
+      sourcePath: item.sourcePath,
+      line: item.line,
+      status: body.status,
+      confidence: Math.min(1, Math.max(0, Number(body.confidence ?? 0.5))),
+      note: typeof body.note === 'string' ? body.note : undefined,
+      citations: (Array.isArray(body.citations) ? body.citations : []).filter(
+        (x: unknown) => typeof x === 'number' && Number.isInteger(x),
+      ),
+      reviewer: `agent:${client}`,
+    });
+    // An explicit `propose` overrides the default mapping — e.g. an agent that
+    // decided an item is obsolete asks for the DROPPED line outright.
+    const proposedLine = body.propose
+      ? proposeMarkerLine(
+          body.propose,
+          item,
+          (typeof body.note === 'string' && body.note.slice(0, 120)) || item.text.slice(0, 120),
+          new Date().toISOString().slice(0, 10),
+          typeof body.evidence === 'string' ? body.evidence.slice(0, 120) : undefined,
+        )
+      : markerProposalFor(item, {
+          status: body.status,
+          evidence: typeof body.evidence === 'string' ? body.evidence.slice(0, 120) : undefined,
+          reasoning: typeof body.note === 'string' ? body.note : undefined,
+        });
+    return c.json({ ok: true, proposedLine });
   });
 
   app.get('/api/sessions/:id', async (c) => {

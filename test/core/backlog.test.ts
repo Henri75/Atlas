@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildBacklogView, backlogLineHash, parseBacklog } from '@atlas/core';
+import {
+  buildBacklogView,
+  backlogLineHash,
+  buildBacklogJudgePrompt,
+  parseBacklog,
+  parseJudgeVerdict,
+  proposeMarkerLine,
+} from '@atlas/core';
 import type { BacklogSourceEntry, BacklogVerdict } from '@atlas/core';
 
 /**
@@ -154,6 +161,28 @@ describe('buildBacklogView', () => {
     expect(view.items[0]!.lints).toContain('stale-review');
   });
 
+  it('emits a protocol-conformant marker line with hash ref', () => {
+    const line = proposeMarkerLine(
+      'resolved',
+      { line: 37, lineHash: 'a3f2c1' },
+      'backfill resume cursor persisted',
+      '2026-07-29',
+      'commit ebcec11',
+    );
+    expect(line).toBe(
+      '- [2026-07-29] RESOLVED [L37#a3f2c1]: backfill resume cursor persisted (evidence: commit ebcec11)',
+    );
+    // The emitted line must round-trip through the parser as a structured marker.
+    const parsed = parseBacklog(line, { projectSlug: 'x', sourcePath: '/x/kdb/backlog.log' });
+    expect(parsed[0]!.meta?.marker).toEqual({ kind: 'resolved', targetLine: 37, targetHash: 'a3f2c1' });
+  });
+
+  it('omits the hash and evidence when absent', () => {
+    expect(proposeMarkerLine('reopened', { line: 5 }, 'regressed', '2026-07-29')).toBe(
+      '- [2026-07-29] REOPENED [L5]: regressed',
+    );
+  });
+
   it('flags unstructured items and counts them as open', () => {
     const view = buildBacklogView(
       entriesFrom('VectorStore.updateSparse loses a whole 64-point slice on batch rejection'),
@@ -161,5 +190,50 @@ describe('buildBacklogView', () => {
     );
     expect(view.items[0]!).toMatchObject({ status: 'open' });
     expect(view.items[0]!.lints).toContain('unstructured');
+  });
+});
+
+describe('backlog judge', () => {
+  it('builds a prompt with the item, its date, and numbered evidence blocks', () => {
+    const prompt = buildBacklogJudgePrompt(
+      { line: 3, text: 'fix the Makefile build-local target', date: '2026-05-06T00:00:00Z' },
+      [
+        {
+          entryId: 42,
+          projectSlug: 'deepcast',
+          sourceType: 'kdb_changelog',
+          title: 'x',
+          snippet: 'build-local now calls docker compose build',
+          occurredAt: '2026-05-08T00:00:00Z',
+          score: 0.9,
+          sourcePath: '/x/kdb/changelog.log',
+        },
+      ],
+    );
+    expect(prompt).toContain('fix the Makefile build-local target');
+    expect(prompt).toContain('2026-05-06');
+    expect(prompt).toContain('[42] kdb_changelog (2026-05-08)');
+    expect(prompt).toContain('build-local now calls docker compose build');
+  });
+
+  it('parses a well-formed verdict, clamping confidence and filtering citations', () => {
+    const v = parseJudgeVerdict(
+      '```json\n{"status":"confirmed-resolved","confidence":1.7,"reasoning":"done in changelog","evidence":"changelog 2026-05-08","citations":[42,"junk",7]}\n```',
+      new Set([42]),
+    );
+    expect(v).toEqual({
+      status: 'confirmed-resolved',
+      confidence: 1,
+      reasoning: 'done in changelog',
+      evidence: 'changelog 2026-05-08',
+      citations: [42],
+    });
+  });
+
+  it('returns inconclusive on malformed output or unknown status', () => {
+    expect(parseJudgeVerdict('not json at all', new Set())).toMatchObject({ status: 'inconclusive' });
+    expect(parseJudgeVerdict('{"status":"kinda-done","confidence":0.5}', new Set())).toMatchObject({
+      status: 'inconclusive',
+    });
   });
 });

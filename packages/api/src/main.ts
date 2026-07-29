@@ -3,6 +3,7 @@ import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import {
   AskService,
+  BacklogReviewService,
   Catalog,
   SearchService,
   VectorStore,
@@ -45,6 +46,7 @@ async function main() {
 
   const search = new SearchService(catalog, vectors, embedder, cfg.docs);
   const ask = new AskService(search, catalog, cfg.llm, cfg.g2pClientId);
+  const backlogReview = new BacklogReviewService(search, cfg.llm, cfg.g2pClientId);
 
   const connection = new Redis(cfg.redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue('kdbscope-scan', { connection });
@@ -99,6 +101,8 @@ async function main() {
     // recorded as actually serving, which is the only way to tell a deliberate
     // provider from `auto` having settled for one.
     embeddingsProvider: cfg.embeddings.provider,
+    backlogReview,
+    backlogMatchThreshold: cfg.backlogMatchThreshold,
 
     // Walking Qdrant's storage tree is the slow part; sizes move slowly, so a
     // short TTL keeps the dashboard fresh without re-crawling on every poll.
