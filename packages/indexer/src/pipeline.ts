@@ -590,6 +590,24 @@ export async function rebuildSparseVectors(
   /** Points whose re-tokenisation was rejected — reported, never swallowed. */
   let skipped = 0;
 
+  // Suspend HNSW building for the duration. Writing to every segment otherwise
+  // makes Qdrant re-optimise each one — rebuilding the dense index this pass
+  // never touches — and on a loaded host that held segment locks until the
+  // update queue stopped draining altogether. See `setIndexingThreshold`.
+  //
+  // The marker is what makes the restore survive a crash: `finally` does not run
+  // if the process is killed, and a collection left at threshold 0 would serve
+  // every dense query by exact scan, indefinitely and silently.
+  await deps.catalog.setSetting(INDEXING_SUSPENDED, collection).catch(() => {});
+  await deps.vectors.setIndexingThreshold(0);
+  try {
+    return await runSparsePass();
+  } finally {
+    await deps.vectors.setIndexingThreshold(null).catch(() => {});
+    await deps.catalog.setSetting(INDEXING_SUSPENDED, '').catch(() => {});
+  }
+
+  async function runSparsePass(): Promise<{ entries: number; points: number; skipped: number }> {
   for (;;) {
     // Only entries whose points exist: update-vectors rejects a batch containing
     // any unknown id, so walking never-embedded rows would cost the whole page.
@@ -626,6 +644,27 @@ export async function rebuildSparseVectors(
   }
 
   return { entries, points, skipped };
+  }
+}
+
+/**
+ * Setting key holding the collection whose HNSW building is currently
+ * suspended, or '' when none is.
+ *
+ * Read at boot (`restoreIndexingThreshold`) so a rebuild killed mid-pass cannot
+ * leave the collection permanently unindexed. The failure it guards is silent:
+ * dense search still returns correct results by exact scan, just slowly, so
+ * nothing would ever report it.
+ */
+export const INDEXING_SUSPENDED = 'indexing_suspended';
+
+/** Undo a suspension left behind by a rebuild that did not finish. */
+export async function restoreIndexingThreshold(deps: PipelineDeps): Promise<boolean> {
+  const suspended = await deps.catalog.getSetting(INDEXING_SUSPENDED).catch(() => null);
+  if (!suspended || suspended !== deps.vectors.collection) return false;
+  await deps.vectors.setIndexingThreshold(null);
+  await deps.catalog.setSetting(INDEXING_SUSPENDED, '').catch(() => {});
+  return true;
 }
 
 export async function processScanJob(

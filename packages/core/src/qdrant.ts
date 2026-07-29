@@ -89,6 +89,13 @@ const OPTIMIZERS = {
 };
 
 /**
+ * Qdrant's own default: build HNSW for a segment once it holds this many
+ * vectors. Named here because `setIndexingThreshold(null)` has to restore
+ * something, and "whatever it was before" is not knowable after a crash.
+ */
+const DEFAULT_INDEXING_THRESHOLD = 10_000;
+
+/**
  * Translate search filters into a Qdrant payload filter. An over-broad filter
  * silently returns the wrong rows and an over-narrow one silently returns
  * none, so this is worth testing on its own.
@@ -214,6 +221,33 @@ export class VectorStore {
     await this.client.updateCollection(this.collection, {
       quantization_config: QUANTIZATION,
       optimizers_config: OPTIMIZERS,
+    });
+  }
+
+  /**
+   * Suspend HNSW index building, or restore it.
+   *
+   * The documented Qdrant bulk-write pattern, and this codebase learned why the
+   * hard way (2026-07-29). A sparse re-tokenisation writes to every segment;
+   * Qdrant responds by re-optimising each one, which means rebuilding the
+   * *dense* HNSW index the change never touched. On a loaded host that
+   * optimisation held segment locks long enough for Qdrant to log
+   *
+   *   "Trying to read-lock a segment is taking a long time. This could be a
+   *    deadlock and may block new updates."
+   *
+   * and the update queue stopped draining entirely: 4,070 operations stranded
+   * in the WAL, every subsequent write returning `wait_timeout`, and a restart
+   * alone did not clear it. Setting the threshold to 0 released the queue
+   * immediately — the whole backlog applied within minutes.
+   *
+   * `null` restores the configured default. Search stays correct while
+   * suspended: without HNSW, dense queries fall back to exact scan, which is
+   * slower and not wrong.
+   */
+  async setIndexingThreshold(threshold: number | null): Promise<void> {
+    await this.client.updateCollection(this.collection, {
+      optimizers_config: { ...OPTIMIZERS, indexing_threshold: threshold ?? DEFAULT_INDEXING_THRESHOLD },
     });
   }
 

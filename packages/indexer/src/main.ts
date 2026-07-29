@@ -18,6 +18,7 @@ import {
   needsBackfill,
   processScanJob,
   rebuildSparseVectors,
+  restoreIndexingThreshold,
   sparseRebuildAction,
   type PipelineDeps,
   type ScanJobData,
@@ -202,6 +203,12 @@ async function main() {
    * The decision itself lives in `sparseRebuildAction`, as a pure function: the
    * inline version of it was silently wrong (see that function's note).
    */
+  // A rebuild killed mid-pass leaves HNSW building switched off, which nothing
+  // would report: dense search stays correct, just served by exact scan.
+  if (await restoreIndexingThreshold(deps).catch(() => false)) {
+    console.warn('[indexer] restored HNSW indexing left suspended by an interrupted sparse rebuild');
+  }
+
   const sparseKey = `sparse_version:${vectors.collection}`;
   // Keyed by target version as well as collection: a cursor left behind by an
   // interrupted pass to v2 says nothing about how far a pass to v3 has got, and

@@ -125,6 +125,40 @@ reachable rather than inventing a policy. It runs strictly *after* the
 empty-scope test, or it would manufacture hits for a project scope that matched
 nothing and suppress the widening.
 
+## The rebuild is not free, and finding out cost a stalled index
+
+Running it on the live index taught three things that the design had not
+anticipated, all now fixed in code:
+
+1. **The pass must suspend HNSW building.** Writing to every segment makes
+   Qdrant re-optimise each one, which rebuilds the *dense* index this change
+   never touches. On a loaded host (load average 26, ~40 unrelated containers)
+   that optimisation held segment locks until Qdrant logged *"Trying to
+   read-lock a segment is taking a long time. This could be a deadlock and may
+   block new updates"* — and the update queue stopped draining. 4,070 operations
+   stranded in the WAL, every write returning `wait_timeout`, and a Qdrant
+   restart did **not** clear it. Setting `indexing_threshold: 0` released the
+   queue immediately and the whole backlog applied within minutes.
+   `rebuildSparseVectors` now does this itself, with a settings marker so a pass
+   killed mid-flight cannot leave the collection permanently unindexed.
+
+2. **Batch size is about operations, not bytes.** `updateSparse` reused
+   `UPSERT_BATCH = 64`, sized for dense vectors at 768 floats each. A sparse
+   vector is a few dozen pairs; what bounds the pass is how many write
+   operations Qdrant must apply one at a time. 326k points at 64 each is ~5,100.
+   Now 512.
+
+3. **`wait: false` means durable, not searchable.** Verification that reads
+   immediately after a large pass reads the *old* vectors and looks like a
+   failed rebuild. Half an hour was spent debugging a write path that was
+   working.
+
+A fourth lesson was about verification rather than the rebuild: the first
+coverage probe compared stored tokens against freshly computed ones, which for
+any entry containing no literals produces "identical" — indistinguishable from
+"applied". A probe for a migration must sample only records the migration
+actually changes.
+
 ## Consequences
 
 - **Every stored sparse vector is rewritten once.** Cheap (local hashing, no
@@ -133,6 +167,11 @@ nothing and suppress the widening.
   good. `KDB_SPARSE_REBUILD=false` is the kill switch; skipping leaves keyword
   search on stale tokens — degraded, not broken, since dense retrieval is
   unaffected — and the pass reruns next boot.
+- **Measured result on the live index.** The question that prompted this ADR
+  went from *all five answering entries absent from the top 100* to
+  `467695` at **rank 1** and `465383` at **rank 5**, with Ask citing both and
+  reproducing the finding correctly (621k videos, >1s per read, 462–680ms
+  detoast, the Redis cache-aside that fixed it).
 - **`ftsQuery` terms must stay unquoted.** Postgres' english parser splits a
   measurement into number and unit (`to_tsvector('english','6.8MB')` is
   `'6.8':1 'mb':2`) and parses the bare term `6.8mb` into the adjacency query
