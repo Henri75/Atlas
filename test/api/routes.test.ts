@@ -867,7 +867,13 @@ describe('backlog routes', () => {
     expect(body.evidence[0]).toMatchObject({ entryId: 42 });
     expect(verdictUpserts[0]).toMatchObject({ projectId: 1 });
     expect((verdictUpserts[0]!.v as any).reviewer).toBe('atlas-llm:test-model');
-    expect(body.proposedLine).toMatch(/^- \[\d{4}-\d{2}-\d{2}\] RESOLVED \[L3#0f0f0f\]: add retry/);
+    // The reviewer's own one-line reason, not the first 120 characters of the
+    // item. The marker is a permanent record a human reads later, and the
+    // explicit `propose` path already preferred the note — this is the same
+    // rule on the path that gets used far more often.
+    expect(body.proposedLine).toMatch(
+      /^- \[\d{4}-\d{2}-\d{2}\] RESOLVED \[L3#0f0f0f\]: changelog says done/,
+    );
   });
 
   it('POST review with judge:false returns evidence only and stores nothing', async () => {

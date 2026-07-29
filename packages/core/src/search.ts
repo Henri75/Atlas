@@ -179,9 +179,18 @@ export class SearchService {
   private async hydrate(raw: { entryId: number; score: number }[]): Promise<SearchHit[]> {
     const rows = await this.catalog.getEntries(raw.map((r) => r.entryId).filter(Boolean));
     const hits: SearchHit[] = [];
+    // Qdrant answers with points, and an entry holds as many points as it has
+    // chunks — so a query matching two chunks of one entry gets it back twice.
+    // A hit is an entry here (it carries the entry's title and body, never the
+    // chunk's), so a repeat is never information: it spends a slot in a fixed
+    // window and, in the backlog judge prompt, renders the same evidence block
+    // twice, where repetition reads as corroboration. Points arrive
+    // score-ordered, so the first occurrence is the best one.
+    const seen = new Set<number>();
     for (const r of raw) {
       const row = rows.get(r.entryId);
-      if (!row) continue;
+      if (!row || seen.has(r.entryId)) continue;
+      seen.add(r.entryId);
       hits.push({
         entryId: r.entryId,
         score: r.score,

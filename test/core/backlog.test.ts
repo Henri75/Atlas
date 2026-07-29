@@ -183,6 +183,48 @@ describe('buildBacklogView', () => {
     );
   });
 
+  /**
+   * The line it emits is appended verbatim to an append-only file that the
+   * protocol defines as one physical line per item. A summary carrying a
+   * newline — and these come from callers, including agents writing free-text
+   * notes — would split into two lines, shifting every line number below it and
+   * leaving half a marker parsed as a new backlog item.
+   */
+  it('never emits more than one physical line', () => {
+    const line = proposeMarkerLine(
+      'resolved',
+      { line: 7, lineHash: 'abc123' },
+      'fixed the thing\nand also\r\nthis',
+      '2026-07-29',
+      'commit\ndeadbee',
+    );
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line).toContain('fixed the thing and also this');
+  });
+
+  /**
+   * A marker summary is a permanent record a human reads later. Cutting the
+   * item text at a fixed byte count lands mid-word — the first verdict recorded
+   * against this repo produced "...autoSelect calls ollamaAvailable(), a
+   * single", which restates nothing.
+   */
+  it('truncates a long summary on a word boundary and marks the cut', () => {
+    const long =
+      'alpha bravo charlie delta echo foxtrot golf hotel india juliett kilo lima mike ' +
+      'november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu';
+    const line = proposeMarkerLine('resolved', { line: 1 }, long, '2026-07-29');
+    const summary = line.split(']: ')[1]!;
+    expect(summary.length).toBeLessThanOrEqual(121);
+    expect(summary).toMatch(/…$/);
+    // Cut between words, so the last kept word is whole.
+    expect(long).toContain(summary.replace(/…$/, '').trim());
+  });
+
+  it('leaves a short summary exactly as given', () => {
+    const line = proposeMarkerLine('dropped', { line: 2 }, 'no longer relevant', '2026-07-29');
+    expect(line).toBe('- [2026-07-29] DROPPED [L2]: no longer relevant');
+  });
+
   it('flags unstructured items and counts them as open', () => {
     const view = buildBacklogView(
       entriesFrom('VectorStore.updateSparse loses a whole 64-point slice on batch rejection'),

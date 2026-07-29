@@ -287,3 +287,70 @@ describe('SearchService query-embedding reuse', () => {
     expect(e.calls).toBe(2);
   });
 });
+
+/**
+ * Qdrant answers with *points*, and an entry is chunked into as many points as
+ * it needs — so a query that matches two chunks of the same entry gets that
+ * entry back twice. `hydrate` looked each point up and pushed a hit per point,
+ * with nothing collapsing them.
+ *
+ * Seen live on 2026-07-29 while reviewing the backlog feature: an 8-hit
+ * evidence bundle contained 6 distinct entries, two of them twice. The cost is
+ * not cosmetic — the duplicates spend slots in a fixed result window, and
+ * `buildBacklogJudgePrompt` renders one numbered block per hit, so the LLM
+ * judge sees the same evidence twice and reads repetition as corroboration.
+ *
+ * Points arrive score-ordered, so keeping the first occurrence keeps the best.
+ */
+describe('SearchService entry de-duplication', () => {
+  const dupVectors = (raw: { entryId: number; score: number }[]) =>
+    ({ query: async () => raw }) as any;
+  const embedder = { name: 'x', model: 'm', dim: 3, embed: async () => [[1, 2, 3]] };
+
+  it('returns an entry once even when several of its chunks match', async () => {
+    const s = new SearchService(
+      fakeCatalog({ 1: row(1), 2: row(2) }),
+      dupVectors([
+        { entryId: 1, score: 0.9 },
+        { entryId: 2, score: 0.8 },
+        { entryId: 1, score: 0.7 },
+        { entryId: 2, score: 0.6 },
+      ]),
+      embedder,
+    );
+    const r = await s.search('q');
+    expect(r.hits.map((h) => h.entryId)).toEqual([1, 2]);
+  });
+
+  it('keeps the best-scoring occurrence', async () => {
+    const s = new SearchService(
+      fakeCatalog({ 1: row(1) }),
+      dupVectors([
+        { entryId: 1, score: 0.91 },
+        { entryId: 1, score: 0.42 },
+      ]),
+      embedder,
+    );
+    const r = await s.search('q');
+    expect(r.hits).toHaveLength(1);
+    expect(r.hits[0]!.score).toBe(0.91);
+  });
+
+  it('does not let duplicates eat the result window', async () => {
+    // Three distinct entries behind six points: a limit of 3 must return 3.
+    const s = new SearchService(
+      fakeCatalog({ 1: row(1), 2: row(2), 3: row(3) }),
+      dupVectors([
+        { entryId: 1, score: 0.9 },
+        { entryId: 1, score: 0.89 },
+        { entryId: 2, score: 0.8 },
+        { entryId: 2, score: 0.79 },
+        { entryId: 3, score: 0.7 },
+        { entryId: 3, score: 0.69 },
+      ]),
+      embedder,
+    );
+    const r = await s.search('q', {}, 3);
+    expect(r.hits.map((h) => h.entryId)).toEqual([1, 2, 3]);
+  });
+});

@@ -333,6 +333,29 @@ export async function loadBacklogView(
  * a verdict durable. Emitting it from one place keeps every surface (CLI,
  * MCP, API) protocol-conformant, hash included.
  */
+/** Longest marker summary before it is cut. */
+export const MARKER_SUMMARY_MAX = 120;
+
+/**
+ * Fit free text into one marker summary.
+ *
+ * Two hazards, both of which land in an append-only file nobody may rewrite.
+ * A newline splits the marker in two, shifting every line number below it and
+ * leaving the tail to parse as a fresh backlog item — and these strings come
+ * from callers, agents included, writing free-text notes. A fixed-width cut
+ * lands mid-word: the first verdict recorded against this repo proposed
+ * "…autoSelect calls ollamaAvailable(), a single", which restates nothing to
+ * the person who reads it in six months.
+ */
+export function summarizeForMarker(text: string, max = MARKER_SUMMARY_MAX): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  // Keep the hard cut when there is no space to fall back to (one long token).
+  return `${(lastSpace > max / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
 export function proposeMarkerLine(
   kind: BacklogMarker['kind'],
   item: { line: number; lineHash?: string },
@@ -342,8 +365,8 @@ export function proposeMarkerLine(
   evidence?: string,
 ): string {
   const ref = item.lineHash ? `L${item.line}#${item.lineHash}` : `L${item.line}`;
-  const tail = evidence ? ` (evidence: ${evidence})` : '';
-  return `- [${date}] ${kind.toUpperCase()} [${ref}]: ${summary}${tail}`;
+  const tail = evidence ? ` (evidence: ${summarizeForMarker(evidence, 80)})` : '';
+  return `- [${date}] ${kind.toUpperCase()} [${ref}]: ${summarizeForMarker(summary)}${tail}`;
 }
 
 export interface JudgeVerdict {

@@ -478,7 +478,13 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
   ): string | undefined => {
     const today = new Date().toISOString().slice(0, 10);
     if (verdict.status === 'confirmed-resolved') {
-      return proposeMarkerLine('resolved', item, item.text.slice(0, 120), today, verdict.evidence);
+      // The reviewer's own words when there are any. The protocol asks the
+      // marker to restate the item, and a one-line reason for calling it done
+      // does that better than the first 120 characters of the original — which
+      // is what the explicit `propose` path below already preferred, leaving
+      // the commoner path with the worse summary.
+      const summary = verdict.reasoning?.trim() || item.text;
+      return proposeMarkerLine('resolved', item, summary, today, verdict.evidence);
     }
     if (verdict.status === 'confirmed-open' && item.status === 'resolved') {
       const why = verdict.reasoning?.slice(0, 120) || 'review found it unresolved';
@@ -599,13 +605,13 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
       ? proposeMarkerLine(
           body.propose,
           item,
-          (typeof body.note === 'string' && body.note.slice(0, 120)) || item.text.slice(0, 120),
+          (typeof body.note === 'string' && body.note.trim()) || item.text,
           new Date().toISOString().slice(0, 10),
-          typeof body.evidence === 'string' ? body.evidence.slice(0, 120) : undefined,
+          typeof body.evidence === 'string' ? body.evidence : undefined,
         )
       : markerProposalFor(item, {
           status: body.status,
-          evidence: typeof body.evidence === 'string' ? body.evidence.slice(0, 120) : undefined,
+          evidence: typeof body.evidence === 'string' ? body.evidence : undefined,
           reasoning: typeof body.note === 'string' ? body.note : undefined,
         });
     return c.json({ ok: true, proposedLine });
