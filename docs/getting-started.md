@@ -38,9 +38,14 @@ works fully; Ask returns its sources and tells you the LLM is unreachable.
 
 ```bash
 cd "/Users/nasta/__CODING NEW/kdb"
-make env      # writes .env from .env.example — open it and check the two host paths
 make up       # builds images, starts 7 containers
 ```
+
+Configuration is already committed in `config/atlas.defaults.env`; there is
+nothing to copy. Check the two host paths at the top of it if your projects do
+not live under `/Users/nasta/__CODING NEW`. To change a value on just this
+machine, put that one line in a `.env` — it overrides the committed file and is
+gitignored.
 
 That's it. Three surfaces are now live:
 

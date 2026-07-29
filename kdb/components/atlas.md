@@ -1176,3 +1176,35 @@
 
 **Status:**
 - Completed
+### [2026-07-29] - Improvement: configuration sources — committed defaults, Doppler secrets, .env demoted to override
+
+**Objective:**
+- Bring Atlas in line with the operating rule that secrets come from Doppler and everything else from a committed configuration file, with .env only an optional override — and make the stack run with no .env at all.
+
+**Summary of Work:**
+- `.env.example` became `config/atlas.defaults.env` (git mv, so history follows), committed and authoritative.
+- `docker-compose.yml` reads an ordered `env_file:` list — defaults, then `.env` with `required: false`. The Makefile passes the matching `--env-file` pair on the `COMPOSE` variable so no target can diverge.
+- Doppler wraps every container-creating target (`up`, `restart-build`, `restart-mcp`); the two API keys are declared in `environment:` as `${VAR:-}` so the shell (Doppler) outranks the files, and absence is silent.
+- `make env` removed; the repo's redundant `.env` retired after verifying every value matched the committed file.
+- New `scripts/config-sources.sh` (`make config-check`) and `test/core/configDefaults.test.ts`.
+
+**Key Decisions & Rationale:**
+- **Chose the .env format over TOML/JSON/TS.** Compose consumes it natively on both paths it needs, so the design needs no generator and no dependency. Every alternative required a host-side step whose only job was flattening structure back into the flat KEY=VALUE both consumers actually take — and that step would have made `make up` depend on `npm install` on a fresh clone, which it does not today. Comments were the only real advantage TOML had over JSON, and this format has them.
+- **Flags on the COMPOSE variable, not on individual targets.** Interpolation feeds the config hash compose uses to decide whether to recreate; a target that omitted them would compute a different service definition and recreate containers nothing had changed.
+- **Lazy DOPPLER (`=` not `:=`)** so only the three recipes that use it pay for the probe; otherwise every `make ps` would make a Doppler API round-trip.
+- **Did not move DATABASE_URL's credential to Doppler.** It is a fixed local pair for a container-internal database with no port beyond 127.0.0.1; treating it as a secret implies rotation machinery for something unreachable from off-box.
+
+**Code/Files Modified:**
+- config/atlas.defaults.env (from .env.example), docker-compose.yml, Makefile
+- scripts/config-sources.sh (new), test/core/configDefaults.test.ts (new)
+- docs/superpowers/specs/2026-07-29-configuration-sources-design.md, docs/configuration.md, docs/operations.md, docs/getting-started.md, README.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Measuring compose rather than trusting its reputation. Six behaviours were verified before the spec was written, and self-review caught two more I had asserted without testing — `--env-file` on a missing path is a hard error (and .env is absent by default, so the unconditional form would break every target on a clean checkout), and an explicit `--env-file` suppresses the implicit ./.env.
+- **What Failed:** My Doppler probe was wrong and `make restart-build` died on the first real run. `doppler configure get project --plain` exits **0 with empty output** when no project is configured, so the detection claimed a working session. Fixed by probing the operation itself (`doppler run --command true`) rather than something correlated with it. The lesson generalises: a readiness check should run the thing it is gating.
+- **The new coverage test paid for itself immediately** — QDRANT_STORAGE_PATH, KDB_DOCS_AGING_MONTHS and KDB_ARCHIVED_PENALTY are read by config.ts and were documented as configurable, but had never been in .env.example at all. They were reachable only as zod defaults.
+- Verified live with no .env present: config reaches the containers, smoke passes 7/7, search unchanged.
+- 809 tests green, lint clean, 12/12 compose checks.
+
+**Status:**
+- Completed

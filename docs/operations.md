@@ -15,7 +15,8 @@
 
 ```bash
 make up / make down / make ps / make logs
-make restart-build    # apply local changes — code AND .env (see below)
+make restart-build    # apply local changes — code AND configuration (see below)
+make config-check     # assert compose resolves configuration as designed
 make reindex          # incremental, now
 make reindex-full     # rebuild everything (dedup keys make it safe)
 make smoke            # 6 endpoint checks against the running stack
@@ -29,7 +30,7 @@ same environment — so it applies **neither** kind of change this stack has:
 | you edited | why a restart misses it |
 |---|---|
 | `packages/*` | source is `COPY`ed into the image and built there, so the container re-runs the old bundle until the image is rebuilt |
-| `.env` | read when the **container is created**, not baked into the image, so it needs a recreate |
+| `config/atlas.defaults.env` or `.env` | read when the **container is created**, not baked into the image, so it needs a recreate |
 
 A plain `docker compose up -d` is not enough for the second either, and this is
 the trap worth knowing: compose records `env_file` as a **path**, not as resolved
@@ -39,6 +40,11 @@ decides nothing changed and skips the recreate. No error, no warning, setting
 silently not applied. Variables compose interpolates into `environment:`
 (`OLLAMA_URL`, `API_PORT`, `CODE_ROOT_HOST`) *do* move the hash and *are* picked
 up. Same file, two behaviours.
+
+(Configuration now lives in `config/atlas.defaults.env`, with `.env` as an
+optional override — see [configuration.md](configuration.md). That removed the
+*duplicate delivery path*, not this hazard: container environment is still fixed
+at creation, so applying a config change still means recreating the container.)
 
 `make restart-build` removes the distinction — it always rebuilds and always
 recreates:

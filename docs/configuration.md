@@ -3,6 +3,7 @@
 # Configuration
 
 ## Revision History
+- 2026-07-29 18:40 UTC — Configuration sources restructured: `config/atlas.defaults.env` is committed and authoritative, Doppler supplies secrets, `.env` is an optional override that is absent by default. `make env` removed.
 - 2026-07-29 17:50 UTC — `KDB_ALLOW_EMBEDDER_DOWNGRADE` and *Why `auto` will refuse to start*: the probe retries, and a fallback can no longer silently migrate the index.
 - 2026-07-29 14:35 UTC — `KDB_SPARSE_REBUILD`, the kill switch for the sparse re-tokenisation pass.
 - 2026-07-12 13:50 UTC — Product renamed to **Atlas**; documented why the `KDBSCOPE_*` / `kdbscope` identifiers survive the rename.
@@ -14,7 +15,45 @@
 
 All configuration is environment-driven through the central module
 `packages/core/src/config.ts` (§3.1: no inline constants anywhere).
-Compose reads `.env` (create with `make env`).
+
+## Where values come from
+
+Three sources, lowest precedence first:
+
+| # | source | holds | committed |
+|---|---|---|---|
+| 1 | **`config/atlas.defaults.env`** | everything non-secret — host paths, ports, providers, models, intervals, thresholds | yes |
+| 2 | **Doppler** | secrets only (`*_API_KEY`), when a session is configured | n/a |
+| 3 | **`.env`** | anything, to override on one machine | no (gitignored) |
+
+**Edit `config/atlas.defaults.env`.** It is the source of truth, and the stack
+runs correctly with **no `.env` at all** — that is the normal state, not a
+degraded one. Create a `.env` only to change a value on one machine, containing
+just the lines you are changing.
+
+Then apply it with **`make restart-build`**. `make restart` will not: container
+environment is fixed when the container is created (see
+[operations.md](operations.md)).
+
+Compose reads both files natively, in order — `--env-file` for `${...}`
+interpolation and a two-entry `env_file:` for container environment — so there is
+no generator and no copy step. The `.env` entry is `required: false`, which is
+what lets it be absent.
+
+**Secrets.** `EMBEDDINGS_API_KEY` and `LLM_API_KEY` are declared as empty slots
+and are passed through `environment:` as `${VAR:-}`. Under `doppler run --` the
+injected value wins (shell beats file); without Doppler the expression resolves
+from the files; with neither it is empty — which is Atlas's actual state today,
+since Ollama and the local G2P proxy need no key. Doppler is never required: the
+Makefile detects a configured session and runs without it otherwise.
+
+Because this design rests on six measured Compose behaviours, `make config-check`
+asserts them against the real `docker compose` — a release that changed any one
+of them would otherwise start the stack with the wrong values and no error.
+
+> The Makefile passes explicit `--env-file` flags, which **suppresses Compose's
+> implicit `./.env`**. A bare `docker compose …` is therefore no longer
+> equivalent to going through `make`; the Makefile is the entry point (§3.5).
 
 ### A note on the `kdbscope` / `KDB_` names you will see here
 

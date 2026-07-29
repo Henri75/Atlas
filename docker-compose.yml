@@ -12,7 +12,13 @@ name: kdb
 
 x-node-common: &node-common
   restart: unless-stopped
-  env_file: .env
+  # Ordered: committed defaults, then an optional .env that overrides them.
+  # Later wins, per key. `required: false` is what lets .env be absent, which is
+  # its normal state — the stack is fully configured without one.
+  env_file:
+    - config/atlas.defaults.env
+    - path: .env
+      required: false
   environment:
     CODE_ROOT: /data/code
     CLAUDE_PROJECTS_DIR: /data/claude/projects
@@ -33,6 +39,13 @@ x-node-common: &node-common
     # Host-side Ollama (preferred embedder). Falls back to the bundled CPU
     # model with a loud warning when unreachable.
     OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+    # Secrets, listed here rather than left to env_file so Doppler can supply
+    # them. `environment:` outranks `env_file:`, and `${...}` reads the shell
+    # first — so under `doppler run --` the injected value wins, without it the
+    # expression resolves from the --env-file pair, and with neither it is empty,
+    # which is the state Atlas runs in today (Ollama and the G2P proxy need no key).
+    EMBEDDINGS_API_KEY: ${EMBEDDINGS_API_KEY:-}
+    LLM_API_KEY: ${LLM_API_KEY:-}
   extra_hosts:
     - 'host.docker.internal:host-gateway'
 

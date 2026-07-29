@@ -1,9 +1,42 @@
 # Atlas — single entry point (§3.5).
 
 SHELL := /bin/bash
-COMPOSE := docker compose
 
-.PHONY: help env install build test lint up down restart logs ps reindex reindex-full smoke cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals
+# Configuration reaches compose from two ordered files: the committed defaults,
+# then an optional .env that overrides them. Both are passed on EVERY compose
+# invocation, which is why the flags live on this variable rather than on the
+# targets that obviously need them — interpolation feeds the config hash compose
+# uses to decide whether to recreate a container, so a target that omitted them
+# would compute a different service definition and recreate containers nothing
+# had changed.
+#
+# `.env` is included only when it exists: `--env-file` on a missing path is a
+# hard error ("couldn't find env file"), there is no `required: false` for the
+# CLI flag, and .env is absent by default.
+#
+# Note that passing these suppresses compose's implicit ./.env — which is the
+# point, but it does mean a bare `docker compose ...` is no longer equivalent to
+# going through make. §3.5: the Makefile is the entry point.
+DOTENV := $(wildcard .env)
+COMPOSE := docker compose --env-file config/atlas.defaults.env $(if $(DOTENV),--env-file .env,)
+
+# Secrets come from Doppler when a session actually works, and from the files
+# otherwise. Any failure — not installed, not logged in, no project selected —
+# leaves this empty and the stack runs exactly as before: the only secrets are
+# two API keys that are empty unless you point Atlas at a keyed endpoint.
+#
+# The probe runs the real command rather than something correlated with it.
+# `doppler configure get project --plain` looked like the obvious check and is
+# useless: with no project configured it exits **0** with empty output, so the
+# first version of this detected a working session that immediately failed with
+# "You must specify a project". `doppler run --command true` fails exactly when
+# the thing we are about to do would fail.
+#
+# Lazy (`=`, not `:=`) so only the three recipes that reference it pay for the
+# probe — otherwise every `make ps` would make a Doppler API round-trip.
+DOPPLER = $(shell doppler run --command 'true' >/dev/null 2>&1 && echo 'doppler run --')
+
+.PHONY: help install build test lint up down restart logs ps reindex reindex-full smoke config-check print-compose cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals
 
 # The harness runs on the host, not in a container: a variant has to be a config
 # object rather than an image rebuild for an A/B to be possible at all. Ports come
@@ -17,9 +50,6 @@ EVAL := npm run --silent build -w packages/core -w packages/eval >/dev/null && $
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-env: ## create .env from the example if missing
-	@test -f .env || (cp .env.example .env && echo "created .env — review paths/providers")
-
 install: ## install workspace dependencies
 	npm install
 
@@ -32,8 +62,8 @@ test: ## unit test suite
 lint: ## typecheck all packages
 	npm run lint
 
-up: env ## build images and start the full stack
-	$(COMPOSE) up -d --build
+up: ## build images and start the full stack
+	$(DOPPLER) $(COMPOSE) up -d --build
 	@echo "UI    → http://127.0.0.1:$${UI_PORT:-8712}"
 	@echo "API   → http://127.0.0.1:$${API_PORT:-8710}/api/health"
 	@echo "MCP   → http://127.0.0.1:$${MCP_PORT:-8711}/mcp"
@@ -72,14 +102,14 @@ restart: ## bounce app services only — does NOT pick up code or .env (see rest
 # and have no reason to bounce. They must already be running: `make up` is the
 # cold start. `mcp` is excluded for the reason `restart` excludes it — use
 # `make restart-mcp` when packages/mcp itself changed.
-restart-build: env ## rebuild + recreate app services — the one that picks up code AND .env
-	$(COMPOSE) up -d --build --force-recreate --no-deps indexer api ui
+restart-build: ## rebuild + recreate app services — the one that applies config AND code
+	$(DOPPLER) $(COMPOSE) up -d --build --force-recreate --no-deps indexer api ui
 
 restart-mcp: ## restart the MCP server (WARNING: drops atlas_* tools from live agent sessions)
 	@echo "⚠️  This drops the atlas_* tools from every running Claude Code session."
 	@echo "   They do NOT return without restarting the session. Ctrl-C to abort."
 	@sleep 3
-	$(COMPOSE) up -d --no-deps --force-recreate mcp
+	$(DOPPLER) $(COMPOSE) up -d --no-deps --force-recreate mcp
 
 logs: ## follow service logs
 	$(COMPOSE) logs -f --tail 100 indexer api mcp
@@ -95,6 +125,14 @@ reindex-full: ## reprocess everything from scratch
 
 smoke: ## poke health + search endpoints of a running stack
 	bash scripts/smoke.sh
+
+config-check: ## assert compose resolves configuration the way the design assumes
+	bash scripts/config-sources.sh
+
+# Not in help: an accessor so scripts can test the *real* compose invocation
+# rather than restating its flags and drifting from it.
+print-compose:
+	@echo '$(COMPOSE)'
 
 cli-link: ## make the `atlas` command available on this machine
 	npm run build -w packages/cli && npm link --workspace packages/cli

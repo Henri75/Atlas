@@ -25,12 +25,16 @@ Atlas is a **read-only lens**: it never writes to your projects. The whole index
 
 ```bash
 brew install ollama && brew services start ollama   # strongly recommended
-make env        # creates .env from .env.example — review paths
 make up         # builds images, starts the 7-service stack
 open http://127.0.0.1:8712        # web UI
 make cli-link && atlas status      # CLI
 claude mcp add --transport http atlas http://127.0.0.1:8711/mcp   # Claude Code
 ```
+
+Configuration is committed in `config/atlas.defaults.env` — nothing to copy.
+Check the two host paths at the top if your projects do not live under
+`/Users/nasta/__CODING NEW`. A gitignored `.env` overrides it per machine and is
+absent by default; secrets come from Doppler when a session is configured.
 
 **Run Ollama.** The `auto` embedder prefers it and pulls `nomic-embed-text` on
 first boot; without it Atlas falls back to a bundled CPU model that is several
