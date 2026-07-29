@@ -77,6 +77,24 @@ const SOURCE_WEIGHT: Partial<Record<string, number>> = {
 };
 
 /**
+ * Sources that explain a finding rather than narrate the search for it.
+ *
+ * Everything except `claude_session` and `git_commit`: a commit message records
+ * that something changed, which is rarely the answer to "what was found and
+ * why". Used to top the retrieval pool up (`withExplanatoryFloor`), never to
+ * filter it — a question whose honest answer lives in a transcript must still
+ * be answered from that transcript.
+ */
+const EXPLANATORY_SOURCES = [
+  'doc',
+  'kdb_component',
+  'kdb_changelog',
+  'kdb_backlog',
+  'kdb_report',
+  'kdb_session',
+] as const;
+
+/**
  * At most this fraction of the k context blocks may be claude_session. A
  * question whose only matches are sessions still fills up (the cap only bites
  * when better-typed hits exist to take the freed slots).
@@ -486,32 +504,91 @@ export class AskService {
     // ones that returned nothing simply had nothing to say — that is a *partial
     // match*, not an empty scope, and widening it would be wrong. Only a total
     // miss across every selected project is a scope problem.
-    if (hits.length) return { hits: rerankForContext(hits, k, rerank), pool: hits, mode, degraded };
+    //
+    // The explanatory top-up runs strictly *after* this test, never before it.
+    // It is a second retrieval that can return hits of its own, so topping up
+    // first would let it manufacture a non-empty result for a scope that in fact
+    // matched nothing — suppressing the widening and handing back a confident
+    // answer about the wrong project.
+    if (hits.length) {
+      const topped = await this.withExplanatoryFloor(question, filters, hits, k);
+      return { hits: rerankForContext(topped, k, rerank), pool: topped, mode, degraded };
+    }
 
     const requested = selectedProjects(filters);
     if (!requested.length) return { hits, pool: hits, mode, degraded };
 
+    // BOTH must be cleared. Dropping only `project` would leave `projects`
+    // in place and the "widened" search would still be scoped — a silent no-op.
+    const wideFilters = { ...filters, project: undefined, projects: undefined };
     const {
       hits: wide,
       mode: wideMode,
       degraded: wideDegraded,
-    } = await this.searchService.search(
-      question,
-      // BOTH must be cleared. Dropping only `project` would leave `projects`
-      // in place and the "widened" search would still be scoped — a silent no-op.
-      { ...filters, project: undefined, projects: undefined },
-      pool,
-    );
+    } = await this.searchService.search(question, wideFilters, pool);
     // Only report a fallback if widening actually surfaced something; an
-    // all-projects miss is a genuine dead end, not a scope problem.
+    // all-projects miss is a genuine dead end, not a scope problem. Same
+    // ordering rule as above: decide on the primary result, then top up.
     if (!wide.length) return { hits, pool: hits, mode, degraded };
+    const toppedWide = await this.withExplanatoryFloor(question, wideFilters, wide, k);
     return {
-      hits: rerankForContext(wide, k, rerank),
-      pool: wide,
+      hits: rerankForContext(toppedWide, k, rerank),
+      pool: toppedWide,
       scopeFallback: { requested, usedAllProjects: true },
       mode: wideMode,
       degraded: wideDegraded,
     };
+  }
+
+  /**
+   * Guarantee the pool contains explanatory sources for `rerankForContext` to
+   * promote, by topping it up with a second, source-restricted retrieval.
+   *
+   * `rerankForContext` already weights docs and kdb logs above transcripts and
+   * caps sessions at half the window — but reranking can only reorder what
+   * retrieval handed it. Measured on the live index (2026-07-29): the top 100
+   * for a real question were 94 `claude_session`, 5 `doc`, 1 `kdb_session`, so
+   * the cap had nothing to promote into the slots it freed and the answer was
+   * synthesized from chatter while the one-line kdb entry that stated the
+   * finding outright sat unretrieved. The weights were doing their job; the pool
+   * they were given had already lost.
+   *
+   * Transcripts dominate structurally, not accidentally: they are the bulk of
+   * the corpus and they *narrate* a problem at length, echoing a question's
+   * wording far more often than the curated one-liner that resolves it. No
+   * amount of score weighting fixes a candidate that was never a candidate.
+   *
+   * The floor is `ceil(k/2)` — exactly the number of non-session slots the
+   * session cap already promises — so this makes an existing guarantee
+   * reachable rather than inventing a new policy. Skipped entirely when the
+   * caller pinned `sourceTypes`: an explicit filter is an instruction, not a
+   * default to be topped up.
+   */
+  private async withExplanatoryFloor(
+    question: string,
+    filters: SearchFilters,
+    hits: SearchHit[],
+    k: number,
+  ): Promise<SearchHit[]> {
+    if (filters.sourceType || filters.sourceTypes?.length) return hits;
+    const floor = Math.ceil(k / 2);
+    const have = hits.filter((h) => h.sourceType !== 'claude_session').length;
+    if (have >= floor) return hits;
+
+    try {
+      const { hits: extra } = await this.searchService.search(
+        question,
+        { ...filters, sourceTypes: [...EXPLANATORY_SOURCES] },
+        floor,
+      );
+      const seen = new Set(hits.map((h) => h.entryId));
+      // Appended, not merged by score: these are additions to the candidate set,
+      // and `rerankForContext` re-sorts everything by weighted score anyway.
+      return [...hits, ...extra.filter((h) => !seen.has(h.entryId))];
+    } catch {
+      // A top-up that fails must not cost the answer the hits it already had.
+      return hits;
+    }
   }
 
   /**

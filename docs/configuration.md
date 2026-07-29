@@ -3,6 +3,7 @@
 # Configuration
 
 ## Revision History
+- 2026-07-29 14:35 UTC — `KDB_SPARSE_REBUILD`, the kill switch for the sparse re-tokenisation pass.
 - 2026-07-12 13:50 UTC — Product renamed to **Atlas**; documented why the `KDBSCOPE_*` / `kdbscope` identifiers survive the rename.
 - 2026-07-10 22:24 UTC — Doc staleness knobs: `KDB_DOCS_AGING_MONTHS`, `KDB_ARCHIVED_PENALTY`.
 - 2026-07-10 00:00 UTC — QDRANT_STORAGE_PATH for dashboard disk usage.
@@ -61,6 +62,32 @@ but rarely need to be.
 |---|---|---|
 | `SCAN_INTERVAL_MIN` | `5` | incremental scan cadence |
 | `WORKER_CONCURRENCY` | `2` | parallel scan jobs. Every job embeds, and a local Ollama serves one request at a time — more workers only deepen its queue. Raise for a remote/batched endpoint. |
+| `KDB_SPARSE_REBUILD` | `true` | run the sparse re-tokenisation pass when `SPARSE_VERSION` moves ahead of the collection's stamp. Set `false` to stop a rebuild that is misbehaving without editing source: keyword search then runs on stale tokens (degraded, not broken — dense retrieval is unaffected) and the pass retries next boot. |
+
+### The sparse re-tokenisation pass
+
+Stored sparse vectors and query sparse vectors must come from the same
+tokeniser. When they do not, keyword search does not error — it silently stops
+matching, which is how a question about a "6.8MB json" once came back with the
+five entries that answered it nowhere in the top 100
+(`docs/adr/20260729-literals-survive-tokenisation.md`).
+
+`SPARSE_VERSION` in `packages/core/src/sparse.ts` is compared at indexer boot
+against a per-collection `sparse_version` setting. A mismatch rewrites the sparse
+half of every point in place through Qdrant's update-vectors endpoint — **no
+embedding calls, no re-parsing of sources**, because a tokeniser change does not
+touch dense vectors. A collection the backfill just rebuilt is stamped rather
+than rewritten: it was already written by the current tokeniser.
+
+Progress is a stored cursor (`sparse_cursor:<collection>`), and the version is
+stamped only when the pass completes, so an interrupted run resumes instead of
+declaring a half-rebuilt index good. Watch it with `make logs`:
+
+```
+[indexer] re-tokenising sparse vectors to v2 — no embedding calls
+[indexer] re-tokenise 10000/326405 entries
+[indexer] re-tokenise complete: 326405 entries / 366559 points in 214s
+```
 
 ## Doc staleness
 

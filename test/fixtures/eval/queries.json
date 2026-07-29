@@ -1127,6 +1127,25 @@
         "at": "2026-07-26T04:49:21.079Z",
         "generator": "cline-pass/kimi-k3"
       }
+    },
+    {
+      "id": "4a1d3705",
+      "pool": "B",
+      "text": "during a session Claude Code found that the deepcast frontend fetch a 6.8MB json which is quite large. to fix this issue I need the context and what was found",
+      "class": "incident",
+      "filters": {},
+      "provenance": {
+        "source": "usage_log",
+        "at": "2026-07-29T12:11:56.931Z",
+        "ref": "usage_log#181"
+      },
+      "gold": [
+        465383,
+        466879,
+        467265,
+        467695,
+        467706
+      ]
     }
   ],
   "classesReviewed": "2026-07-26 — all 21 read and hand-corrected; mining never overwrites these",

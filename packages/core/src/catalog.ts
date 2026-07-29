@@ -181,8 +181,17 @@ export interface InsertedEntry {
  * Terms come from `tokenize`, the sparse encoder's own tokeniser, so the two
  * keyword paths cannot disagree about what counts as a term — the same reasoning
  * that keeps the filter translation identical across the vector and FTS paths.
- * It also removes the injection surface: tokens are `[a-z0-9_]` only, so nothing
+ * It also removes the injection surface: tokens are `[a-z0-9_.]` only, so nothing
  * reaches `to_tsquery`'s parser that could be read as an operator.
+ *
+ * **Terms are deliberately not quoted**, now that a token may contain `.`.
+ * Postgres' english parser splits a measurement into its number and its unit —
+ * `to_tsvector('english', '6.8MB')` is `'6.8':1 'mb':2` — and correspondingly
+ * parses the bare term `6.8mb` into the adjacency query `'6.8' <-> 'mb'`, which
+ * matches. Quoting it would instead ask for a single lexeme `'6.8mb'` that no
+ * tsvector in the index contains, turning a working term into a guaranteed miss.
+ * Dotted names (`deepcast.io`, `127.0.0.1`, `v1.18.2`) already parse as one
+ * lexeme and need no help.
  */
 export function ftsQuery(q: string): string {
   const terms = tokenize(q);
@@ -791,6 +800,39 @@ export class Catalog {
       [cursor, limit],
     );
     return r.rows.map(rowToEntry);
+  }
+
+  /**
+   * Like `entriesAfter`, but only entries whose vectors are believed present in
+   * `collection`.
+   *
+   * For rewriting existing vectors in place. Qdrant's update-vectors endpoint
+   * rejects the *entire batch* if any point id is unknown, so a pass that walked
+   * every entry would let one never-embedded row destroy the whole page it landed
+   * in. `vectorized_in` is the record of what was actually written, which is
+   * exactly the set that can be updated.
+   */
+  async vectorizedEntriesAfter(
+    collection: string,
+    cursor: number,
+    limit: number,
+  ): Promise<(Entry & { id: number })[]> {
+    const r = await this.pool.query(
+      `SELECT ${ENTRY_COLUMNS}
+       FROM entries e JOIN projects p ON p.id = e.project_id
+       WHERE e.vectorized_in = $1 AND e.id > $2 ORDER BY e.id ASC LIMIT $3`,
+      [collection, cursor, limit],
+    );
+    return r.rows.map(rowToEntry);
+  }
+
+  /** How many entries `vectorizedEntriesAfter` will walk — the rebuild's total. */
+  async countVectorized(collection: string): Promise<number> {
+    const r = await this.pool.query(
+      'SELECT count(*)::int AS n FROM entries WHERE vectorized_in = $1',
+      [collection],
+    );
+    return r.rows[0].n;
   }
 
   /** On-disk size of the catalog database. */

@@ -6,6 +6,7 @@ import {
   EXTRACTION_SCHEME,
   ID_SCHEME,
   PROJECT_GROUPING,
+  SPARSE_VERSION,
   VectorStore,
   collectionNameFor,
   createEmbedder,
@@ -16,6 +17,8 @@ import {
   backfillVectors,
   needsBackfill,
   processScanJob,
+  rebuildSparseVectors,
+  sparseRebuildAction,
   type PipelineDeps,
   type ScanJobData,
 } from './pipeline.js';
@@ -148,6 +151,11 @@ async function main() {
     uncovered = await catalog.countUncovered(vectors.collection);
   }
   const rebuilding = needsBackfill(uncovered);
+  // Captured before the backfill consumes them: `sparseRebuildAction` needs to
+  // know how much of the collection this boot rewrote, and `uncovered` is a
+  // pre-backfill fact that stops being true the moment the backfill runs.
+  const uncoveredAtBoot = uncovered;
+  const totalEntriesAtBoot = await catalog.countEntries();
   if (rebuilding) {
     const previous = await catalog.getSetting('active_collection');
     console.log(
@@ -177,6 +185,77 @@ async function main() {
 
   // Publish only now: readers switch to the new collection once it can serve.
   await catalog.setSetting('active_collection', vectors.collection);
+
+  /**
+   * Re-tokenise the sparse side when the tokeniser has changed under it.
+   *
+   * Query vectors and stored vectors must come from the same tokeniser. When
+   * they do not, keyword search does not error — it silently stops matching,
+   * which is how a question about a "6.8MB json" came back with all five entries
+   * that answered it nowhere in the top 100 (2026-07-29).
+   *
+   * Keyed per collection, like the quantization marker. Runs after
+   * `active_collection` is published because it does not degrade what it touches
+   * — a point keeps serving its old sparse vector until the moment the new one
+   * lands, and dense retrieval never changes.
+   *
+   * The decision itself lives in `sparseRebuildAction`, as a pure function: the
+   * inline version of it was silently wrong (see that function's note).
+   */
+  const sparseKey = `sparse_version:${vectors.collection}`;
+  // Keyed by target version as well as collection: a cursor left behind by an
+  // interrupted pass to v2 says nothing about how far a pass to v3 has got, and
+  // resuming from it would skip every entry below it at the new version.
+  const cursorKey = `sparse_cursor:${vectors.collection}:${SPARSE_VERSION}`;
+  const storedSparse = Number(await catalog.getSetting(sparseKey).catch(() => null)) || 0;
+  const sparseAction = sparseRebuildAction({
+    storedVersion: storedSparse,
+    currentVersion: SPARSE_VERSION,
+    uncovered: uncoveredAtBoot,
+    totalEntries: totalEntriesAtBoot,
+    backfilled: rebuilding,
+    enabled: cfg.sparseRebuild,
+  });
+  if (sparseAction !== 'none') {
+    if (sparseAction === 'stamp') {
+      await catalog.setSetting(sparseKey, String(SPARSE_VERSION)).catch(() => {});
+      console.log(
+        `[indexer] sparse v${SPARSE_VERSION} written by the full rebuild — no re-tokenise needed`,
+      );
+    } else if (sparseAction === 'skipped') {
+      console.warn(
+        `[indexer] sparse re-tokenise to v${SPARSE_VERSION} SKIPPED (KDB_SPARSE_REBUILD=false). ` +
+          'Keyword search is running on stale tokens until it is allowed to run.',
+      );
+    } else {
+      // Resume where an interrupted pass stopped rather than redoing finished
+      // pages; a fresh pass starts at 0 because the cursor is cleared on success.
+      const resume = Number(await catalog.getSetting(cursorKey).catch(() => null)) || 0;
+      const t0 = Date.now();
+      console.log(
+        `[indexer] re-tokenising sparse vectors to v${SPARSE_VERSION}` +
+          `${resume ? ` (resuming after entry ${resume})` : ''} — no embedding calls`,
+      );
+      const { entries, points, skipped } = await rebuildSparseVectors(deps, {
+        startCursor: resume,
+        onPage: async (done, total, cursor) => {
+          await catalog.setSetting(cursorKey, String(cursor)).catch(() => {});
+          if (done % 10_000 < 500) console.log(`[indexer] re-tokenise ${done}/${total} entries`);
+        },
+      });
+      // Stamp only on a completed pass. A crash mid-pass leaves the version
+      // unset, so the next boot resumes instead of calling a half-rebuilt
+      // index good.
+      await catalog.setSetting(sparseKey, String(SPARSE_VERSION)).catch(() => {});
+      await catalog.setSetting(cursorKey, '').catch(() => {});
+      console.log(
+        `[indexer] re-tokenise complete: ${entries} entries / ${points} points ` +
+          `in ${Math.round((Date.now() - t0) / 1000)}s` +
+          (skipped ? ` — ${skipped} points REJECTED (stale ids; see index errors)` : '') +
+          '. Writes are durable; Qdrant applies them to search over the next few minutes.',
+      );
+    }
+  }
 
   // Retrofit int8 quantization onto the live collection once. Guarded by a
   // marker keyed to the collection so it runs a single time per collection and

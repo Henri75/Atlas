@@ -217,3 +217,73 @@ describe('SearchService doc staleness', () => {
     expect(r.hits[0]!.score).toBeCloseTo(0.1);
   });
 });
+
+/**
+ * Ask retrieves twice for one question (primary search, then the explanatory
+ * top-up), and ~90% of the corpus is `claude_session`, so the top-up fires on
+ * most asks. Embedding the same string twice would put a second Ollama
+ * round-trip on the latency-critical path for a vector that cannot have changed.
+ */
+describe('SearchService query-embedding reuse', () => {
+  const vectors = (collection = 'c1') =>
+    ({
+      collection,
+      useCollection(name: string) {
+        this.collection = name;
+      },
+      query: async () => [{ entryId: 1, score: 0.9 }],
+    }) as any;
+
+  function countingEmbedder() {
+    let calls = 0;
+    return {
+      get calls() {
+        return calls;
+      },
+      provider: {
+        name: 'x',
+        model: 'm',
+        dim: 3,
+        embed: async () => {
+          calls++;
+          return [[1, 2, 3]];
+        },
+      },
+    };
+  }
+
+  it('embeds the same question once across back-to-back searches', async () => {
+    const e = countingEmbedder();
+    const s = new SearchService(fakeCatalog({ 1: row(1) }), vectors(), e.provider);
+
+    const a = await s.search('the same question');
+    const b = await s.search('the same question', { sourceTypes: ['doc'] });
+
+    expect(e.calls).toBe(1);
+    // Reuse must not look like degradation — the dense branch still ran.
+    expect(a.mode).toBe('hybrid');
+    expect(b.mode).toBe('hybrid');
+  });
+
+  it('re-embeds a different question', async () => {
+    const e = countingEmbedder();
+    const s = new SearchService(fakeCatalog({ 1: row(1) }), vectors(), e.provider);
+    await s.search('question one');
+    await s.search('question two');
+    expect(e.calls).toBe(2);
+  });
+
+  it('re-embeds when the collection changed under it', async () => {
+    const e = countingEmbedder();
+    const v = vectors('c1');
+    const s = new SearchService(fakeCatalog({ 1: row(1) }), v, e.provider);
+
+    await s.search('same text');
+    // A model switch changes the vector space along with the collection, so a
+    // reused vector would be a dimension mismatch, not a slightly stale answer.
+    v.collection = 'c2';
+    await s.search('same text');
+
+    expect(e.calls).toBe(2);
+  });
+});

@@ -274,6 +274,58 @@ export class VectorStore {
   }
 
   /**
+   * Replace the sparse vector of existing points, leaving `dense` and the
+   * payload untouched.
+   *
+   * A tokeniser change invalidates every stored sparse vector — query tokens and
+   * document tokens must come from the same function or keyword search silently
+   * stops matching. Rewriting them through `upsert` would mean recomputing the
+   * dense vectors too, which is the expensive half (an embedding call per chunk)
+   * and which the change did not affect at all. Qdrant's update-vectors endpoint
+   * writes one named vector in place, so the rebuild costs local hashing only:
+   * no embedding provider, no re-parsing of sources, and dense search keeps
+   * serving unchanged throughout.
+   *
+   * A point id that does not exist is an error for the **whole batch**, not a
+   * no-op for that one point, so callers must derive ids exactly as the writer
+   * did (`deterministicUuid`). Because one unknown id can therefore cost 64
+   * good writes, a failing slice is counted and skipped rather than thrown:
+   * losing a slice is a small, reported gap, while losing the rest of a
+   * multi-hour pass to it is not. Reported, never silent — a rebuild that
+   * quietly wrote less than it claimed is the failure mode this whole path
+   * exists to prevent.
+   *
+   * `wait: false`, like `upsert`: waiting forces a synchronous flush per batch
+   * and exceeds Qdrant's REST timeout under load. Writes are durable on return
+   * (accepted into the WAL) but become *searchable* only once Qdrant applies
+   * them, which on a large pass lags the call by minutes.
+   */
+  async updateSparse(
+    points: { id: string; sparse: SparseVector }[],
+  ): Promise<{ updated: number; failed: number }> {
+    let updated = 0;
+    let failed = 0;
+    for (let i = 0; i < points.length; i += UPSERT_BATCH) {
+      const slice = points.slice(i, i + UPSERT_BATCH);
+      try {
+        await withRetry(() =>
+          this.client.updateVectors(this.collection, {
+            wait: false,
+            points: slice.map((p) => ({
+              id: p.id,
+              vector: { sparse: { indices: p.sparse.indices, values: p.sparse.values } },
+            })),
+          }),
+        );
+        updated += slice.length;
+      } catch {
+        failed += slice.length;
+      }
+    }
+    return { updated, failed };
+  }
+
+  /**
    * Flip doc_status on every chunk of the given entries, in place — no
    * re-embedding. Used when a file's archive classification changes (or the
    * parser version bumps) but its content did not.

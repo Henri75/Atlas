@@ -1053,3 +1053,36 @@
 
 **Status:**
 - Completed
+### [2026-07-29] - Bugfix: the sparse tokeniser shredded every literal in the corpus
+
+**Objective:**
+- A real `atlas_ask` question — "the deepcast frontend fetch a 6.8MB json ... I need the context and what was found" — was answered "the retrieved blocks do not contain" while five indexed entries answer it outright. Find why retrieval missed them and close the class, not the instance.
+
+**Summary of Work:**
+- Root cause: `tokenize()` split on `[^a-z0-9_]+` and dropped 1-char tokens, so `.` was a separator *inside a number*. `6.8MB` -> ["8mb"] (the 6 discarded, colliding with every other `*.8MB` size); `6.8 MB` -> ["mb"], a disjoint set. Measured per-token IDF on the live index: `quite` 17.48 > `json` 16.42 > `8mb` 16.35 > `large` 16.30. The filler word outranked the file size. Gold entries scored 16-21 against a winning irrelevant doc at 49; absent from the top 100 (94/100 were claude_session).
+- Tokeniser rewritten to preserve literals: `.` kept inside runs; a dotted run is also split into parts only when every segment starts with a letter (compound identifiers yes, `6.8mb`/`v1.18.2`/`127.0.0.1` no); number+unit canonicalised both ways so `tokenize('6.8 MB')` === `tokenize('6.8MB')`.
+- `SPARSE_VERSION` + a per-collection stamp, and a **sparse-only** rebuild via Qdrant updateVectors — no embedding calls, dense untouched. 366,005/366,559 points re-tokenised in 646s.
+- Query-side `boostLiterals` (x3 on measurement/identifier/version/sha shapes). Verified against Qdrant that query values scale score exactly linearly (measured 3.000x).
+- `withExplanatoryFloor`: tops the Ask pool up to ceil(k/2) non-session candidates. rerankForContext already weighted docs/kdb above transcripts and capped sessions at half the window, but it can only reorder what retrieval handed it.
+- 1-entry query-embedding memo in SearchService, so the top-up does not put a second Ollama round-trip on the ask path.
+
+**Key Decisions & Rationale:**
+- Sparse-only rebuild over full re-index: a tokeniser change invalidates the sparse half and nothing else; re-embedding 326k entries through Ollama would recompute dense vectors that were never wrong.
+- No legacy-token emission (which would have avoided the rebuild): `8mb` IS the collision bucket that caused the failure. Carrying it forward preserves the noise permanently to save a pass that costs minutes.
+- The top-up runs strictly AFTER the empty-scope test. Running it first lets a second retrieval manufacture hits for a scope that matched nothing, suppressing the widening — caught by an existing test.
+
+**Code/Files Modified:**
+- packages/core/src/sparse.ts, search.ts, ask.ts, catalog.ts, config.ts, qdrant.ts
+- packages/indexer/src/pipeline.ts, main.ts
+- test/core/{sparse,search,retrieveForContext,updateSparse}.test.ts, test/indexer/sparseRebuildAction.test.ts
+- test/fixtures/eval/queries.json (pool B 4a1d3705, gold = the 5 entries)
+- docs/adr/20260729-literals-survive-tokenisation.md, docs/configuration.md, .env.example
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** Measuring per-token IDF against the live index instead of reasoning about the ranking. "quite outranks 6.8MB" is a number that ends the argument; no amount of reading the fusion code would have produced it.
+- **What Failed:** My own boot guard shipped the exact bug class it was written to prevent. It treated any backfill as proof the collection had been rewritten by the current tokeniser — but backfillVectors only touches *uncovered* entries, and on the 2026-07-29 boot that was 111 rows of 326,606. It stamped sparse_version over 326k stale vectors and skipped the pass. Caught only by reading the boot log. Now a pure function, `sparseRebuildAction`, with 7 tests. A version stamp that lies is worse than no stamp: nothing would ever run the pass again.
+- **Also learned:** `updateVectors` rejects the WHOLE batch for one unknown id, so a stale id costs 64 good writes; slices are now counted and skipped rather than thrown. And `wait:false` means durable, not searchable — verification that reads immediately after a large pass reads the old data.
+- 751 tests green, lint clean.
+
+**Status:**
+- Completed

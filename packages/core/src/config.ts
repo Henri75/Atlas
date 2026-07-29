@@ -38,6 +38,19 @@ const schema = z.object({
    * connections. Raise it only for a remote/batched embedding endpoint.
    */
   workerConcurrency: z.coerce.number().int().min(1).max(16).default(2),
+  /**
+   * Kill switch for the sparse re-tokenisation pass.
+   *
+   * Bumping `SPARSE_VERSION` makes every stored sparse vector disagree with the
+   * query encoder, so the pass is normally mandatory — but it writes to every
+   * point in the collection, and an operator watching a rebuild misbehave needs
+   * a way to stop it that is not "edit the source and rebuild the image".
+   * Skipping leaves keyword search on the old tokens (degraded, not broken:
+   * dense retrieval is unaffected) and the pass reruns on the next boot.
+   */
+  sparseRebuild: z
+    .union([z.boolean(), z.enum(['true', 'false']).transform((v) => v === 'true')])
+    .default(true),
   embeddings: z.object({
     provider: EmbeddingsProvider.default('auto'),
     model: z.string().default('nomic-embed-text'),
@@ -111,6 +124,7 @@ function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
     qdrantStoragePath: opt(env.QDRANT_STORAGE_PATH),
     scanIntervalMin: opt(env.SCAN_INTERVAL_MIN),
     workerConcurrency: opt(env.WORKER_CONCURRENCY),
+    sparseRebuild: opt(env.KDB_SPARSE_REBUILD),
     embeddings: {
       provider: opt(env.EMBEDDINGS_PROVIDER),
       model: opt(env.EMBEDDINGS_MODEL),

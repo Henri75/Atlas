@@ -22,6 +22,24 @@ export interface DocRankingOpts {
 export class SearchService {
   private collectionCheckedAt = 0;
 
+  /**
+   * The most recent question's dense vector, keyed by collection and text.
+   *
+   * Ask retrieves twice for one question: the primary search, then the
+   * explanatory top-up moments later (`withExplanatoryFloor`). Since ~90% of the
+   * corpus is `claude_session`, the top-up fires on most asks, and without this
+   * every one of them would embed the same string twice — a second Ollama
+   * round-trip on the latency-critical path for a vector that cannot have
+   * changed.
+   *
+   * One entry, not an LRU: the access pattern this serves is two calls in a row
+   * with identical text, and a larger cache would only add eviction policy to
+   * something with no other consumer. Keyed by collection because a model switch
+   * changes both the collection and the vector space, so a stale entry would be
+   * a dimension mismatch rather than a slightly wrong answer.
+   */
+  private lastEmbedding?: { collection: string; query: string; dense: number[] };
+
   constructor(
     private catalog: Catalog,
     private vectors: VectorStore,
@@ -60,14 +78,26 @@ export class SearchService {
     // on it. Both the vector path and the FTS fallback flow through here, so
     // they cannot disagree about what "scoped to deepcast" means.
     filters = await this.expandScope(filters);
-    const sparse = sparseVector(q);
+    // Queries, unlike documents, get their literals up-weighted: in a
+    // conversational question the one term that identifies the answer occurs
+    // exactly as often as the filler around it, so term frequency alone cannot
+    // tell them apart (see LITERAL_BOOST).
+    const sparse = sparseVector(q, { boostLiterals: true });
 
     let dense: number[] | undefined;
     let mode = 'sparse-only';
-    if (this.embedder) {
+    const cached =
+      this.lastEmbedding?.query === q && this.lastEmbedding.collection === this.vectors.collection
+        ? this.lastEmbedding.dense
+        : undefined;
+    if (cached) {
+      dense = cached;
+      mode = 'hybrid';
+    } else if (this.embedder) {
       try {
         dense = (await this.embedder.embed([q]))[0];
         mode = 'hybrid';
+        if (dense) this.lastEmbedding = { collection: this.vectors.collection, query: q, dense };
       } catch {
         dense = undefined; // provider down → sparse still works
       }

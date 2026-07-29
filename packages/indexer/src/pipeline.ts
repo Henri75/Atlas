@@ -520,6 +520,114 @@ export async function backfillVectors(
   return embedded;
 }
 
+/**
+ * What the re-tokenisation pass should do on this boot.
+ *
+ * A pure function because the inline version of it was wrong in a way nothing
+ * could see: it treated *any* backfill as proof the collection had been written
+ * by the current tokeniser, when `backfillVectors` only touches uncovered
+ * entries. On the 2026-07-29 boot that was 111 rows out of 326,606 — so it
+ * stamped `sparse_version` over 326k stale vectors and would have skipped the
+ * pass permanently. A stamp that lies is worse than no stamp, and the only
+ * symptom would have been keyword search quietly not matching.
+ *
+ * - `none`     — the collection is already at this version.
+ * - `stamp`    — a *full* rebuild just wrote every vector with this tokeniser.
+ * - `skipped`  — the operator disabled the pass; keyword search stays stale.
+ * - `rebuild`  — re-tokenise.
+ */
+export function sparseRebuildAction(input: {
+  storedVersion: number;
+  currentVersion: number;
+  /** Entries not searchable in the collection when this boot started. */
+  uncovered: number;
+  totalEntries: number;
+  /** Whether a backfill ran this boot at all. */
+  backfilled: boolean;
+  enabled: boolean;
+}): 'none' | 'stamp' | 'skipped' | 'rebuild' {
+  if (input.storedVersion === input.currentVersion) return 'none';
+  // "Everything was uncovered" is what a model switch looks like, and the only
+  // case in which the backfill rewrote the whole collection.
+  if (input.backfilled && input.uncovered >= input.totalEntries && input.totalEntries > 0) {
+    return 'stamp';
+  }
+  return input.enabled ? 'rebuild' : 'skipped';
+}
+
+/**
+ * Rewrite every stored sparse vector with the current tokeniser.
+ *
+ * Why this is a separate path from `backfillVectors`: a tokeniser change
+ * invalidates the *sparse* half of every point and nothing else. Routing it
+ * through the normal rebuild would clear `vectorized_in` and re-embed 326k
+ * entries through Ollama — hours of work to recompute dense vectors that were
+ * never wrong. Sparse vectors are pure local hashing, so this pass needs no
+ * embedding provider at all and can run while the rest of the system serves
+ * traffic; dense retrieval is untouched throughout.
+ *
+ * Progress is a stored cursor rather than a per-row column, because there is no
+ * per-row state to consult: the sparse vector of a point carries no record of
+ * which tokeniser produced it. `sparse_version` is written only when the pass
+ * completes, so an interrupted run resumes from the cursor and a crashed one
+ * simply starts the pass again rather than declaring a half-rebuilt index good.
+ */
+export async function rebuildSparseVectors(
+  deps: PipelineDeps,
+  opts: {
+    pageSize?: number;
+    /** Resume point, so a restarted pass does not redo finished pages. */
+    startCursor?: number;
+    onPage?: (done: number, total: number, cursor: number) => void | Promise<void>;
+  } = {},
+): Promise<{ entries: number; points: number; skipped: number }> {
+  const pageSize = opts.pageSize ?? 500;
+  const collection = deps.vectors.collection;
+  const total = await deps.catalog.countVectorized(collection);
+  let cursor = opts.startCursor ?? 0;
+  let entries = 0;
+  let points = 0;
+  /** Points whose re-tokenisation was rejected — reported, never swallowed. */
+  let skipped = 0;
+
+  for (;;) {
+    // Only entries whose points exist: update-vectors rejects a batch containing
+    // any unknown id, so walking never-embedded rows would cost the whole page.
+    const rows = await deps.catalog.vectorizedEntriesAfter(collection, cursor, pageSize);
+    if (!rows.length) break;
+    cursor = rows[rows.length - 1]!.id;
+
+    const batch: { id: string; sparse: ReturnType<typeof sparseVector> }[] = [];
+    for (const row of rows) {
+      // Identical to the write path: same text, same chunker, same id derivation.
+      // Anything that drifts here silently addresses points that do not exist.
+      const chunks = chunk(`${row.title}\n\n${row.body}`);
+      for (const [seq, text] of chunks.entries()) {
+        batch.push({
+          id: deterministicUuid(row.projectSlug, row.sourcePath, String(row.id), String(seq)),
+          sparse: sparseVector(text),
+        });
+      }
+    }
+
+    try {
+      const r = await deps.vectors.updateSparse(batch);
+      points += r.updated;
+      skipped += r.failed;
+    } catch (e) {
+      // updateSparse already absorbs per-slice rejections; reaching here means
+      // something broader (Qdrant unreachable). Record it and keep going —
+      // losing hours of a pass to one bad page is worse than the gap.
+      skipped += batch.length;
+      await deps.catalog.logError(null, `entries>${cursor}`, 'sparse-rebuild', (e as Error).message);
+    }
+    entries += rows.length;
+    await opts.onPage?.(entries, total, cursor);
+  }
+
+  return { entries, points, skipped };
+}
+
 export async function processScanJob(
   deps: PipelineDeps,
   job: ScanJobData,
