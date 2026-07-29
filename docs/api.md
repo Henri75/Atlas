@@ -3,6 +3,7 @@
 # REST API
 
 ## Revision History
+- 2026-07-29 20:25 UTC — **Backlog review**: `GET /api/projects/:slug/backlog` derives per-item status (open/resolved/dropped, with provenance `structured|reviewed|heuristic` and lints) at request time from the indexed backlog; `POST …/backlog/review` gathers scoped evidence and (unless `judge:false`) stores an Atlas-LLM verdict; `POST …/backlog/verdict` records a caller's own verdict. Both POSTs answer with `proposedLine` — the exact `RESOLVED/DROPPED/REOPENED [L<n>#<hash6>]` marker to append via the project's blessed helper; Atlas never writes project files. Verdicts live in the `backlog_review` table (survives reindex; the appended marker line is the canonical durable record). See `docs/adr/20260729-backlog-status-derivation.md`.
 - 2026-07-17 15:49 UTC — Agent-safety batch: per-project routes (`/timeline`, `/components`, `/components/:name`, `/sessions`) **404 on an unknown slug** with a hint (an empty 200 read as "project has no data"). `/api/sessions/:id` accepts `limit`/`offset`/`max_body` and returns `totalEntries`; `/components/:name` accepts `limit`/`max_body`; bodies cut by `max_body` are flagged `bodyTruncated: true`. New **usage telemetry**: requests carrying `x-atlas-client` (mcp/cli) are logged to `usage_log`; aggregates at `GET /api/admin/usage?days=N`.
 - 2026-07-13 00:20 UTC — Multi-project filtering: `project` accepts a comma-separated set on GET (`project=a,b`) and an array in a JSON body; `scopeFallback.requested` is now a list and widening fires only when *none* of the selected projects match. New collection route `GET /api/timeline?projects=a,b` merges feeds chronologically; the per-project route is unchanged. Timeline items carry `projectSlug`.
 - 2026-07-12 22:50 UTC — The SSE `done` event carries `metrics?`: the model that actually **served** the answer (from the gateway's `X-G2p-Reply-Model`, not the configured `LLM_MODEL`), provider-reported token counts, TTFT and generation rate. Absent on a degraded answer.
@@ -29,6 +30,9 @@ Base: `http://127.0.0.1:8710`. JSON everywhere. No auth (localhost-only tool).
 | GET | `/api/projects/:slug/components` | — | `{components[]}`; 404 on unknown slug |
 | GET | `/api/projects/:slug/components/:name` | `limit` (entries, newest first), `max_body` (chars/body) | `{component, entries[]}`; cut bodies carry `bodyTruncated: true`; 404 on unknown slug |
 | GET | `/api/projects/:slug/sessions` | — | `{sessions[]}`; 404 on unknown slug |
+| GET | `/api/projects/:slug/backlog` | — | backlog status view: `{items[], unlinked[], counts, latestActivityAt}`; 404 on unknown slug |
+| POST | `/api/projects/:slug/backlog/review` | `{line, sourcePath?, k?, judge?}` | `{item, evidence[]}` + (unless `judge:false`) `{verdict, proposedLine?}`; 503 `llm_unavailable` keeps the evidence; 404 on unknown line |
+| POST | `/api/projects/:slug/backlog/verdict` | `{line, status, confidence?, note?, evidence?, citations?, propose?}` | `{ok, proposedLine?}` — the marker line the caller appends to the project's backlog.log |
 | GET | `/api/sessions/:id` | `limit` (entries/page, ≤1000), `offset`, `max_body` (chars/body) | `{session, entries[], totalEntries}` (404 if unknown); cut bodies carry `bodyTruncated: true` |
 | GET | `/api/entries/:id` | — | full entry row (404 if unknown) |
 | POST | `/api/admin/reindex` | `{project?, full?}` | `{enqueued}` |

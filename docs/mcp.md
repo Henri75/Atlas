@@ -3,6 +3,7 @@
 # MCP Server
 
 ## Revision History
+- 2026-07-29 20:25 UTC — **Backlog triage tools**: `atlas_backlog` (derived status view), `atlas_backlog_evidence` (per-item evidence bundle; the agent judges — it can read the code, Atlas cannot), `atlas_backlog_verdict` (record the judgment; returns the exact marker line to append via the project's blessed helper). Server instructions teach the triage flow. Thirteen tools now.
 - 2026-07-19 04:15 UTC — `atlas adoption --compare <date>` diffs two windows (plus `--until` for bounded ranges), reporting fire-rate movement with the sample size behind it and caveats when the sample can't support a conclusion.
 - 2026-07-19 03:35 UTC — Added **`atlas adoption`**: measures whether agents actually call Assessor/Atlas at the moments the instructions say they should, by reading Claude Code transcripts rather than asking the agent. See *Measuring adoption* below.
 - 2026-07-17 15:49 UTC — Agent-readiness batch: the server now sends **initialize-time instructions** (what Atlas is, that it is **beta** — verify answers against cited sources, prefer unscoped queries, ghost-slug warning, and the *Atlas usage* reporting duty for agent summaries). `atlas_session` is **paginated by default** (limit 50, max_body 1500, returns `totalEntries`; a 71k-char response previously landed in one tool result) and `atlas_component_history` bounded (limit 20, max_body 2000); truncated bodies carry `bodyTruncated: true` — read them in full with `atlas_entry`. Unknown project slugs now surface as API 404s instead of empty results. Every tool call is recorded in the usage log (`atlas usage`).
@@ -33,6 +34,9 @@ repo pick the server up automatically.
 | `atlas_components` | list a project's components |
 | `atlas_component_history` | recorded history of one component, newest first (project, component, limit? default 20, max_body? default 2000) |
 | `atlas_session` | replay one Claude Code session, paginated (session_id, limit? default 50, offset?, max_body? default 1500; response carries `totalEntries`) |
+| `atlas_backlog` | a project's backlog with derived statuses: open/resolved/dropped, provenance (`structured`/`reviewed`/`heuristic`), lints, and an `unlinked` bucket of markers with no confident target (project) |
+| `atlas_backlog_evidence` | evidence bundle for one backlog item — scoped hits from changelogs, component/session logs, commits, docs. The **agent** judges (it can read the code); `judge:true` adds Atlas's own LLM verdict as a second opinion (project, line, k?, judge?) |
+| `atlas_backlog_verdict` | record the agent's judgment; the response's `proposedLine` is the exact `RESOLVED/DROPPED/REOPENED [L<n>#<hash6>]` marker to append via the project's blessed kdb helper — Atlas never writes project files (project, line, status, confidence?, note?, evidence?, citations?, propose?) |
 | `atlas_reindex` | trigger incremental/full reindex (project?, full?) |
 | `atlas_status` | index counts, freshness, queue depth, re-embed progress |
 

@@ -1208,3 +1208,34 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-29] - [Backlog review: derived status + evidence-based review (CLI/MCP/REST)]
+
+**Objective:**
+- Make the append-only backlogs readable as state: what is open, what got resolved/dropped, and let user+agents review pending items against the indexed history.
+
+**Summary of Work:**
+- parseBacklog v2: free-form undated lines indexed (were silently skipped), structured RESOLVED/DROPPED/REOPENED [L<n>#<hash6>] markers + legacy DONE:/RESOLVED: prefixes tagged, per-line SHA-256 hash stored; BACKLOG_PARSER_VERSION resync with in-place meta sync (dedup-keyed inserts never refresh existing rows).
+- buildBacklogView (query-time, docs-staleness pattern): hash-verified ref linking with unique-match relocation, token-containment fuzzy linking for legacy markers (near-ties/low scores -> explicit unlinked bucket, never guessed), verdict overlay with latest-signal-wins, provenance (structured/reviewed/heuristic) + lints (stale-review, not-written-back, broken-link, superseded-marker, unstructured).
+- backlog_review table (durable working state, usage_log precedent); REST GET /backlog + POST /backlog/review (evidence + optional Atlas-LLM judge) + POST /backlog/verdict; CLI 'atlas backlog' (+ --review/--item/--limit); MCP atlas_backlog / atlas_backlog_evidence / atlas_backlog_verdict.
+- Global kdb-protocol.md: backlog + index.log formats defined (never were — the root cause of marker drift), marker convention, canonical-copy note.
+
+**Key Decisions & Rationale:**
+- File is truth: verdicts become durable only as appended marker lines; Atlas proposes the exact line (hash included) but never writes project files. DB loss loses only unapplied verdicts, which honestly revert to open.
+- Judge split by caller: CLI -> Atlas LLM (human on the other end); MCP -> evidence bundle, the agent judges (it can read code, Atlas cannot).
+- Last marker in file order wins; file order beats parsed dates in an append-only file.
+- Design red-teamed by Assessor (session 9fff7d2a…): hash-in-ref, last-wins rule, provenance-labeled fuzzy links, not-written-back badge all trace to that review + self-review.
+- ADR: docs/adr/20260729-backlog-status-derivation.md. Spec: docs/superpowers/specs/2026-07-29-backlog-review-design.md.
+
+**Code/Files Modified:**
+- packages/core/src/parsers/kdbLog.ts, packages/core/src/backlog.ts (new), packages/core/src/backlogReview.ts (new), packages/core/src/catalog.ts, packages/core/src/config.ts
+- packages/indexer/src/pipeline.ts, packages/api/src/app.ts, packages/api/src/main.ts, packages/cli/src/main.ts, packages/mcp/src/tools.ts
+- test/core/kdbLog.test.ts, test/core/backlog.test.ts (new), test/api/routes.test.ts, test/mcp/tools.test.ts
+- config/atlas.defaults.env, docs/api.md, docs/cli.md, docs/mcp.md, ~/.claude/references/kdb-protocol.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** TDD end-to-end (846 tests green); reusing the docs-staleness scan/query split and the DOCS_PARSER_VERSION backfill pattern made the indexer change small and safe.
+- **What Failed:** first fuzzy-matching design used Jaccard similarity — a short DONE: summary vs a long original scores ~0.16 and misses; token containment (share of the summary's tokens found in the item, light suffix stemming) is the right asymmetric measure.
+
+**Status:**
+- Completed

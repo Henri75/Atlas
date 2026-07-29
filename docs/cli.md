@@ -3,6 +3,7 @@
 # CLI — `atlas`
 
 ## Revision History
+- 2026-07-29 20:25 UTC — New **`atlas backlog [project]`**: derived backlog status (open/resolved/dropped with provenance and lints, plus an unlinked-marker bucket). `--review` runs sequential LLM-judged reviews of open items (`--item N` for one, `--limit N` caps the run and says how many were left out); each confirmed verdict prints the exact `RESOLVED/DROPPED/REOPENED [L<n>#<hash6>]` line to append via the project's blessed kdb helper — the CLI never writes project files.
 - 2026-07-19 04:15 UTC — `atlas adoption --compare <date>` / `--until <date>`: before-vs-after comparison for instruction changes, with small-sample guards.
 - 2026-07-19 03:35 UTC — New `atlas adoption`: measures whether agents call Assessor/Atlas when the documented triggers apply, by reading Claude Code transcripts (usage counts + candidate missed triggers). Read-only and local.
 - 2026-07-17 15:49 UTC — New `atlas usage [-d days]`: agent-usage telemetry (calls, latency, errors per tool/day; MCP + CLI traffic is labeled via `x-atlas-client`). Beta caveat added to `--help`. Unknown project slugs now error loudly (API 404) instead of printing nothing.
@@ -32,6 +33,10 @@ atlas components deepcast
 atlas component deepcast analyzer-worker
 atlas sessions deepcast
 atlas session 0075adef
+atlas backlog                   # cross-project: open/resolved/dropped counts
+atlas backlog deepcast          # status view: every item, provenance, lints
+atlas backlog deepcast --review --limit 5   # LLM-judged review of open items
+atlas backlog deepcast --item 37            # review one item (any status)
 atlas reindex --full -p deepcast
 atlas status
 atlas usage -d 30               # how agents (MCP/CLI) have been using Atlas
