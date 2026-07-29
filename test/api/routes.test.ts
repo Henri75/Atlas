@@ -152,6 +152,7 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
       }),
     } as any,
     backlogMatchThreshold: 0.5,
+    usagePageSize: 100,
     enqueueScan: vi.fn(async () => 1),
     enqueueAdoption: vi.fn(async () => 1),
     vectorCount: async () => 123,

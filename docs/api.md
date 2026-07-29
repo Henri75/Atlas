@@ -3,6 +3,7 @@
 # REST API
 
 ## Revision History
+- 2026-07-30 00:25 UTC — **Monitor filters, insights, cursor paging**: `/api/admin/usage/calls` gains `hideNoise`, returns `facets` (counts by client and by tool over the filtered set) plus `nextCursor`, and pages by keyset `cursorAt`+`cursorId` rather than `offset` — the log grows while you read it, so an offset page is measured from a top that has moved. New `GET /api/admin/usage/insights?days=N`: outcome rates per mode (searches returning nothing, asks with no sources, aborted, degraded/failed), a log-scaled latency histogram, which models actually answered, weekday spread, most-repeated questions.
 - 2026-07-29 21:20 UTC — **Usage monitoring**: **every** `/api/*` request is now logged (previously only `x-atlas-client` callers), with a new `route_class` column classifying the route (`query|read|write|status|admin|other`) so polling is separated at read time instead of discarded. Search and ask store what they replied — answer, result count, top hits, served model, tokens, TTFT — in a new 1:1 `usage_reply` table; `/api/ask/stream` records itself on close/cancel, so an aborted answer is kept at `status 499` with its partial text and a real duration. New routes: `GET /api/admin/usage/calls`, `GET /api/admin/usage/calls/:id`, `GET /api/admin/adoption`, `POST /api/admin/adoption/refresh`. `/api/admin/usage` gains `p50Ms`/`p95Ms`, per-tool percentiles, `byClass` and `byHour` (additively — existing fields unchanged). See `docs/adr/20260729-usage-telemetry-and-reply-capture.md`.
 - 2026-07-29 20:25 UTC — **Backlog review**: `GET /api/projects/:slug/backlog` derives per-item status (open/resolved/dropped, with provenance `structured|reviewed|heuristic` and lints) at request time from the indexed backlog; `POST …/backlog/review` gathers scoped evidence and (unless `judge:false`) stores an Atlas-LLM verdict; `POST …/backlog/verdict` records a caller's own verdict. Both POSTs answer with `proposedLine` — the exact `RESOLVED/DROPPED/REOPENED [L<n>#<hash6>]` marker to append via the project's blessed helper; Atlas never writes project files. Verdicts live in the `backlog_review` table (survives reindex; the appended marker line is the canonical durable record). See `docs/adr/20260729-backlog-status-derivation.md`.
 - 2026-07-17 15:49 UTC — Agent-safety batch: per-project routes (`/timeline`, `/components`, `/components/:name`, `/sessions`) **404 on an unknown slug** with a hint (an empty 200 read as "project has no data"). `/api/sessions/:id` accepts `limit`/`offset`/`max_body` and returns `totalEntries`; `/components/:name` accepts `limit`/`max_body`; bodies cut by `max_body` are flagged `bodyTruncated: true`. New **usage telemetry**: requests carrying `x-atlas-client` (mcp/cli) are logged to `usage_log`; aggregates at `GET /api/admin/usage?days=N`.
@@ -39,7 +40,8 @@ Base: `http://127.0.0.1:8710`. JSON everywhere. No auth (localhost-only tool).
 | POST | `/api/admin/reindex` | `{project?, full?}` | `{enqueued}` |
 | GET | `/api/admin/errors` | — | last 50 index errors |
 | GET | `/api/admin/usage` | `days` (default 7), `class` (comma-separated) | usage aggregates: `{days, calls, errors, clients, p50Ms, p95Ms, byTool[], byDay[], byClass[], byHour[]}` |
-| GET | `/api/admin/usage/calls` | `class`, `client`, `tool`, `status` (`ok`\|`error`), `since`, `until`, `q`, `limit` (≤500), `offset` | `{calls[], total}`; each call carries `routeClass` and `hasReply` |
+| GET | `/api/admin/usage/calls` | `class`, `client`, `tool`, `status` (`ok`\|`error`), `since`, `until`, `q`, `hideNoise`, `limit` (≤500), `cursorAt`+`cursorId` | `{calls[], total, facets, nextCursor?}` |
+| GET | `/api/admin/usage/insights` | `days` (default 7) | outcome rates per mode, latency histogram, models that answered, weekday spread, most-repeated questions |
 | GET | `/api/admin/usage/calls/:id` | — | one call joined with its full reply (404 if unknown) |
 | GET | `/api/admin/adoption` | — | cached adoption report `{report, computedAt, pending?, tookMs?}` |
 | POST | `/api/admin/adoption/refresh` | — | `{enqueued}`; returns before the scan runs |
@@ -96,6 +98,18 @@ row with **no** reply row — an all-null reply says less than none.
 
 What is stored is the API's reply, **not** the MCP-formatted tool result the
 model saw, so this table cannot debug MCP formatting.
+
+**Paging is cursor-based, not offset-based.** Pass `cursorAt`+`cursorId` from the
+previous response's `nextCursor`; an absent `nextCursor` means the page was short
+and provably nothing follows. The table gains rows continuously, so an `OFFSET`
+page is measured from a top that has moved — it re-serves rows already shown and
+skips others. `total` and `facets` describe the whole filtered set and ignore the
+cursor, so both stay stable while you scroll.
+
+**`hideNoise=true`** drops `/api/projects` and any call with no query text — both
+traffic rather than intent. On real data it takes 744 calls down to 118. Opt-in
+server-side and default-on in the UI, so a bare API call still gets the
+unfiltered truth.
 
 **Adoption** is served from a cache the indexer fills. The analysis reads every
 Claude transcript on the machine (~2 minutes over 4400 sessions) and the API

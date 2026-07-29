@@ -143,6 +143,89 @@ export interface UsageCallRow extends UsageCall {
   hasReply: boolean;
 }
 
+/** A stable position in the log. See listUsageCalls for why not an offset. */
+export interface UsageCursor {
+  at: string;
+  id: number;
+}
+
+export interface UsageCallQuery {
+  limit?: number;
+  cursor?: UsageCursor;
+  client?: string;
+  tool?: string;
+  classes?: RouteClass[];
+  status?: 'ok' | 'error';
+  since?: string;
+  until?: string;
+  q?: string;
+  /** Drop `/api/projects` and calls with no query text — traffic, not signal. */
+  hideNoise?: boolean;
+}
+
+export interface UsageFacet {
+  key: string;
+  calls: number;
+}
+
+export interface UsageCallPage {
+  calls: UsageCallRow[];
+  /** Total matching the filters, ignoring the cursor — the size of the set. */
+  total: number;
+  /** Counts over the same filtered set, so headline numbers match the rows. */
+  facets: { byClient: UsageFacet[]; byTool: UsageFacet[] };
+  /** Absent when this page was not full: provably nothing follows it. */
+  nextCursor?: UsageCursor;
+}
+
+/**
+ * Aggregates that answer "is Atlas working for anyone", as opposed to the
+ * Overview's "how much is it called". `zeroResult` and `zeroSource` carry most of
+ * the weight: a volume chart looks the same whether every answer landed or none
+ * did.
+ */
+export interface UsageInsights {
+  days: number;
+  ask: {
+    calls: number;
+    aborted: number;
+    failed: number;
+    degraded: number;
+    /** Asks that retrieved nothing to cite — an answer with no evidence. */
+    zeroSource: number;
+    p50Ms: number;
+    p95Ms: number;
+    promptTokens: number;
+    completionTokens: number;
+    avgTtftMs: number;
+  };
+  search: {
+    calls: number;
+    /** Searches that returned nothing. The retrieval-quality signal. */
+    zeroResult: number;
+    p50Ms: number;
+    p95Ms: number;
+    medianResults: number;
+  };
+  latency: { bucket: string; calls: number }[];
+  /** `path` is carried so a caller knows whether `query` needs URL-decoding. */
+  topQueries: { query: string; path: string; calls: number; lastAt: string }[];
+  models: { model: string; calls: number; completionTokens: number }[];
+  /** ISO day of week, 1 = Monday. */
+  byDow: { dow: number; calls: number }[];
+}
+
+/** Latency buckets in display order — SQL returns them unordered. */
+export const LATENCY_BUCKETS = [
+  '<100ms',
+  '100-500ms',
+  '0.5-1s',
+  '1-3s',
+  '3-10s',
+  '10-30s',
+  '>30s',
+] as const;
+
 export interface UsageCallDetail extends UsageCallRow {
   reply?: UsageReply;
 }

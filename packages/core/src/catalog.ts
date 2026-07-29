@@ -20,7 +20,10 @@ import {
   type RouteClass,
   type UsageCall,
   type UsageCallDetail,
+  type UsageCallPage,
+  type UsageCallQuery,
   type UsageCallRow,
+  type UsageInsights,
   type UsageReply,
   type UsageStats,
 } from './usage.js';
@@ -631,24 +634,13 @@ export class Catalog {
    * large) answer text is never dragged into a list query. The body is fetched
    * one row at a time by `usageCall`.
    */
-  async listUsageCalls(opts: {
-    limit?: number;
-    offset?: number;
-    client?: string;
-    tool?: string;
-    classes?: RouteClass[];
-    status?: 'ok' | 'error';
-    since?: string;
-    until?: string;
-    q?: string;
-  } = {}): Promise<{ calls: UsageCallRow[]; total: number }> {
+  async listUsageCalls(opts: UsageCallQuery = {}): Promise<UsageCallPage> {
     const limit = Math.min(Math.max(1, opts.limit ?? 100), 500);
-    const offset = Math.max(0, opts.offset ?? 0);
     const where: string[] = [];
     const p: unknown[] = [];
     const add = (sql: string, val: unknown) => {
       p.push(val);
-      where.push(sql.replace('$?', `$${p.length}`));
+      where.push(sql.replace(/\$\?/g, `$${p.length}`));
     };
 
     if (opts.client) add('client = $?', opts.client);
@@ -663,23 +655,198 @@ export class Catalog {
     // a typed regex character cannot blow up the query.
     if (opts.q) add('query ILIKE $?', `%${opts.q}%`);
 
+    /**
+     * Drop the rows that carry no information about what anyone wanted:
+     * `/api/projects` (the scope bar refetching its list) and any call with no
+     * query text at all.
+     *
+     * Applied in SQL rather than in the browser on purpose. Filtering after the
+     * fetch would make `total` and the facet counts describe a different set
+     * from the rows beneath them, and every infinite-scroll page would return an
+     * unpredictable number of visible rows — sometimes zero, which reads as
+     * "the end" when it is not.
+     */
+    if (opts.hideNoise) {
+      where.push("path <> '/api/projects'");
+      where.push("query IS NOT NULL AND query <> ''");
+    }
+
+    /**
+     * Keyset cursor, not OFFSET. This table gains rows continuously (health
+     * checks land every few seconds), so an OFFSET page is measured from a top
+     * that has moved: page 2 re-serves rows already shown and skips others.
+     * `(at, id)` names a position in the data instead of a count from the top,
+     * so it stays correct however many rows arrive mid-scroll. `id` breaks ties
+     * because `at` is not unique.
+     */
+    if (opts.cursor) {
+      p.push(opts.cursor.at, opts.cursor.id);
+      where.push(`(l.at, l.id) < ($${p.length - 1}::timestamptz, $${p.length}::bigint)`);
+    }
+
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    const [rows, count] = await Promise.all([
+    // The cursor bound must not narrow the totals or the facets: those describe
+    // the whole filtered set, not the page. Hence a second clause without it.
+    const scopeWhere = where.filter((w) => !w.includes('(l.at, l.id) <'));
+    const scopeClause = scopeWhere.length ? `WHERE ${scopeWhere.join(' AND ')}` : '';
+    const scopeParams = opts.cursor ? p.slice(0, -2) : p;
+
+    const [rows, count, byClient, byTool] = await Promise.all([
       this.pool.query(
         `SELECT l.id, l.at, l.client, l.tool, l.method, l.path, l.query, l.status,
                 l.duration_ms, l.route_class,
                 EXISTS (SELECT 1 FROM usage_reply r WHERE r.call_id = l.id) AS has_reply
          FROM usage_log l ${clause}
          ORDER BY l.at DESC, l.id DESC
-         LIMIT ${limit} OFFSET ${offset}`,
+         LIMIT ${limit}`,
         p,
       ),
-      this.pool.query(`SELECT count(*)::int AS n FROM usage_log ${clause}`, p),
+      this.pool.query(`SELECT count(*)::int AS n FROM usage_log l ${scopeClause}`, scopeParams),
+      // Facets over the filtered set, so the headline counts always add up to
+      // what the list is actually showing.
+      this.pool.query(
+        `SELECT l.client AS key, count(*)::int AS calls FROM usage_log l ${scopeClause}
+         GROUP BY l.client ORDER BY calls DESC`,
+        scopeParams,
+      ),
+      this.pool.query(
+        `SELECT coalesce(l.tool, l.path) AS key, count(*)::int AS calls FROM usage_log l ${scopeClause}
+         GROUP BY coalesce(l.tool, l.path) ORDER BY calls DESC LIMIT 25`,
+        scopeParams,
+      ),
     ]);
 
+    const calls = rows.rows.map((r: any) => this.toCallRow(r));
+    const last = calls.at(-1);
     return {
-      calls: rows.rows.map((r: any) => this.toCallRow(r)),
+      calls,
       total: count.rows[0]?.n ?? 0,
+      facets: {
+        byClient: byClient.rows.map((r: any) => ({ key: r.key ?? 'unknown', calls: r.calls })),
+        byTool: byTool.rows.map((r: any) => ({ key: r.key ?? '—', calls: r.calls })),
+      },
+      // Absent when this page was not full: there is provably nothing after it,
+      // so the client can stop rather than fetch once more to discover empty.
+      nextCursor: calls.length === limit && last ? { at: last.at, id: last.id } : undefined,
+    };
+  }
+
+  /**
+   * Aggregates for the Stats tab: not "how many calls" (the Overview answers
+   * that) but "is Atlas actually working for anyone".
+   *
+   * The two numbers worth the query are `zeroResult` and `zeroSource` — searches
+   * and asks that returned nothing. Volume charts look identical whether every
+   * answer landed or none did; those two are the difference.
+   */
+  async usageInsights(days = 30): Promise<UsageInsights> {
+    const interval = `${Math.min(Math.max(1, days), 365)} days`;
+    const a = [interval];
+
+    const [ask, search, latency, topQueries, models, byDow] = await Promise.all([
+      this.pool.query(
+        `SELECT count(*)::int AS calls,
+                count(*) FILTER (WHERE l.status = 499)::int AS aborted,
+                count(*) FILTER (WHERE l.status >= 500)::int AS failed,
+                count(*) FILTER (WHERE r.degraded)::int AS degraded,
+                count(*) FILTER (WHERE r.result_count = 0)::int AS zero_source,
+                coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY l.duration_ms),0)::int AS p50_ms,
+                coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY l.duration_ms),0)::int AS p95_ms,
+                coalesce(sum(r.prompt_tokens),0)::int AS prompt_tokens,
+                coalesce(sum(r.completion_tokens),0)::int AS completion_tokens,
+                coalesce(avg(r.ttft_ms),0)::int AS avg_ttft_ms
+         FROM usage_log l LEFT JOIN usage_reply r ON r.call_id = l.id
+         WHERE l.at > now() - $1::interval AND l.path IN ('/api/ask','/api/ask/stream')`,
+        a,
+      ),
+      this.pool.query(
+        `SELECT count(*)::int AS calls,
+                count(*) FILTER (WHERE r.result_count = 0)::int AS zero_result,
+                coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY l.duration_ms),0)::int AS p50_ms,
+                coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY l.duration_ms),0)::int AS p95_ms,
+                coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY r.result_count),0)::int AS median_results
+         FROM usage_log l LEFT JOIN usage_reply r ON r.call_id = l.id
+         WHERE l.at > now() - $1::interval AND l.path = '/api/search'`,
+        a,
+      ),
+      // Log-ish buckets by hand rather than width_bucket: latency here spans
+      // 1ms to 95s, and equal-width buckets would put everything in one.
+      this.pool.query(
+        `SELECT bucket, count(*)::int AS calls FROM (
+           SELECT CASE
+             WHEN duration_ms <   100 THEN '<100ms'
+             WHEN duration_ms <   500 THEN '100-500ms'
+             WHEN duration_ms <  1000 THEN '0.5-1s'
+             WHEN duration_ms <  3000 THEN '1-3s'
+             WHEN duration_ms < 10000 THEN '3-10s'
+             WHEN duration_ms < 30000 THEN '10-30s'
+             ELSE '>30s' END AS bucket
+           FROM usage_log
+           WHERE at > now() - $1::interval AND route_class IN ('query','read','write')
+         ) b GROUP BY bucket`,
+        a,
+      ),
+      this.pool.query(
+        `SELECT query, min(path) AS path, count(*)::int AS calls, max(at) AS last_at
+         FROM usage_log
+         WHERE at > now() - $1::interval AND route_class = 'query'
+           AND query IS NOT NULL AND query <> ''
+         GROUP BY query ORDER BY calls DESC, last_at DESC LIMIT 15`,
+        a,
+      ),
+      this.pool.query(
+        `SELECT r.model, count(*)::int AS calls,
+                coalesce(sum(r.completion_tokens),0)::int AS completion_tokens
+         FROM usage_reply r JOIN usage_log l ON l.id = r.call_id
+         WHERE l.at > now() - $1::interval AND r.model IS NOT NULL
+         GROUP BY r.model ORDER BY calls DESC`,
+        a,
+      ),
+      this.pool.query(
+        `SELECT extract(isodow FROM at AT TIME ZONE 'UTC')::int AS dow, count(*)::int AS calls
+         FROM usage_log
+         WHERE at > now() - $1::interval AND route_class IN ('query','read','write')
+         GROUP BY dow ORDER BY dow`,
+        a,
+      ),
+    ]);
+
+    const askRow = ask.rows[0] ?? {};
+    const searchRow = search.rows[0] ?? {};
+    return {
+      days,
+      ask: {
+        calls: askRow.calls ?? 0,
+        aborted: askRow.aborted ?? 0,
+        failed: askRow.failed ?? 0,
+        degraded: askRow.degraded ?? 0,
+        zeroSource: askRow.zero_source ?? 0,
+        p50Ms: askRow.p50_ms ?? 0,
+        p95Ms: askRow.p95_ms ?? 0,
+        promptTokens: askRow.prompt_tokens ?? 0,
+        completionTokens: askRow.completion_tokens ?? 0,
+        avgTtftMs: askRow.avg_ttft_ms ?? 0,
+      },
+      search: {
+        calls: searchRow.calls ?? 0,
+        zeroResult: searchRow.zero_result ?? 0,
+        p50Ms: searchRow.p50_ms ?? 0,
+        p95Ms: searchRow.p95_ms ?? 0,
+        medianResults: searchRow.median_results ?? 0,
+      },
+      latency: latency.rows.map((r: any) => ({ bucket: r.bucket, calls: r.calls })),
+      topQueries: topQueries.rows.map((r: any) => ({
+        query: r.query,
+        path: r.path,
+        calls: r.calls,
+        lastAt: new Date(r.last_at).toISOString(),
+      })),
+      models: models.rows.map((r: any) => ({
+        model: r.model,
+        calls: r.calls,
+        completionTokens: r.completion_tokens,
+      })),
+      byDow: byDow.rows.map((r: any) => ({ dow: r.dow, calls: r.calls })),
     };
   }
 

@@ -10,7 +10,8 @@ import type {
   Stats,
   TimelineItem,
   UsageCallDetail,
-  UsageCallRow,
+  UsageCallPage,
+  UsageInsights,
   UsageStats,
 } from './types';
 
@@ -130,7 +131,8 @@ export const api = {
   usage: (days: number, classes: string[]) =>
     get<UsageStats>(`/api/admin/usage${qs({ days, class: classes.join(',') })}`),
   usageCalls: (params: Record<string, unknown>) =>
-    get<{ calls: UsageCallRow[]; total: number }>(`/api/admin/usage/calls${qs(params)}`),
+    get<UsageCallPage>(`/api/admin/usage/calls${qs(params)}`),
+  usageInsights: (days: number) => get<UsageInsights>(`/api/admin/usage/insights${qs({ days })}`),
   usageCall: (id: number) => get<UsageCallDetail>(`/api/admin/usage/calls/${id}`),
   adoption: () => get<CachedAdoption>('/api/admin/adoption'),
   refreshAdoption: () => post<{ enqueued: number }>('/api/admin/adoption/refresh', {}),

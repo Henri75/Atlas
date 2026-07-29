@@ -197,6 +197,7 @@ async function main() {
      * 'manual' and 'reconcile'. The work has to happen over there: adoption
      * reads ~/.claude/projects, which is mounted into the indexer only.
      */
+    usagePageSize: cfg.usagePageSize,
     enqueueAdoption: async () => {
       await queue.add(
         'adoption',

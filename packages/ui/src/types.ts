@@ -301,6 +301,63 @@ export interface UsageCallDetail extends UsageCallRow {
   reply?: UsageReply;
 }
 
+export interface UsageCursor {
+  at: string;
+  id: number;
+}
+
+export interface UsageFacet {
+  key: string;
+  calls: number;
+}
+
+export interface UsageCallPage {
+  calls: UsageCallRow[];
+  /** Size of the whole filtered set, independent of how far you have scrolled. */
+  total: number;
+  facets: { byClient: UsageFacet[]; byTool: UsageFacet[] };
+  /** Absent when the last page was short — provably nothing follows. */
+  nextCursor?: UsageCursor;
+}
+
+export interface UsageInsights {
+  days: number;
+  ask: {
+    calls: number;
+    aborted: number;
+    failed: number;
+    degraded: number;
+    zeroSource: number;
+    p50Ms: number;
+    p95Ms: number;
+    promptTokens: number;
+    completionTokens: number;
+    avgTtftMs: number;
+  };
+  search: {
+    calls: number;
+    zeroResult: number;
+    p50Ms: number;
+    p95Ms: number;
+    medianResults: number;
+  };
+  latency: { bucket: string; calls: number }[];
+  topQueries: { query: string; path: string; calls: number; lastAt: string }[];
+  models: { model: string; calls: number; completionTokens: number }[];
+  byDow: { dow: number; calls: number }[];
+}
+
+/** Display order for latency buckets; SQL returns them unordered. */
+export const LATENCY_BUCKETS = [
+  '<100ms',
+  '100-500ms',
+  '0.5-1s',
+  '1-3s',
+  '3-10s',
+  '10-30s',
+  '>30s',
+] as const;
+
 export interface UsageToolStat {
   client: string;
   tool: string;

@@ -246,6 +246,134 @@ export function ShareBar({ parts }: { parts: { key: string; calls: number; color
   );
 }
 
+/**
+ * Ranked horizontal bars — the right form for "which things, in what
+ * proportion" when the labels are words rather than dates.
+ *
+ * Vertical bars would force the labels to rotate, and a pie would make the
+ * comparison that matters (2nd vs 3rd place) the hardest one to read.
+ */
+export function BarList({
+  items,
+  max,
+  emptyLabel = 'nothing recorded',
+}: {
+  items: { key: string; calls: number; color?: string; hint?: string }[];
+  max?: number;
+  emptyLabel?: string;
+}) {
+  if (items.length === 0) return <p className="text-[12px] text-faint">{emptyLabel}</p>;
+  const top = max ?? Math.max(...items.map((i) => i.calls), 1);
+  return (
+    <div className="space-y-1">
+      {items.map((i) => (
+        <div key={i.key} className="flex items-center gap-2 text-[12px]" title={i.hint}>
+          <span className="w-40 shrink-0 truncate font-mono text-[11px]" title={i.key}>
+            {i.key}
+          </span>
+          <span className="flex-1 h-3 rounded-sm overflow-hidden" style={{ background: 'var(--color-line)' }}>
+            <span
+              className="block h-full rounded-sm"
+              style={{
+                // 2px floor rather than a percentage: at the bottom of a ranked
+                // list the true width rounds to nothing, and a bar you cannot
+                // see reads as a zero.
+                width: `max(2px, ${(i.calls / top) * 100}%)`,
+                background: i.color ?? 'var(--color-kdb)',
+              }}
+            />
+          </span>
+          <span className="w-12 shrink-0 text-right font-mono text-[11px]" title={exact(i.calls)}>
+            {compact(i.calls)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Latency distribution over fixed buckets.
+ *
+ * Buckets are log-ish and supplied by the caller in display order, because
+ * latency here spans 1ms to 95s: equal-width buckets would put essentially
+ * everything in the first one and report a flat line.
+ */
+export function Histogram({ buckets }: { buckets: { bucket: string; calls: number }[] }) {
+  const max = Math.max(...buckets.map((b) => b.calls), 1);
+  const total = buckets.reduce((a, b) => a + b.calls, 0);
+  if (total === 0) return <p className="text-[12px] text-faint">no calls in this window</p>;
+
+  return (
+    <div>
+      <div className="flex items-end gap-1 h-24" role="img" aria-label="Latency distribution">
+        {buckets.map((b) => (
+          <div key={b.bucket} className="flex-1 flex flex-col justify-end h-full min-w-0">
+            <div
+              title={`${b.bucket} — ${exact(b.calls)} call${b.calls === 1 ? '' : 's'} (${Math.round((b.calls / total) * 100)}%)`}
+              className="w-full rounded-t-sm"
+              style={{
+                height: b.calls === 0 ? '1px' : `max(3%, ${(b.calls / max) * 100}%)`,
+                background: b.calls === 0 ? 'var(--color-line)' : 'var(--color-kdb)',
+              }}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="mt-1 flex gap-1">
+        {buckets.map((b) => (
+          <span key={b.bucket} className="flex-1 min-w-0 text-center font-mono text-[9px] text-faint truncate">
+            {b.bucket}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A single proportion, stated as a number with the bar underneath.
+ *
+ * `tone` is the caller's judgment, not this component's: a high zero-result rate
+ * is bad, a high completion rate is good, and the same 40% means opposite things
+ * in the two.
+ */
+export function Rate({
+  label,
+  value,
+  of,
+  hint,
+  tone,
+}: {
+  label: string;
+  value: number;
+  of: number;
+  hint?: string;
+  tone?: string;
+}) {
+  const pct = of > 0 ? value / of : 0;
+  return (
+    <div className="rounded-md border border-line bg-panel px-3 py-2.5">
+      <div className="font-mono text-[10px] uppercase tracking-wider text-faint">{label}</div>
+      <div className="flex items-baseline gap-1.5 mt-0.5">
+        <span className="font-display text-[20px] font-semibold" style={tone ? { color: tone } : undefined}>
+          {of > 0 ? `${Math.round(pct * 100)}%` : '—'}
+        </span>
+        <span className="font-mono text-[10px] text-faint">
+          {exact(value)}/{exact(of)}
+        </span>
+      </div>
+      <div className="mt-1.5 h-1 rounded-full overflow-hidden" style={{ background: 'var(--color-line)' }}>
+        <div
+          className="h-full"
+          style={{ width: `${pct * 100}%`, background: tone ?? 'var(--color-kdb)' }}
+        />
+      </div>
+      {hint && <div className="text-[11px] text-muted mt-1">{hint}</div>}
+    </div>
+  );
+}
+
 /** Shared legend swatch, so every chart labels its colours the same way. */
 export function Swatch({ color, children }: { color: string; children: ReactNode }) {
   return (

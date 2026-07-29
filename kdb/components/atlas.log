@@ -1346,3 +1346,41 @@
 
 **Status:**
 - Completed
+---
+### [2026-07-30 00:25 UTC] — Monitor: noise filter, decoded queries, filters, Stats tab, infinite scroll
+
+**What changed:**
+- **Noise filter**, default on: `hideNoise` drops `/api/projects` (the scope bar refetching its list) and any call with no query text. Measured on real data: 744 calls -> 118.
+- **Decoded queries**: `describeQuery()` splits the `query` column's two shapes apart — a raw URL query string from GET routes, prose from POST ask — and renders the first as its search text plus filter chips. The raw string stays available in the drawer behind a disclosure.
+- **Top stats** on Calls: counts by client and by type, computed server-side over the same WHERE clause as the rows.
+- **New Stats tab**: outcome rates (searches returning nothing, asks with no sources, aborted, degraded/failed), per-mode latency and token figures, a log-scaled latency histogram, which models actually answered, weekday spread, and the most-repeated questions.
+- **Filters**: relative range (24h/7d/4w/3m) or an absolute from/to pair, plus client, tool, status and free text — all server-side.
+- **Infinite scroll** via IntersectionObserver with a 400px `rootMargin`, replacing pages.
+- Split MonitorView into `views/monitor/{Filters,CallsTab,StatsTab,CallDrawer,useCallFeed}` — it had reached ~950 lines holding a table, a drawer, three charts and a control panel.
+
+**Why it is built this way:**
+- **Keyset cursor, not OFFSET.** This table gains rows continuously, so an offset page is measured from a top that has moved: page 2 re-serves rows already shown and skips others. Verified live — `total` grew 120 -> 121 mid-scroll (the monitor logging its own requests) and 120 rows across 5 pages came back with zero duplicates.
+- **Noise filter and facets in SQL, not the browser.** Filtering after the fetch would make `total` and the facet counts describe a different population from the rows beneath them, and every scroll page would return an unpredictable number of visible rows — sometimes zero, which reads as "the end".
+- **`looksLikeQueryString` requires a leading `identifier=`,** not merely a `=` anywhere: a real question can contain one ("what does k=12 do?"), and decoding prose would rewrite every `+` in it into a space.
+- **Absolute range end is exclusive midnight of the day after `to`.** A naive `to` bound returns nothing for a same-day range, because every call that day happened after 00:00.
+- **Stale responses lose**, via a generation counter checked on arrival: changing a filter mid-flight must not let the previous request's rows land on the new list. Append also de-duplicates by id rather than trusting the cursor.
+- **Latency buckets are reordered client-side** from `LATENCY_BUCKETS`: SQL groups by bucket and returns them arbitrarily (observed: `10-30s` first), and a distribution with a shuffled x-axis is not a distribution. Buckets are log-ish because latency spans 1ms to 95s — equal-width buckets put everything in one.
+- **Stats leads with rates, not volume.** A busy week of searches that all returned nothing charts identically to a week that answered everything; `zeroResult` and `zeroSource` are the difference.
+- `Rate`'s `tone` is the caller's judgment, not the component's: the same 40% is bad for zero-results and good for completions.
+
+**Code/Files Modified:**
+- packages/core/src/catalog.ts (cursor paging, facets, `usageInsights`), packages/core/src/usage.ts (query/page/insight types, `LATENCY_BUCKETS`)
+- packages/api/src/app.ts (`hideNoise`, cursor params, insights route, `usagePageSize` dep), packages/api/src/main.ts
+- packages/ui/src/describeQuery.ts (new), packages/ui/src/dateRange.ts (new)
+- packages/ui/src/views/monitor/{Filters,CallsTab,StatsTab,CallDrawer,useCallFeed} (new), packages/ui/src/views/MonitorView.tsx, packages/ui/src/components/charts.tsx (`BarList`, `Histogram`, `Rate`), packages/ui/src/{api,types}.ts
+- test/ui/describeQuery.test.ts (new, 13), test/ui/dateRange.test.ts (new, 15), test/api/routes.test.ts
+- docs/api.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** putting the two decision-heavy pieces (query decoding, date ranges) in pure modules and testing them first. Every interesting case — an encoded `+`, a question containing `=`, a single-day range — is a one-line test rather than something to click through.
+- **What Failed:** my first live check of cursor paging asserted ids descend, which failed. The ORDER BY is `at DESC, id DESC`, and `now()` is transaction-start while `nextval()` is assigned during execution, so under concurrency the two can disagree (2 disagreements in 120 rows). The assertion was wrong, not the query — verified separately that `at` is strictly descending.
+- **Found while verifying:** three different models served answers in the same window (`gemini-2.5-flash`, `google/gemini-2.5-flash-lite`, `gemini-3-flash-preview`). The gateway substitutes by routing policy; the Stats tab now says so rather than letting it read as a misconfiguration.
+- **Verified:** 957 tests / 72 files green; lint clean; live — noise filter 744->118, 5-page cursor walk with no duplicates under concurrent insertion, insights endpoint returning real rates (ask p50 17.5s, 3 aborted, 1 degraded, 0 searches with zero results), every new string present in the served bundle. **Not** visually inspected in a browser (extension unavailable).
+
+**Status:**
+- Completed

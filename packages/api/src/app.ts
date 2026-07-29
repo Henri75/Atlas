@@ -84,6 +84,8 @@ export interface ApiDeps {
   backlogReview: BacklogReviewService;
   /** Fuzzy-link floor for legacy DONE:/RESOLVED: markers (config SSoT). */
   backlogMatchThreshold: number;
+  /** Default page size for the usage call log (config SSoT). */
+  usagePageSize: number;
 }
 
 export interface BackfillProgress {
@@ -861,10 +863,15 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
   app.get('/api/admin/usage/calls', async (c) => {
     const num = (k: string) => (c.req.query(k) ? Number(c.req.query(k)) : undefined);
     const status = c.req.query('status');
+    // Cursor arrives as the two halves it is made of rather than an opaque blob:
+    // it is a position in a log the operator can read, and a debuggable URL is
+    // worth more here than an encoded token.
+    const cursorAt = c.req.query('cursorAt');
+    const cursorId = num('cursorId');
     return c.json(
       await deps.catalog.listUsageCalls({
-        limit: num('limit'),
-        offset: num('offset'),
+        limit: num('limit') ?? deps.usagePageSize,
+        cursor: cursorAt && cursorId != null ? { at: cursorAt, id: cursorId } : undefined,
         client: c.req.query('client') || undefined,
         tool: c.req.query('tool') || undefined,
         classes: parseClasses(c.req.query('class')),
@@ -872,9 +879,17 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
         since: c.req.query('since') || undefined,
         until: c.req.query('until') || undefined,
         q: c.req.query('q') || undefined,
+        // Opt-in server-side, default-on in the UI: a bare API call gets the
+        // unfiltered truth, while the page a human reads hides the traffic.
+        hideNoise: c.req.query('hideNoise') === 'true',
       }),
     );
   });
+
+  /** Insights over usage: not how much, but whether it worked. */
+  app.get('/api/admin/usage/insights', async (c) =>
+    c.json(await deps.catalog.usageInsights(parseDays(c.req.query('days')))),
+  );
 
   /** One call with the full reply Atlas gave it. */
   app.get('/api/admin/usage/calls/:id', async (c) => {

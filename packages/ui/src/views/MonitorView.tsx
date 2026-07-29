@@ -22,6 +22,10 @@ import {
 } from '../components/charts';
 import { compact, exact, millis, plural, relativeTime } from '../format';
 import { usePersistentState } from '../usePersistentState';
+import { DEFAULT_RANGE, rangeDays, rangeLabel, type DateRange } from '../dateRange';
+import { Filters, RangePicker, type FilterState } from './monitor/Filters';
+import { CallsTab } from './monitor/CallsTab';
+import { StatsTab } from './monitor/StatsTab';
 
 /**
  * Monitor: who uses Atlas, for what, how well it answered.
@@ -37,15 +41,21 @@ import { usePersistentState } from '../usePersistentState';
  * observation.
  */
 
-type Tab = 'overview' | 'calls' | 'adoption';
+type Tab = 'overview' | 'calls' | 'stats' | 'adoption';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
   { key: 'calls', label: 'Calls' },
+  { key: 'stats', label: 'Stats' },
   { key: 'adoption', label: 'Adoption' },
 ];
 
-const WINDOWS = [1, 7, 30, 90] as const;
+/** Filters start with the noise hidden: it is traffic, and it dwarfs the signal. */
+const DEFAULT_FILTERS: FilterState = {
+  range: DEFAULT_RANGE,
+  q: '',
+  hideNoise: true,
+};
 
 /** Classes shown by default: everything the classification does not call noise. */
 const SIGNAL_CLASSES = (Object.keys(ROUTE_CLASS_META) as RouteClass[]).filter(
@@ -54,14 +64,25 @@ const SIGNAL_CLASSES = (Object.keys(ROUTE_CLASS_META) as RouteClass[]).filter(
 
 export function MonitorView() {
   const [tab, setTab] = useState<Tab>('overview');
-  const [days, setDays] = usePersistentState<number>('atlas.monitor.days', 7);
   const [classes, setClasses] = usePersistentState<RouteClass[]>(
     'atlas.monitor.classes',
     SIGNAL_CLASSES,
   );
+  const [filters, setFilters] = usePersistentState<FilterState>(
+    'atlas.monitor.filters',
+    DEFAULT_FILTERS,
+  );
   const [live, setLive] = useState(false);
   const [nonce, setNonce] = useState(0);
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
+
+  // One window governs every tab, so the Overview, Stats and Calls numbers are
+  // always about the same slice of time. Derived rather than stored twice.
+  const days = useMemo(() => rangeDays(filters.range), [filters.range]);
+  const setRange = useCallback(
+    (range: DateRange) => setFilters((f) => ({ ...f, range })),
+    [setFilters],
+  );
 
   useEffect(() => {
     if (!live) return;
@@ -75,24 +96,12 @@ export function MonitorView() {
         <div>
           <h1 className="font-display text-xl font-semibold">Monitor</h1>
           <p className="text-[12px] text-muted mt-0.5">
-            Who calls Atlas, what they asked, and what it answered.
+            Who calls Atlas, what they asked, and what it answered ·{' '}
+            <span className="font-mono text-[11px]">{rangeLabel(filters.range)}</span>
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex rounded-md border border-line overflow-hidden">
-            {WINDOWS.map((d) => (
-              <button
-                key={d}
-                onClick={() => setDays(d)}
-                aria-pressed={days === d}
-                className={`px-2.5 py-1 font-mono text-[11px] ${
-                  days === d ? 'bg-panel-2 text-ink' : 'text-muted hover:bg-panel'
-                }`}
-              >
-                {d}d
-              </button>
-            ))}
-          </div>
+          <RangePicker range={filters.range} onChange={setRange} />
           <button
             onClick={() => setLive((v) => !v)}
             aria-pressed={live}
@@ -135,7 +144,15 @@ export function MonitorView() {
         {tab === 'overview' && (
           <OverviewTab days={days} classes={classes} onClasses={setClasses} nonce={nonce} />
         )}
-        {tab === 'calls' && <CallsTab days={days} classes={classes} nonce={nonce} />}
+        {tab === 'calls' && (
+          <CallsTab
+            classes={classes}
+            filters={filters}
+            onFilters={setFilters}
+            nonce={nonce}
+          />
+        )}
+        {tab === 'stats' && <StatsTab days={days} nonce={nonce} />}
         {tab === 'adoption' && <AdoptionTab nonce={nonce} />}
       </div>
     </div>
@@ -382,382 +399,6 @@ function ToolTable({ stats }: { stats: UsageStats }) {
           ))}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* Calls                                                                       */
-/* -------------------------------------------------------------------------- */
-
-function CallsTab({ days, classes, nonce }: { days: number; classes: RouteClass[]; nonce: number }) {
-  const [q, setQ] = useState('');
-  const [onlyErrors, setOnlyErrors] = useState(false);
-  const [onlyReplies, setOnlyReplies] = useState(false);
-  const [page, setPage] = useState(0);
-  const [data, setData] = useState<{ calls: UsageCallRow[]; total: number } | null>(null);
-  const [error, setError] = useState('');
-  const [openId, setOpenId] = useState<number | null>(null);
-  const pageSize = 100;
-
-  // A filter change must reset paging: page 4 of a narrower result set is
-  // usually empty, which reads as "no matches" for a filter that has plenty.
-  useEffect(() => setPage(0), [q, onlyErrors, days, classes]);
-
-  useEffect(() => {
-    let live = true;
-    const since = new Date(Date.now() - days * 86_400_000).toISOString();
-    api
-      .usageCalls({
-        since,
-        class: classes.join(','),
-        q: q.trim() || undefined,
-        status: onlyErrors ? 'error' : undefined,
-        limit: pageSize,
-        offset: page * pageSize,
-      })
-      .then((d) => live && (setData(d), setError('')))
-      .catch((e: Error) => live && setError(e.message));
-    return () => {
-      live = false;
-    };
-  }, [days, classes, q, onlyErrors, page, nonce]);
-
-  if (error) return <Empty title="Cannot load calls." hint={error} />;
-
-  // Replies are filtered client-side: it is a display preference over the page
-  // already fetched, and pushing it to SQL would make `total` disagree with the
-  // rows on screen.
-  const rows = (data?.calls ?? []).filter((c) => !onlyReplies || c.hasReply);
-  const pages = Math.ceil((data?.total ?? 0) / pageSize);
-
-  return (
-    <div>
-      <div className="flex flex-wrap items-center gap-2 mb-4">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search the questions asked…"
-          className="flex-1 min-w-56 bg-panel border border-line rounded-md px-3 py-1.5 text-[13px] placeholder:text-faint"
-        />
-        <Toggle on={onlyErrors} onClick={() => setOnlyErrors((v) => !v)}>
-          errors only
-        </Toggle>
-        <Toggle on={onlyReplies} onClick={() => setOnlyReplies((v) => !v)}>
-          with reply
-        </Toggle>
-      </div>
-
-      {!data ? (
-        <Spinner label="loading calls" />
-      ) : rows.length === 0 ? (
-        <Empty
-          title="No calls match."
-          hint={
-            classes.length === 0
-              ? 'No route classes are selected — pick at least one on the Overview tab.'
-              : 'Try a wider window, or clear the filters.'
-          }
-        />
-      ) : (
-        <>
-          <div className="overflow-x-auto">
-            <table className="w-full text-[12.5px] border-collapse">
-              <thead>
-                <tr className="text-left font-mono text-[10px] uppercase tracking-wider text-faint">
-                  <th className="py-1.5 pr-3 font-normal">When</th>
-                  <th className="py-1.5 pr-3 font-normal">Client</th>
-                  <th className="py-1.5 pr-3 font-normal">Tool / path</th>
-                  <th className="py-1.5 pr-3 font-normal">Query</th>
-                  <th className="py-1.5 pr-3 font-normal text-right">Took</th>
-                  <th className="py-1.5 font-normal text-right">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((c) => (
-                  <tr
-                    key={c.id}
-                    onClick={() => setOpenId(c.id)}
-                    className="border-t border-line cursor-pointer hover:bg-panel"
-                  >
-                    <td className="py-1.5 pr-3 text-[11px] text-muted whitespace-nowrap" title={c.at}>
-                      {relativeTime(c.at)}
-                    </td>
-                    <td className="py-1.5 pr-3">
-                      <Swatch color={clientColor(c.client)}>{c.client}</Swatch>
-                    </td>
-                    <td className="py-1.5 pr-3 font-mono text-[11.5px] whitespace-nowrap">
-                      {c.tool ?? c.path}
-                      {c.hasReply && (
-                        <span className="ml-1.5 text-faint" title="A reply was recorded">
-                          ⏎
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-1.5 pr-3 text-muted max-w-md truncate" title={c.query}>
-                      {c.query ?? <span className="text-faint">—</span>}
-                    </td>
-                    <td className="py-1.5 pr-3 text-right font-mono text-[11px]">
-                      {millis(c.durationMs)}
-                    </td>
-                    <td className="py-1.5 text-right font-mono text-[11px]">
-                      <StatusBadge status={c.status} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="mt-3 flex items-center justify-between font-mono text-[11px] text-faint">
-            <span>
-              {exact(data.total)} call{data.total === 1 ? '' : 's'}
-              {onlyReplies && rows.length !== data.calls.length
-                ? ` · ${rows.length} with a reply on this page`
-                : ''}
-            </span>
-            {pages > 1 && (
-              <span className="flex items-center gap-2">
-                <button
-                  disabled={page === 0}
-                  onClick={() => setPage((p) => p - 1)}
-                  className="px-2 py-0.5 rounded border border-line disabled:opacity-35 hover:text-ink"
-                >
-                  prev
-                </button>
-                <span>
-                  {page + 1} / {pages}
-                </span>
-                <button
-                  disabled={page + 1 >= pages}
-                  onClick={() => setPage((p) => p + 1)}
-                  className="px-2 py-0.5 rounded border border-line disabled:opacity-35 hover:text-ink"
-                >
-                  next
-                </button>
-              </span>
-            )}
-          </div>
-        </>
-      )}
-
-      {openId != null && <CallDrawer id={openId} onClose={() => setOpenId(null)} />}
-    </div>
-  );
-}
-
-function Toggle({
-  on,
-  onClick,
-  children,
-}: {
-  on: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-pressed={on}
-      className={`px-2.5 py-1 rounded-md border font-mono text-[11px] ${
-        on ? 'border-faint text-ink bg-panel-2' : 'border-line text-muted hover:text-ink'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-/** 499 is nginx's client-closed convention; show it as what it means. */
-function StatusBadge({ status }: { status: number }) {
-  if (status === 499)
-    return (
-      <span style={{ color: 'var(--color-report)' }} title="The caller gave up before the answer finished">
-        aborted
-      </span>
-    );
-  if (status >= 400) return <span style={{ color: 'var(--color-report)' }}>{status}</span>;
-  return <span className="text-faint">{status}</span>;
-}
-
-/**
- * One call in full: the question, the answer, the sources cited, what it cost.
- * The point of the whole feature — an aggregate can say ask is slow, only this
- * can say whether the answer was worth the wait.
- */
-function CallDrawer({ id, onClose }: { id: number; onClose: () => void }) {
-  const [call, setCall] = useState<UsageCallDetail | null>(null);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    let live = true;
-    setCall(null);
-    api
-      .usageCall(id)
-      .then((c) => live && (setCall(c), setError('')))
-      .catch((e: Error) => live && setError(e.message));
-    return () => {
-      live = false;
-    };
-  }, [id]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  const reply = call?.reply;
-
-  return (
-    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-modal="true">
-      <button className="flex-1 bg-black/40" aria-label="Close" onClick={onClose} />
-      <div className="w-full max-w-2xl bg-panel border-l border-line overflow-y-auto rise">
-        <div className="sticky top-0 bg-panel border-b border-line px-5 py-3 flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="font-mono text-[11px] text-faint">call #{id}</div>
-            <div className="font-display text-[15px] font-semibold truncate">
-              {call?.tool ?? call?.path ?? '…'}
-            </div>
-          </div>
-          <button onClick={onClose} className="text-muted hover:text-ink text-lg leading-none">
-            ×
-          </button>
-        </div>
-
-        <div className="px-5 py-4 space-y-6">
-          {error && <Empty title="Cannot load this call." hint={error} />}
-          {!call && !error && <Spinner label="loading call" />}
-
-          {call && (
-            <>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-[12.5px]">
-                <Field label="When">
-                  <span title={call.at}>{relativeTime(call.at)}</span>
-                </Field>
-                <Field label="Client">
-                  <Swatch color={clientColor(call.client)}>{call.client}</Swatch>
-                </Field>
-                <Field label="Route">
-                  <span className="font-mono text-[11.5px]">
-                    {call.method} {call.path}
-                  </span>
-                </Field>
-                <Field label="Class">
-                  <span className="font-mono text-[11.5px]" title={ROUTE_CLASS_META[call.routeClass]?.hint}>
-                    {call.routeClass}
-                  </span>
-                </Field>
-                <Field label="Took">{millis(call.durationMs)}</Field>
-                <Field label="Status">
-                  <StatusBadge status={call.status} />
-                </Field>
-                {reply?.model && <Field label="Model">{reply.model}</Field>}
-                {reply?.ttftMs != null && <Field label="First token">{millis(reply.ttftMs)}</Field>}
-                {reply?.promptTokens != null && (
-                  <Field label="Tokens">
-                    {compact(reply.promptTokens)} in
-                    {reply.completionTokens != null ? ` · ${compact(reply.completionTokens)} out` : ''}
-                  </Field>
-                )}
-                {reply?.resultCount != null && (
-                  <Field label="Results">{plural(reply.resultCount, 'result')}</Field>
-                )}
-              </dl>
-
-              {call.query && (
-                <section>
-                  <Eyebrow>Asked</Eyebrow>
-                  <p className="text-[13.5px] whitespace-pre-wrap">{call.query}</p>
-                </section>
-              )}
-
-              {reply?.degraded && (
-                <p
-                  className="rounded-md border px-3 py-2 text-[12px]"
-                  style={{
-                    borderColor: 'color-mix(in srgb, var(--color-report) 45%, transparent)',
-                    color: 'var(--color-report)',
-                  }}
-                >
-                  Degraded answer — the LLM was unreachable, so Atlas returned the retrieved
-                  sources with an explanation instead of a synthesis.
-                </p>
-              )}
-
-              {reply?.error && (
-                <section>
-                  <Eyebrow>Failed with</Eyebrow>
-                  <pre
-                    className="text-[11.5px] font-mono whitespace-pre-wrap rounded-md border px-3 py-2"
-                    style={{
-                      borderColor: 'color-mix(in srgb, var(--color-report) 40%, transparent)',
-                      color: 'var(--color-report)',
-                    }}
-                  >
-                    {reply.error}
-                  </pre>
-                </section>
-              )}
-
-              {reply?.answer && (
-                <section>
-                  <Eyebrow>Atlas answered</Eyebrow>
-                  <div className="text-[13.5px] whitespace-pre-wrap leading-relaxed">
-                    {reply.answer}
-                  </div>
-                </section>
-              )}
-
-              {reply?.topHits && reply.topHits.length > 0 && (
-                <section>
-                  <Eyebrow>Top sources</Eyebrow>
-                  <ol className="space-y-1.5">
-                    {reply.topHits.map((h, i) => (
-                      <li key={`${h.entryId}-${i}`} className="flex items-baseline gap-2 text-[12.5px]">
-                        <span className="font-mono text-[10px] text-faint w-4 shrink-0">
-                          {i + 1}
-                        </span>
-                        <span className="flex-1 min-w-0 truncate" title={h.title}>
-                          {h.title}
-                        </span>
-                        <span className="font-mono text-[10px] text-faint shrink-0">
-                          {h.projectSlug}
-                        </span>
-                        {h.score != null && (
-                          <span
-                            className="font-mono text-[10px] shrink-0"
-                            style={{ color: 'var(--color-kdb)' }}
-                            title="Fused hybrid-search score"
-                          >
-                            {h.score.toFixed(3)}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ol>
-                </section>
-              )}
-
-              {!call.hasReply && (
-                <p className="text-[12px] text-faint">
-                  No reply was recorded for this call. Replies are kept for search and ask only,
-                  and only for calls made after reply capture shipped.
-                </p>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <dt className="font-mono text-[10px] uppercase tracking-wider text-faint">{label}</dt>
-      <dd className="mt-0.5">{children}</dd>
     </div>
   );
 }
