@@ -840,6 +840,169 @@ describe('usage telemetry', () => {
     expect(usageRows[0]).toMatchObject({ path: '/api/ask/stream', query: 'what happened on 2026-07-21?' });
   });
 
+  /**
+   * The four ways a streamed answer can end. All four must be distinguishable in
+   * the log, because they mean different things and the error rate is computed
+   * from `status`.
+   *
+   * The failure cases are the point. A stream flushes 200 headers before it knows
+   * whether the answer will succeed, so recording the wire status would file a
+   * failed answer as a clean success — which is how the first version of this
+   * behaved, and it took Postgres falling over mid-test to notice.
+   */
+  const streamOf = (events: unknown[]) => ({
+    askStream: () =>
+      (async function* () {
+        for (const e of events) yield e;
+      })(),
+  });
+
+  const runStream = async (ask: unknown) => {
+    const app = buildApp(makeDeps({ ask: ask as any }));
+    const res = await app.request('/api/ask/stream', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-atlas-client': 'ui' },
+      body: JSON.stringify({ question: 'why?' }),
+    });
+    await res.text().catch(() => {}); // an errored stream rejects on drain
+    await flush();
+  };
+
+  it('records a completed stream as a success, with its answer', async () => {
+    await runStream(
+      streamOf([
+        { type: 'sources', sources: [{ n: 1, entryId: 7, title: 't', projectSlug: 'atlas', sourceType: 'doc' }] },
+        { type: 'delta', text: 'Because ' },
+        { type: 'delta', text: 'of X.' },
+        { type: 'done', model: 'm', degraded: false, metrics: { model: 'served-m', promptTokens: 10, completionTokens: 4 } },
+      ]),
+    );
+    expect(usageRows).toHaveLength(1);
+    expect(usageRows[0]).toMatchObject({ status: 200 });
+    expect((usageRows[0] as any).reply).toMatchObject({
+      answer: 'Because of X.',
+      resultCount: 1,
+      // The model that actually served it, not the one configured.
+      model: 'served-m',
+      promptTokens: 10,
+    });
+  });
+
+  /**
+   * Regression: an `error` event used to be ignored entirely, so this recorded
+   * as status 200 with an empty answer — a successful-looking ask that returned
+   * nothing, invisible in the error rate.
+   */
+  it('records a stream that reported an error as a failure, keeping the message', async () => {
+    await runStream(
+      streamOf([
+        { type: 'sources', sources: [] },
+        { type: 'error', message: 'the database system is in recovery mode' },
+      ]),
+    );
+    expect(usageRows).toHaveLength(1);
+    expect(usageRows[0]).toMatchObject({ status: 500 });
+    expect((usageRows[0] as any).reply).toMatchObject({
+      error: 'the database system is in recovery mode',
+    });
+  });
+
+  /**
+   * Regression: a throw out of the generator errors the stream, and `cancel`
+   * does not fire for an errored stream — so this previously wrote no row at
+   * all, losing exactly the failure most worth having.
+   */
+  it('records a stream that threw, which fires neither close nor cancel', async () => {
+    await runStream({
+      askStream: () =>
+        (async function* () {
+          yield { type: 'sources', sources: [] };
+          throw new Error('embedder died mid-answer');
+        })(),
+    });
+    expect(usageRows).toHaveLength(1);
+    expect(usageRows[0]).toMatchObject({ status: 500 });
+    expect((usageRows[0] as any).reply).toMatchObject({ error: 'embedder died mid-answer' });
+  });
+
+  /** A degraded answer is a success with a poor answer, not an error. */
+  it('does not count a degraded answer as a failure', async () => {
+    await runStream(
+      streamOf([
+        { type: 'sources', sources: [] },
+        { type: 'delta', text: 'LLM unavailable; here are sources.' },
+        { type: 'done', model: 'm', degraded: true },
+      ]),
+    );
+    expect(usageRows[0]).toMatchObject({ status: 200 });
+    expect((usageRows[0] as any).reply).toMatchObject({ degraded: true });
+  });
+
+  /**
+   * An empty all-null reply row says less than no reply row, and would show in
+   * the UI as a call that answered with nothing rather than one that never got
+   * started.
+   */
+  it('writes no reply row when the client vanished before anything was produced', async () => {
+    await runStream(streamOf([]));
+    expect(usageRows).toHaveLength(1);
+    expect((usageRows[0] as any).reply).toBeUndefined();
+  });
+
+  /**
+   * The abort path, driven deterministically: read two frames, then cancel the
+   * way a browser tab closing does.
+   *
+   * Tested here rather than against a live LLM because the interesting window —
+   * after the first tokens, before the answer ends — is a few seconds wide and
+   * moves with retrieval latency. Racing it produces a test that passes for the
+   * wrong reason, or fails for one.
+   */
+  it('keeps the partial answer produced before the client gave up', async () => {
+    let pulls = 0;
+    const app = buildApp(
+      makeDeps({
+        ask: {
+          askStream: () =>
+            (async function* () {
+              yield {
+                type: 'sources',
+                sources: [
+                  { n: 1, entryId: 7, title: 'a', projectSlug: 'atlas', sourceType: 'doc' },
+                  { n: 2, entryId: 8, title: 'b', projectSlug: 'atlas', sourceType: 'doc' },
+                ],
+              };
+              yield { type: 'delta', text: 'The answer begins' };
+              // Never reached: the consumer cancels first, and this asserts the
+              // generator is actually torn down rather than left running.
+              pulls++;
+              yield { type: 'delta', text: ' and would continue.' };
+            })(),
+        } as any,
+      }),
+    );
+    const res = await app.request('/api/ask/stream', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-atlas-client': 'ui' },
+      body: JSON.stringify({ question: 'why?' }),
+    });
+
+    const reader = res.body!.getReader();
+    await reader.read(); // sources
+    await reader.read(); // first delta
+    await reader.cancel(); // the tab closes
+    await flush();
+
+    expect(usageRows).toHaveLength(1);
+    expect(usageRows[0]).toMatchObject({ status: 499 });
+    expect((usageRows[0] as any).reply).toMatchObject({
+      answer: 'The answer begins',
+      resultCount: 2,
+    });
+    // The abandoned generation is stopped, not left burning LLM tokens.
+    expect(pulls).toBe(0);
+  });
+
   it('leaves GET routes reading their query from the URL', async () => {
     const app = buildApp(makeDeps());
     await app.request('/api/search?q=hello&limit=3', { headers: { 'x-atlas-client': 'cli' } });

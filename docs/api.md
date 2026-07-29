@@ -78,9 +78,21 @@ reply are written in one data-modifying CTE, so a reply can never half-land.
 
 `/api/ask/stream` records itself rather than going through the middleware, which
 measures around `await next()` — for a streaming response that resolves before
-the first token exists. It writes on stream close, or on **cancel** with the
-partial answer and `status = 499` (nginx's client-closed convention): a question
-abandoned mid-answer is a finding, not an absence.
+the first token exists.
+
+On that route `status` is the **outcome**, not the wire byte, because 200 headers
+flush before the outcome is known:
+
+| Outcome | Recorded | Reply kept |
+|---|---|---|
+| Answer completed | `200` | answer, sources, served model, tokens, TTFT |
+| Client gave up mid-answer | `499` | the partial answer produced so far |
+| Stream emitted an `error`, or threw | `500` | the error message |
+| LLM down, sources returned instead | `200` + `degraded` | the explanation |
+
+Recording the literal 200 for a failure would exclude every streamed failure from
+the error rate. A client that disconnects before the first event produces a call
+row with **no** reply row — an all-null reply says less than none.
 
 What is stored is the API's reply, **not** the MCP-formatted tool result the
 model saw, so this table cannot debug MCP formatting.

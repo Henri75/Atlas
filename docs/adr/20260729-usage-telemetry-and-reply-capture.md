@@ -50,9 +50,16 @@ Accepted
   calls `recordCall` itself on stream close or cancel. Rejected: middleware
   INSERTs then the stream UPDATEs — the middleware write is fire-and-forget and
   unordered, so the UPDATE can target a row that does not exist yet.
-- **Aborted answers are recorded**, with the partial text and `status = 499`
-  (nginx's client-closed convention, in an INT column we own). A question asked
-  and abandoned mid-answer is a finding, not an absence.
+- **`status` on the streaming route records the OUTCOME, not the wire byte.** The
+  route flushes 200 headers before it knows whether the answer will succeed, so
+  the HTTP status is decided too early to be informative. An abort is `499`
+  (nginx's client-closed convention) with whatever partial text was produced — a
+  question abandoned mid-answer is a finding, not an absence. A stream that
+  emits an `error` event, or throws, is `500` with the message kept.
+  Recording the literal 200 in those cases would exclude **every** streamed
+  failure from the error rate, which is the one number this table exists to keep
+  honest. A `degraded` answer stays 200: it is a success with a poor answer.
+  Both codes are values we own in an INT column and never bytes sent to a client.
 - **Token usage is recovered for the non-streaming ask path.** `AskMetrics`
   exists only on the streaming path, which the UI uses; MCP — the primary client
   — calls `/api/ask`, which goes through `chatComplete()`. That function already

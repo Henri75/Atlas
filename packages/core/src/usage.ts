@@ -116,8 +116,22 @@ export interface UsageTopHit {
   sourceType: string;
 }
 
-/** nginx's "client closed request". Used for an ask abandoned mid-answer. */
+/**
+ * Outcome codes for a streamed answer, which cannot use the wire status.
+ *
+ * `/api/ask/stream` flushes 200 headers before it knows whether the answer will
+ * succeed, so the HTTP status is decided too early to be informative. These
+ * record the OUTCOME instead — what actually happened to the question — and both
+ * are values we own in an INT column, never bytes sent to a client.
+ *
+ * Without this, a stream that failed and a stream that answered perfectly are
+ * both status 200, and the error rate — the one number this table exists to keep
+ * honest — silently excludes every streamed failure.
+ */
+/** nginx's "client closed request". An ask abandoned mid-answer. */
 export const STATUS_CLIENT_ABORTED = 499;
+/** The stream reported an error, or threw, after headers were already sent. */
+export const STATUS_STREAM_FAILED = 500;
 
 /** How many hits to keep per call. Enough to judge relevance, not a second index. */
 export const TOP_HITS_KEPT = 5;

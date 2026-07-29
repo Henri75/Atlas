@@ -4,6 +4,7 @@ import {
   ADOPTION_REPORT_KEY,
   ROUTE_CLASSES,
   STATUS_CLIENT_ABORTED,
+  STATUS_STREAM_FAILED,
   TOP_HITS_KEPT,
   editorUrl,
   embedderStatus,
@@ -13,6 +14,7 @@ import {
   toHostPath,
 } from '@atlas/core';
 import type {
+  AskEvent,
   AskMetrics,
   AskResult,
   AskService,
@@ -410,6 +412,7 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     let answer = '';
     let sources: AskSource[] = [];
     let meta: { model?: string; degraded?: boolean; metrics?: AskMetrics } = {};
+    let streamError: string | undefined;
     let recorded = false;
 
     /**
@@ -423,6 +426,27 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     const record = (status: number) => {
       if (recorded) return;
       recorded = true;
+      const reply: UsageReply = {
+        // Empty string, not stored as an answer: a stream that produced no prose
+        // has no answer, and '' would render as an empty "Atlas answered".
+        ...(answer ? { answer } : {}),
+        resultCount: sources.length,
+        topHits: sources.slice(0, TOP_HITS_KEPT).map((s) => ({
+          entryId: s.entryId,
+          title: s.title,
+          projectSlug: s.projectSlug,
+          sourceType: s.sourceType,
+        })),
+        model: meta.metrics?.model ?? meta.model,
+        promptTokens: meta.metrics?.promptTokens,
+        completionTokens: meta.metrics?.completionTokens,
+        ttftMs: meta.metrics?.ttftMs,
+        degraded: meta.degraded,
+        error: streamError,
+      };
+      // Nothing happened at all (disconnect before the first event): a reply row
+      // of all-nulls says less than no reply row.
+      const empty = !answer && sources.length === 0 && !streamError;
       void deps.catalog
         .recordCall(
           {
@@ -434,38 +458,49 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
             status,
             durationMs: Date.now() - startedAt,
           },
-          {
-            answer,
-            resultCount: sources.length,
-            topHits: sources.slice(0, TOP_HITS_KEPT).map((s) => ({
-              entryId: s.entryId,
-              title: s.title,
-              projectSlug: s.projectSlug,
-              sourceType: s.sourceType,
-            })),
-            model: meta.metrics?.model ?? meta.model,
-            promptTokens: meta.metrics?.promptTokens,
-            completionTokens: meta.metrics?.completionTokens,
-            ttftMs: meta.metrics?.ttftMs,
-            degraded: meta.degraded,
-          },
+          empty ? undefined : reply,
         )
         .catch((e: unknown) => console.error('[api] usage log failed:', e));
     };
 
     const stream = new ReadableStream({
       async pull(controller) {
-        const { value, done } = await events.next();
-        if (done) {
-          controller.close();
-          record(200);
+        let next: IteratorResult<AskEvent, unknown>;
+        try {
+          next = await events.next();
+        } catch (e) {
+          /**
+           * A throw out of the generator errors the stream, and `cancel` does
+           * NOT fire for an errored stream — so without this the one failure
+           * mode most worth recording would leave no row at all.
+           */
+          streamError = (e as Error)?.message ?? String(e);
+          record(STATUS_STREAM_FAILED);
+          controller.error(e);
           return;
         }
+        if (next.done) {
+          controller.close();
+          // A stream that reported an error is a failed answer even though the
+          // wire status was 200 — headers flush before the failure is known.
+          // Recording 200 would hide every streamed failure from the error rate,
+          // which is the one number this table exists to keep honest. Same
+          // precedent as 499 for an abort: `status` is the outcome of the call,
+          // not the byte that happened to go out.
+          record(streamError ? STATUS_STREAM_FAILED : 200);
+          return;
+        }
+        const event = next.value;
         // Accumulate as it goes, so an abort still has whatever was produced.
-        if (value.type === 'sources') sources = value.sources;
-        else if (value.type === 'delta') answer += value.text;
-        else if (value.type === 'done') meta = value;
-        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`));
+        if (event.type === 'sources') sources = event.sources;
+        else if (event.type === 'delta') answer += event.text;
+        else if (event.type === 'done') meta = event;
+        // Previously unhandled, which meant a failed stream was recorded as a
+        // clean 200 with an empty answer — a successful-looking ask that
+        // returned nothing. Found when Postgres went down mid-test and the
+        // stream correctly emitted this event.
+        else if (event.type === 'error') streamError = event.message;
+        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
       },
       cancel: () => {
         void events.return?.(undefined);
