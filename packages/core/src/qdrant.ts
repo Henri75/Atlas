@@ -71,10 +71,93 @@ export function collectionNameFor(provider: string, model: string, dim: number):
  * Cosine is well under a percent, while the resident set of the 768-dim
  * collection drops from ~1GB of raw vectors to ~250MB. `quantile: 0.99` clips
  * outlier dimensions so the int8 range is not wasted on a few extreme values.
+ *
+ * `always_ram` pins the *quantized* copy in RAM. It says nothing about where
+ * the fp32 originals live — that is `VECTORS.dense.on_disk`, and the two are
+ * independent. Read both before changing either; assuming otherwise is exactly
+ * how this collection ended up holding both copies in RAM (see VECTORS).
  */
 const QUANTIZATION = {
   scalar: { type: 'int8' as const, quantile: 0.99, always_ram: true },
 };
+
+/**
+ * Dense vectors live on disk; only the int8 approximation of them stays in RAM.
+ *
+ * This is the half of the 2026-07-15 quantization work that was missed, and the
+ * miss was silent. That entry recorded the intent as "quantization keeps fp32
+ * originals on disk for rescoring (always_ram quantizes the RAM-resident
+ * copy)" — but `always_ram` only ever controlled the quantized copy. Where the
+ * originals sit is this flag, it was never set, and its default is *in RAM*.
+ * So the change added a ~290MB int8 copy alongside the ~1.1GB of fp32 vectors
+ * instead of replacing it, and the collection carried both. Measured on the
+ * live 376k-point collection (2026-07-30): every segment reported
+ * `storage_type: InRamChunkedMmap`, and 707MB of Qdrant's 730MB RSS was
+ * `Anonymous`/`Private_Dirty` — real RAM the kernel cannot reclaim, not page
+ * cache. Boot peak was 2.12GiB.
+ *
+ * With `on_disk: true` the segments become `Mmap`/`ChunkedMmap`: the fp32 file
+ * is memory-mapped, so the pages are file-backed and reclaimable under
+ * pressure, and the resident set is the int8 copy plus the HNSW graph. Same
+ * collection after the flip: ~360MB resident, no data rewritten beyond the
+ * storage-format conversion Qdrant does in place.
+ *
+ * The HNSW graph deliberately stays in RAM (`hnsw_config.on_disk` left false).
+ * It is the hot path — every query walks it — and it is the cheapest of the
+ * three at ~31MB for this collection. Putting *it* on disk is the change that
+ * actually hurts latency; putting the vectors there is nearly free because
+ * only rescoring reads them.
+ */
+const VECTORS = {
+  dense: { on_disk: true },
+};
+
+/**
+ * The sparse inverted index is memory-mapped too.
+ *
+ * Sparse postings are far more disk-friendly than dense vectors — a query
+ * touches only the posting lists for its own terms, not the whole structure —
+ * which is why Qdrant's own memory guidance names sparse vectors as a first
+ * candidate for disk. Measured 98MB of `ImmutableRam` index across the live
+ * segments before the flip.
+ *
+ * `modifier: 'idf'` is repeated here because a PATCH of `sparse_vectors`
+ * replaces the named vector's whole config; omitting it would drop server-side
+ * IDF scoring and silently change every keyword ranking.
+ */
+const SPARSE_VECTORS = {
+  sparse: { modifier: 'idf' as const, index: { on_disk: true } },
+};
+
+/**
+ * Search-time quantization params. `rescore` MUST be stated explicitly.
+ *
+ * Qdrant's default for it flips with where the originals live: with vectors in
+ * RAM, rescoring the top candidates against full precision is nearly free and
+ * defaults ON; once `on_disk: true` it defaults OFF, because rescoring then
+ * costs a disk read. That trade is made silently, and it is not the one we
+ * want — moving vectors to disk would quietly hand back a chunk of the recall
+ * the quantization was carefully tuned to preserve.
+ *
+ * Measured on the live collection against Qdrant's own exact full-precision
+ * scan as ground truth (25 sampled query vectors, recall@10, dense branch
+ * only, host idle, async_scorer on):
+ *
+ *   default                    0.9560    p50 21.0ms   — identical to rescore=false
+ *   rescore: false             0.9560    p50 11.8ms
+ *   rescore: true              0.9920    p50 14.6ms   <- shipped
+ *   rescore: true, oversample 2  0.9960  p50 21.1ms
+ *   rescore: true, hnsw_ef 256   0.9880  p50 21.0ms
+ *
+ * The default costing *more* than rescore=false is noise; the two send an
+ * identical request. What is not noise is the 0.956/0.992 split, which
+ * reproduced across two runs hours apart.
+ *
+ * Oversampling is left off: +0.004 recall is one result in 250 — inside the
+ * noise floor of a 25-query sample — for ~45% more latency. Raising `hnsw_ef`
+ * measured no better than the default and costs the same, so it is off too.
+ */
+const SEARCH_PARAMS = { quantization: { rescore: true } };
 
 /**
  * Optimizer bounds chosen to cap the boot-time RAM spike. On start Qdrant
@@ -86,6 +169,24 @@ const QUANTIZATION = {
 const OPTIMIZERS = {
   // ~64k vectors per segment: several smaller segments instead of one huge one.
   max_segment_size: 64_000,
+  /**
+   * Cap concurrent segment optimizations. Left unset, Qdrant sizes this from
+   * the CPU budget — 16 cores here — and every concurrent job holds its
+   * segment's vectors while it rebuilds. That is the one part of the footprint
+   * `on_disk` does not fix, because an optimization *is* the thing that
+   * materialises data. Measured during the 2026-07-30 storage migration, when
+   * every segment was converted at once: the cgroup peak reached 5.65GiB while
+   * steady state was ~360MB.
+   *
+   * 2 rather than 1 on purpose. The extra job costs ~60MB (a 64k-vector
+   * segment's int8 copy plus the graph being built) and the difference between
+   * 1 and 2 is noise next to the 1.1GB the on-disk flip saves — while dropping
+   * to a single thread would halve throughput on the passes that matter most,
+   * the multi-hour re-embed and re-tokenise rebuilds. This repo has already
+   * been bitten once by an optimizer that could not keep up (see
+   * `setIndexingThreshold`), and that is the failure worth staying away from.
+   */
+  max_optimization_threads: 2,
 };
 
 /**
@@ -171,8 +272,11 @@ export class VectorStore {
     const existing = await this.client.getCollections();
     if (!existing.collections.some((c) => c.name === this.collection)) {
       await this.client.createCollection(this.collection, {
-        vectors: { dense: { size: denseDim, distance: 'Cosine' } },
-        sparse_vectors: { sparse: { modifier: 'idf' } },
+        // on_disk from the start: the fp32 originals are memory-mapped and only
+        // the int8 copy is resident (see VECTORS/QUANTIZATION). Creating the
+        // collection this way means a fresh one never has to be converted.
+        vectors: { dense: { size: denseDim, distance: 'Cosine', ...VECTORS.dense } },
+        sparse_vectors: SPARSE_VECTORS,
         // int8-quantize the dense vectors from the start; ~4× less RAM with
         // negligible recall loss (see QUANTIZATION). Only the dense branch is
         // quantized — sparse vectors are already tiny.
@@ -210,15 +314,27 @@ export class VectorStore {
   }
 
   /**
-   * Retrofit int8 quantization onto the active collection in place — no
-   * re-embed. Qdrant re-optimizes segments from the fp32 vectors already on
-   * disk; search keeps serving throughout (the operation blocks server-side
-   * until current optimizations finish, but the collection stays queryable).
-   * Idempotent: re-applying an identical quantization config is a no-op, so a
-   * caller can guard it with a one-shot marker and never worry about reruns.
+   * Retrofit the memory layout onto the active collection in place — int8
+   * quantization, dense vectors on disk, sparse index on disk, optimizer
+   * bounds. No re-embed: Qdrant converts each segment's storage format from
+   * the vectors it already holds, and search keeps serving throughout (the
+   * call blocks server-side until current optimizations finish, but the
+   * collection stays queryable).
+   *
+   * Idempotent — re-applying an identical config is a no-op — so a caller can
+   * guard it with a one-shot marker and never worry about reruns. That guard
+   * is keyed by *version* in the indexer, because this method has grown once
+   * already: a collection stamped for the quantization-only pass still needs
+   * the on_disk conversion, and only a version bump can tell the difference.
+   *
+   * Measured on the live 376k-point collection (2026-07-30): conversion took
+   * ~40s for the dense side and ~60s for the sparse side, point count
+   * unchanged throughout, status back to green with no re-embedding.
    */
-  async ensureQuantized(): Promise<void> {
+  async ensureStorageLayout(): Promise<void> {
     await this.client.updateCollection(this.collection, {
+      vectors: VECTORS,
+      sparse_vectors: SPARSE_VECTORS,
       quantization_config: QUANTIZATION,
       optimizers_config: OPTIMIZERS,
     });
@@ -509,7 +625,10 @@ export class VectorStore {
     const res = opts.dense
       ? await this.client.query(this.collection, {
           prefetch: [
-            { query: opts.dense, using: 'dense', limit: perBranch, filter },
+            // `params` rides on the dense branch only — it is the quantized
+            // one, and rescoring has to be asked for now that the originals
+            // are on disk (see SEARCH_PARAMS).
+            { query: opts.dense, using: 'dense', limit: perBranch, filter, params: SEARCH_PARAMS },
             { query: sparseQuery, using: 'sparse', limit: perBranch, filter },
           ],
           query: { fusion: 'rrf' },
@@ -556,6 +675,11 @@ export class VectorStore {
       limit: opts.limit,
       filter: this.buildFilter(opts.filters),
       with_payload: ['entry_id'],
+      // Same rescore requirement as the fused path. It matters more here, not
+      // less: this returns raw cosine, and an unrescored score is the distance
+      // to the *int8 approximation*, which is precisely the calibrated number
+      // this method exists to measure.
+      params: SEARCH_PARAMS,
     });
     return res.points.map((p) => ({
       entryId: Number((p.payload as any)?.entry_id),

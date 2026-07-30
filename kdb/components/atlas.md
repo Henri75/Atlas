@@ -1415,3 +1415,38 @@
 
 **Status:**
 - Completed
+
+### [2026-07-30] - Qdrant memory: the on_disk half of the 2026-07-15 quantization work
+
+**Objective:**
+- User reported Qdrant peaking over 2.5GB in OrbStack and asked for lowest memory first, then speed, with an absolute constraint of no data loss or corruption.
+
+**Summary of Work:**
+- Root cause: `always_ram: true` on the quantization config was read as "originals go to disk". It never meant that — it pins only the *quantized* copy. Where the fp32 originals live is `vectors.dense.on_disk`, which was never set and defaults to RAM. So the 2026-07-15 change added a ~290MB int8 copy *alongside* the ~1.1GB of fp32 vectors instead of replacing it, and the collection carried both for two weeks. Confirmed on disk: every segment reported `storage_type: InRamChunkedMmap`, and `smaps_rollup` showed 707MB of Qdrant's 730MB RSS as `Anonymous`/`Private_Dirty` — unreclaimable RAM, not page cache.
+- Set `vectors.dense.on_disk: true` and `sparse_vectors.sparse.index.on_disk: true`; both converted in place, no re-embed (dense ~40s, sparse ~60s, point count unchanged throughout).
+- Found a second, silent defect the first change would have introduced: Qdrant's default for quantization `rescore` flips to OFF once the originals are on disk, trading recall for a saved disk read without saying so. Added explicit `SEARCH_PARAMS = {quantization: {rescore: true}}` to both the fused and raw-cosine query paths.
+- `ensureQuantized()` -> `ensureStorageLayout()`, and the indexer's one-shot marker went from a `!== 'v1'` boolean to a versioned `!== 'v2'` check, so collections already stamped by the quantization-only pass still get converted.
+- `max_optimization_threads: 2` to bound the optimizer spike, and `QDRANT__STORAGE__ASYNC_SCORER=true` on the container for io_uring on the new on-disk read path.
+- Snapshot taken and checksum-verified on the host before any change (`/Users/nasta/atlas-backups/`, 2,005,958,144 bytes, sha256 matched Qdrant's own).
+
+**Key Decisions & Rationale:**
+- HNSW graph deliberately stays in RAM (`hnsw_config.on_disk: false`). It is ~31MB and every query walks it — it is the wrong thing to put on disk. The vectors are the right thing, because only rescoring reads them.
+- Kept `rescore: true` despite a measured cost, because the alternative is losing recall silently. Interleaved A/B put the cost at +224ms/query before async_scorer and +85ms after; the recall it buys is 0.956 -> 0.992.
+- `max_optimization_threads: 2` rather than 1: the second job costs ~60MB, noise against the 1.1GB saved, while a single thread would halve throughput on the multi-hour re-embed/re-tokenise passes — and this repo has already been bitten by an optimizer that could not keep up (see `setIndexingThreshold`).
+- Left the payload indexes alone. Arithmetic said they were already off-heap (364MB anon ~= 290MB int8 + 31MB HNSW + runtime), so the delete/recreate churn would have bought nothing and risked a window where `occurred_at` range filters fell back to a 3.11s full scan.
+
+**Code/Files Modified:**
+- packages/core/src/qdrant.ts (VECTORS, SPARSE_VECTORS, SEARCH_PARAMS, OPTIMIZERS, ensure, ensureStorageLayout, query, queryDense)
+- packages/indexer/src/main.ts (versioned storage-layout marker)
+- docker-compose.yml (QDRANT__STORAGE__ASYNC_SCORER)
+- docs/configuration.md (Qdrant memory layout section + both traps)
+- test/core/qdrantStorage.test.ts (new, 8 tests)
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** container peak 2,275 MiB -> 747 MiB (-67%) measured across a clean restart, steady resident ~600MB allocator-held. Points grew 376,455 -> 377,691 across the whole operation with zero loss. recall@10 against an exact full-precision scan is 0.992, reproduced in two runs hours apart. async_scorer cut the rescore cost 2.6x (+224ms -> +85ms paired median). 970/970 tests, lint clean, 12/12 config checks, 7/7 smoke.
+- **What Failed:** my first regression check was a before/after diff of live search results, which was worthless — the index is a moving target and this very session was being indexed into it mid-comparison (one of the shifted hits was my own prompt). Replaced with recall@10 against Qdrant's own exact scan, which is an absolute measure and does not care that the corpus grew. Also mis-measured latency twice: first by interleaving brute-force scans that evicted the page cache the ANN path had just warmed, then by reading `docker logs` after a restart without realising it still contains the pre-restart lines.
+- **Lesson:** a config flag whose default *changes based on another flag* is the dangerous kind. `rescore` defaulting to off once vectors are on disk means the obvious memory fix silently degrades quality, and nothing logs it. Both traps are now pinned by tests asserting on the request, because the symptom is unobservable without ground truth.
+
+**Status:**
+- Completed
+---

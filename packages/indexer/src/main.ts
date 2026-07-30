@@ -328,19 +328,28 @@ async function main() {
     }
   }
 
-  // Retrofit int8 quantization onto the live collection once. Guarded by a
-  // marker keyed to the collection so it runs a single time per collection and
-  // never on every boot. Done AFTER the collection is published and any
-  // backfill finished, so search is already serving from it. Best-effort: a
-  // transient Qdrant hiccup here must not stop the indexer from scanning.
-  const quantKey = `quantized:${vectors.collection}`;
-  if ((await catalog.getSetting(quantKey).catch(() => null)) !== 'v1') {
+  // Retrofit the memory layout (int8 quantization + vectors and sparse index
+  // on disk) onto the live collection once. Guarded by a marker keyed to the
+  // collection so it runs a single time per collection and never on every
+  // boot. Done AFTER the collection is published and any backfill finished, so
+  // search is already serving from it. Best-effort: a transient Qdrant hiccup
+  // here must not stop the indexer from scanning.
+  //
+  // The marker is VERSIONED, not a boolean. v1 meant "quantization applied";
+  // v2 adds the on_disk conversion that v1 was supposed to have delivered and
+  // silently did not (see VECTORS in qdrant.ts). A collection stamped v1 still
+  // needs converting, so `!== 'v2'` is what re-runs it — a plain truthiness
+  // check would skip exactly the collections that need the fix most.
+  const layoutKey = `quantized:${vectors.collection}`;
+  if ((await catalog.getSetting(layoutKey).catch(() => null)) !== 'v2') {
     try {
-      await vectors.ensureQuantized();
-      await catalog.setSetting(quantKey, 'v1').catch(() => {});
-      console.log(`[indexer] int8 quantization applied to ${vectors.collection}`);
+      await vectors.ensureStorageLayout();
+      await catalog.setSetting(layoutKey, 'v2').catch(() => {});
+      console.log(`[indexer] storage layout (int8 + on-disk vectors) applied to ${vectors.collection}`);
     } catch (e) {
-      console.warn(`[indexer] could not apply quantization (will retry next boot): ${(e as Error).message}`);
+      console.warn(
+        `[indexer] could not apply storage layout (will retry next boot): ${(e as Error).message}`,
+      );
     }
   }
 

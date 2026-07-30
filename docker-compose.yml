@@ -125,6 +125,19 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.18.2@sha256:75eab8c4ba42096724fdcfde8b4de0b5713d529dde32f285a1f86fdcb2c9e50c
     restart: unless-stopped
+    environment:
+      # io_uring for the on-disk vector reads. The collection keeps its fp32
+      # originals memory-mapped (see VECTORS in packages/core/src/qdrant.ts) and
+      # only the int8 copy in RAM, which means every search rescores its top
+      # candidates by reading from disk. This is the setting Qdrant provides for
+      # precisely that shape — parallel async reads instead of serial blocking
+      # ones — and it buys speed without buying back any memory, which is the
+      # order of priorities this stack is tuned for.
+      #
+      # Needs Linux 5.11+; the OrbStack VM runs 7.0. On a kernel without
+      # io_uring Qdrant logs a warning and falls back to the blocking path, so
+      # this is safe to leave on unconditionally.
+      QDRANT__STORAGE__ASYNC_SCORER: 'true'
     ports:
       - '127.0.0.1:${QDRANT_PORT:-6363}:6333'
       - '127.0.0.1:${QDRANT_GRPC_PORT:-6364}:6334'

@@ -3,6 +3,7 @@
 # Configuration
 
 ## Revision History
+- 2026-07-30 00:45 UTC — Qdrant memory layout documented: dense originals and the sparse index moved to disk, why `always_ram` is not the flag that does that, and why `rescore` must be set explicitly once they are.
 - 2026-07-29 18:40 UTC — Configuration sources restructured: `config/atlas.defaults.env` is committed and authoritative, Doppler supplies secrets, `.env` is an optional override that is absent by default. `make env` removed.
 - 2026-07-29 17:50 UTC — `KDB_ALLOW_EMBEDDER_DOWNGRADE` and *Why `auto` will refuse to start*: the probe retries, and a fallback can no longer silently migrate the index.
 - 2026-07-29 14:35 UTC — `KDB_SPARSE_REBUILD`, the kill switch for the sparse re-tokenisation pass.
@@ -95,6 +96,46 @@ but rarely need to be.
 | Var | Default | Meaning |
 |---|---|---|
 | `QDRANT_STORAGE_PATH` | `/qdrant-storage` | Where Qdrant's data volume is mounted **read-only** into the API, so the dashboard can report real disk usage. Qdrant exposes no API for it. |
+| `QDRANT__STORAGE__ASYNC_SCORER` | `true` | Set on the Qdrant container in `docker-compose.yml`. Uses io_uring for the on-disk vector reads that rescoring performs. Needs Linux 5.11+; Qdrant warns and falls back on older kernels. |
+
+### Qdrant memory layout
+
+The collection is tuned for **lowest resident memory first, then speed**. Four
+settings do the work, and they are not independent — changing one without the
+others gives back most of the win:
+
+| Setting | Value | Effect |
+|---|---|---|
+| `vectors.dense.on_disk` | `true` | fp32 originals are memory-mapped, not resident (~1.1GB at 377k points) |
+| `quantization.scalar.always_ram` | `true` | the int8 copy (~290MB) *is* pinned in RAM — this is what keeps search fast |
+| `sparse_vectors.sparse.index.on_disk` | `true` | sparse inverted index memory-mapped (~98MB) |
+| `hnsw_config.on_disk` | `false` | the graph stays in RAM **on purpose** — ~31MB, and every query walks it |
+
+Measured on the live 377k-point collection (2026-07-30): container peak
+**2,275 MiB → 747 MiB**, with no re-embedding — Qdrant converts each segment's
+storage format in place.
+
+**Two traps, both of which have already caught this repo once:**
+
+1. **`always_ram` does not put the originals on disk.** It only controls where
+   the *quantized* copy lives. `vectors.dense.on_disk` is the flag for the
+   originals, and its default is *in RAM*. Setting quantization alone means the
+   collection carries both copies. That was the state from 2026-07-15 to
+   2026-07-30; the symptom is segments reporting
+   `storage_type: InRamChunkedMmap` instead of `Mmap`/`ChunkedMmap`.
+
+2. **`rescore` must be explicit once vectors are on disk.** Qdrant's default for
+   it flips to *off* when the originals are on disk, to avoid the disk read —
+   silently trading recall for latency. Measured recall@10 against an exact
+   full-precision scan: **0.992** with `rescore: true`, **0.956** with the
+   default. It is set in `SEARCH_PARAMS` (`packages/core/src/qdrant.ts`) and
+   pinned by `test/core/qdrantStorage.test.ts`.
+
+To verify the live collection matches this:
+
+```
+curl -s localhost:6363/collections/<name> | jq '.result.config | {vectors: .params.vectors, sparse: .params.sparse_vectors, hnsw: .hnsw_config.on_disk, quant: .quantization_config}'
+```
 
 ## Indexing
 
