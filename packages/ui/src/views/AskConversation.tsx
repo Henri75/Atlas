@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import type { AskMetrics, AskSource, ScopeFallback, SourceType } from '../types';
-import { Badge, CopyButton, ProjectTag, Pulse, Stamp } from '../components/ui';
+import { Badge, CopyButton, ProjectTag, Pulse, Stamp, submitOnEnter } from '../components/ui';
 import { Markdown } from '../components/Markdown';
 import { ExportButtons, type Exportable } from '../components/ExportReply';
 
@@ -548,14 +548,12 @@ export function AskComposer({
         ref={ref}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          // Enter sends; Shift+Enter is a newline. A follow-up is usually one
-          // line, so requiring a modifier to send would be the wrong default.
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            if (!busy) onSend();
-          }
-        }}
+        // Enter sends; Shift+Enter is a newline. A follow-up is usually one
+        // line, so requiring a modifier to send would be the wrong default —
+        // and the composer at the top of the view now agrees, via this handler.
+        onKeyDown={submitOnEnter(() => {
+          if (!busy) onSend();
+        })}
         rows={1}
         placeholder="Ask a follow-up… (Enter to send, Shift+Enter for a new line)"
         aria-label="Ask a follow-up"

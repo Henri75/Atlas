@@ -13,6 +13,7 @@ import {
   SpineRow,
   Spinner,
   Stamp,
+  submitOnEnter,
 } from '../components/ui';
 import { EntryDrawer } from '../components/EntryDrawer';
 import { Markdown } from '../components/Markdown';
@@ -90,7 +91,7 @@ export function SearchView({
   onOpenSession,
 }: {
   scope: Scope;
-  inputRef: React.RefObject<HTMLInputElement | null>;
+  inputRef: React.RefObject<HTMLTextAreaElement | null>;
   onOpenSession: (id: string) => void;
 }) {
   const [q, setQ] = useState('');
@@ -120,7 +121,11 @@ export function SearchView({
     setLoading(true);
     try {
       const r = await api.search({
-        q,
+        // The field takes newlines now, so a pasted multi-line query can reach
+        // here with breaks in it. Ask wants them — paragraph structure is
+        // meaning — but a search query is a bag of terms, and the line breaks
+        // only ever survive into the FTS `tsquery` as noise.
+        q: q.trim().replace(/\s+/g, ' '),
         project: scopeParam(scope.projects),
         source: sources.join(','),
         kind,
@@ -193,9 +198,12 @@ export function SearchView({
         </p>
       </div>
 
-      <div className="mt-2.5 flex gap-2 items-center">
+      {/* Bottom-aligned: the field grows downward, so the send button and the
+          key hint stay level with the last line rather than drifting to the
+          middle of a tall box. At one line this is identical to centring. */}
+      <div className="mt-2.5 flex gap-2 items-end">
         <div
-          className="flex-1 flex items-center gap-2 rounded-md border px-4 py-3"
+          className="flex-1 flex items-end gap-2 rounded-md border px-4 py-3"
           style={
             asking
               ? {
@@ -206,22 +214,35 @@ export function SearchView({
               : { borderColor: 'var(--color-line)', background: 'var(--color-panel)' }
           }
         >
-          <input
+          {/* A textarea in both modes, not an input swapped for one: switching
+              mode must not remount the field, or it drops focus and caret
+              position mid-sentence. Only the floor changes — Ask opens three
+              lines tall because the questions worth asking here rarely fit on
+              one, while a search query is a handful of terms and a three-line
+              box over it would just be empty. `field-sizing-content` does the
+              growing in CSS; past ~10 lines it stops and scrolls. */}
+          <textarea
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit()}
+            onKeyDown={submitOnEnter(submit)}
+            rows={1}
             placeholder={
               asking
                 ? ask.turns.length
                   ? 'Ask a follow-up…'
-                  : `Ask about ${scopeLabel}…`
+                  : `Ask about ${scopeLabel}… (⇧↵ for a new line)`
                 : `Search ${scopeLabel}…`
             }
-            className="flex-1 bg-transparent outline-none text-[15px] placeholder:text-faint"
+            className={`flex-1 block resize-none bg-transparent outline-none text-[15px] leading-[1.5] placeholder:text-faint field-sizing-content max-h-60 overflow-y-auto transition-[min-height] duration-150 ${
+              asking ? 'min-h-[4.5rem]' : 'min-h-0'
+            }`}
             aria-label={asking ? 'Ask a question' : 'Search query'}
           />
-          <kbd className="font-mono text-[10px] text-faint border border-line rounded px-1.5 py-0.5">
+          <kbd
+            className="font-mono text-[10px] text-faint border border-line rounded px-1.5 py-0.5 shrink-0"
+            title="Enter to send · Shift+Enter for a new line"
+          >
             ↵
           </kbd>
         </div>

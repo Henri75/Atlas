@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import type { ProjectRow, Stats } from './types';
-import { Sidebar, type View } from './components/Sidebar';
+import { Sidebar } from './components/Sidebar';
+import { isView, type View } from './nav';
 import { ScopeBar } from './components/ScopeBar';
 import { useScope } from './useScope';
 import { usePersistentState } from './usePersistentState';
@@ -20,7 +21,7 @@ import { MonitorView } from './views/MonitorView';
  *
  * They used to share one column, which is what made the panel hard to read.
  *
- * Keyboard: '/' focuses search, 1–5 switch views, Esc backs out of a session.
+ * Keyboard: '/' focuses search, 1–6 switch views, Esc backs out of a session.
  */
 
 /**
@@ -39,13 +40,22 @@ export default function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const scope = useScope();
   const [favorites, setFavorites] = usePersistentState<string[]>('atlas.projects.favorites', []);
-  // The overview answers "is this healthy and what's in it?" — the question you
-  // have on arriving. `/` still jumps straight to search.
-  const [view, setView] = useState<View>('dashboard');
+
+  /**
+   * Where Atlas opens. Search & Ask by default: it is the thing you came to do,
+   * and it renders instantly, where the overview blocks on /api/dashboard doing
+   * storage and vector-collection introspection. The overview is one click — or
+   * one settings change — away for anyone who wants "is this healthy?" first.
+   */
+  const [startView, setStartView] = usePersistentState<View>('atlas.startView', 'search');
+  // Read once, at mount. Rewriting `view` whenever the preference changes would
+  // teleport you out of whatever you were reading the moment you set it.
+  const [view, setView] = useState<View>(() => (isView(startView) ? startView : 'search'));
+
   const [openSessionId, setOpenSessionId] = useState('');
   const [offline, setOffline] = useState(false);
   const [toast, setToast] = useState('');
-  const searchRef = useRef<HTMLInputElement | null>(null);
+  const searchRef = useRef<HTMLTextAreaElement | null>(null);
 
   const toggleFavorite = useCallback(
     (slug: string) =>
@@ -127,10 +137,12 @@ export default function App() {
       <Sidebar
         view={view}
         stats={stats}
+        startView={isView(startView) ? startView : 'search'}
         onView={(v) => {
           setView(v);
           if (v !== 'sessions') setOpenSessionId('');
         }}
+        onStartView={setStartView}
         onReindex={() => void reindex()}
       />
       <main className="flex-1 min-w-0 flex flex-col">

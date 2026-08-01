@@ -1448,3 +1448,44 @@
 **Status:**
 - Completed
 ---
+### [2026-08-01] - Search & Ask composer goes multi-line, and Atlas stops landing on the Overview
+
+**Objective:**
+- User reported the Search & Ask field is a one-line input, which is bad UX for the long questions Ask exists to answer, and asked for a larger multi-line textarea. Second ask in the same session: land on Search & Ask instead of the Overview, "which is slow", with a settings menu in the rail to change that back.
+
+**Summary of Work:**
+- The composer at the top of Search & Ask is now a `<textarea>` in BOTH modes rather than an `<input>`. Only the floor changes with mode: Ask opens at `min-h-[4.5rem]` (three lines), Search stays at its natural one line. `field-sizing-content` does the growing in CSS — no scrollHeight measurement — and it stops at `max-h-60` and scrolls.
+- Enter sends / Shift+Enter newlines, via a new shared `submitOnEnter` in components/ui.tsx that the follow-up `AskComposer` also adopts. The two fields had different submit code; they now cannot drift.
+- Landing view is Search & Ask, persisted as `atlas.startView` and changeable from a new SettingsMenu in the rail's footer (radio group, writes on click, opens upward).
+- The VIEWS list moved out of Sidebar.tsx into a new nav.ts, now that the rail, the settings menu and the start-view validator all need it.
+- Click-away/Escape popover logic extracted from MultiSelect into a `useClickAway` hook, shared with the new menu.
+
+**Key Decisions & Rationale:**
+- ONE textarea for both modes, never an input swapped for a textarea: changing element type remounts the node, which drops focus and caret position for anyone who flips mode mid-sentence. Pinned by a test asserting the node identity across the switch.
+- The persisted start view is read ONCE at mount (`useState(() => …)`), not synced. Rewriting `view` whenever the preference changes would teleport the user out of whatever they were reading at the moment they set it.
+- The stored value is validated against the known view keys. App renders views as six independent `view === '…'` checks with no fallback arm, so an unrecognised value — a renamed view, a hand-edited localStorage entry — would paint a blank page with no error rather than fail loudly.
+- `useClickAway` consumes Escape with `stopPropagation`. App has a window-level Escape that backs out of an open session; document listeners run before window ones, so an open popover takes the key and the view underneath stays put. Without this, one keystroke would have closed two layers.
+- Search collapses whitespace in the query (`\s+` -> ' '), Ask does not. Paragraph structure is meaning to an LLM; to a tsquery it is noise.
+- `isComposing` guard on the submit handler: with an IME, Enter commits the candidate being composed, and sending on that keystroke fires the question mid-word. The pre-existing AskComposer handler lacked this and inherits the fix.
+- Settings live in the rail footer, not as a seventh view — they are not a way of looking at your projects.
+
+**Code/Files Modified:**
+- packages/ui/src/nav.ts (new: View, VIEWS, isView)
+- packages/ui/src/useClickAway.ts (new)
+- packages/ui/src/components/SettingsMenu.tsx (new)
+- packages/ui/src/components/ui.tsx (submitOnEnter; MultiSelect uses useClickAway)
+- packages/ui/src/components/Sidebar.tsx (VIEWS moved out; startView props; menu in footer)
+- packages/ui/src/App.tsx (atlas.startView preference, validated; searchRef -> HTMLTextAreaElement)
+- packages/ui/src/views/SearchView.tsx (textarea composer, whitespace collapse, items-end row)
+- packages/ui/src/views/AskConversation.tsx (AskComposer uses submitOnEnter)
+- test/ui/searchComposer.test.tsx (new, 7), test/ui/settingsMenu.test.tsx (new, 5), test/ui/app.test.tsx (3 new + 3 rewritten)
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** 985/985 tests, lint clean. Verified against the deployed bundle rather than the source: the JS carries the new code and, more to the point, the CSS actually contains `field-sizing:content` and `.min-h-\[4\.5rem\]{min-height:4.5rem}` — an arbitrary Tailwind value that failed to generate would have left the field silently one line tall with every test still green.
+- **What Failed:** could not confirm the rendered layout visually. The Chrome extension is not connected in this session and headless Chrome is blocked by the sandbox (hung, then exit 127), so the pixel result — how the growing box sits against the Search/Ask button — is unverified by me and left to the user.
+- **Lesson:** the tests worth writing here were the ones about the *keystroke*, not the markup. `fireEvent.keyDown` returns false when a handler called preventDefault, which is exactly the question "did the field swallow the newline?" — so Enter-sends and Shift+Enter-inserts are both directly assertable in jsdom without simulating text entry.
+- **Lesson:** three tests in app.test.tsx encoded the OLD landing view, one of them by name ("lands on the overview, not on an empty search box") with the reasoning in its docstring. A test that states an intent is the thing you rewrite deliberately, not delete — the replacement now carries why the intent changed (the overview blocks on /api/dashboard introspecting storage and the vector collection).
+
+**Status:**
+- Completed
+---

@@ -266,3 +266,13 @@
 
 **Notable:** my first regression check was a before/after diff of live search results and it was worthless — the index is a moving target and this very session was being indexed into it as I compared (one of the shifted hits was my own prompt). Recall@10 against Qdrant's own exact scan is the measure that survives a growing corpus. Latency I mis-measured twice before getting it right: once by interleaving brute-force scans that evicted the cache the ANN path had just warmed, once by trusting `docker logs` after a restart without realising it still holds the pre-restart lines. Final latency numbers are honest but host-noisy — the box was at load 19-21 with 40+ unrelated containers, so the paired A/B delta is the only latency claim worth making.
 ---
+### [2026-08-01 12:44 UTC]
+
+**User Prompt Summary:**
+> The one-line question field on the Search & Ask page is bad UX for long questions — make it a larger multi-line textarea. Then: land on Search & Ask by default instead of the Overview, which is slow, and add a settings menu on the left to change that back.
+
+**AI Response Summary:**
+> Brainstormed both parts to a design before coding; the user chose Enter-sends/Shift+Enter-newline and a taller field in Ask mode only. Shipped one textarea used by both modes (only the min-height floor changes, so switching mode cannot remount the node and drop the caret), a shared submitOnEnter that the follow-up composer also adopts, an `atlas.startView` preference defaulting to Search & Ask, and a SettingsMenu in the rail footer to set it back to Overview. Self-review before implementing caught two things worth more than the feature: adding Escape to the shared popover hook would have closed the popover AND the session behind it, fixed by consuming the key at the document level ahead of App's window listener; and a persisted view value that no longer matches a known key would render a blank page, because App has six `view === '…'` checks and no fallback arm — so the stored value is validated. 985/985 tests, lint clean, deployed and verified in the served bundle and CSS.
+
+**Notable:** could not verify the layout visually — the Chrome extension is not connected and headless Chrome is blocked by the sandbox (hung once, then exit 127) — so the pixel result was handed back to the user rather than claimed. The check that mattered most was on the built CSS: `field-sizing-content` and `min-h-[4.5rem]` are arbitrary Tailwind values, and had they failed to generate, the field would have stayed one line tall with all 985 tests still passing.
+---

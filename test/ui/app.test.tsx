@@ -39,7 +39,15 @@ const stubOk = () =>
     })),
   );
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // jsdom shares one localStorage across a file, so a test that sets the start
+  // view would otherwise decide where the next one lands.
+  localStorage.clear();
+});
+
+/** Atlas opens on Search & Ask; the overview is a click away. */
+const goToOverview = async () => fireEvent.click(await screen.findByText('Overview'));
 
 describe('App shell', () => {
   /**
@@ -67,6 +75,7 @@ describe('App shell', () => {
   it('shows no scope bar on the overview', async () => {
     stubOk();
     render(<App />);
+    await goToOverview();
     await waitFor(() => expect(screen.getByText('Services')).toBeTruthy());
     expect(screen.queryByLabelText('Add a project to the scope')).toBeNull();
   });
@@ -82,17 +91,61 @@ describe('App shell', () => {
     expect(screen.getByText('all projects')).toBeTruthy();
   });
 
-  /** Arriving, the question is "is this healthy and what's in it?" */
-  it('lands on the overview, not on an empty search box', async () => {
+  /**
+   * Landing here used to be the overview, on the theory that the first question
+   * is "is this healthy and what's in it?". In practice the first question is
+   * the one you came to ask, and the overview makes you wait for it: its
+   * /api/dashboard call introspects storage and the vector collection before
+   * anything paints. Search & Ask renders immediately.
+   */
+  it('lands on Search & Ask, not on the slow overview', async () => {
+    stubOk();
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByText('Search everything you have built.')).toBeTruthy(),
+    );
+    expect(screen.queryByText('Services')).toBeNull();
+  });
+
+  it('opens on the overview when that is the saved preference', async () => {
+    localStorage.setItem('atlas.startView', JSON.stringify('dashboard'));
     stubOk();
     render(<App />);
     await waitFor(() => expect(screen.getByText('Services')).toBeTruthy());
-    expect(screen.queryByText('Ask your codebases what happened.')).toBeNull();
+  });
+
+  /**
+   * Views render as independent `view === '…'` checks with no fallback arm, so
+   * an unrecognised preference — a renamed view, a hand-edited value — would
+   * paint an empty page rather than fail loudly. It has to be coerced.
+   */
+  it('falls back to Search & Ask rather than a blank page on an unknown saved view', async () => {
+    localStorage.setItem('atlas.startView', JSON.stringify('feed'));
+    stubOk();
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByText('Search everything you have built.')).toBeTruthy(),
+    );
+  });
+
+  /** The settings menu exists to get the old landing view back. */
+  it('saves the start view chosen in the settings menu, without moving you now', async () => {
+    stubOk();
+    render(<App />);
+    await screen.findByText('Search everything you have built.');
+
+    fireEvent.click(screen.getByLabelText('Settings'));
+    fireEvent.click(screen.getByRole('radio', { name: /Overview/ }));
+
+    expect(localStorage.getItem('atlas.startView')).toBe(JSON.stringify('dashboard'));
+    // Still on search: a preference about *next* time must not move you now.
+    expect(screen.getByText('Search everything you have built.')).toBeTruthy();
   });
 
   it('reaches the search view from the overview', async () => {
     stubOk();
     render(<App />);
+    await goToOverview();
     const cta = await screen.findByText('Search & Ask →');
     fireEvent.click(cta);
     // Search is the default mode: Ask is now a deliberate choice on the mode

@@ -1,7 +1,29 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { SOURCE_META, type SourceType } from '../types';
+import { useClickAway } from '../useClickAway';
 
 /** Small shared pieces: source badge, spine row, date stamp, empty state. */
+
+/**
+ * The submit rule shared by every prose field in Atlas: Enter sends,
+ * Shift+Enter starts a new line.
+ *
+ * It lives here because there are two of these fields — the composer at the top
+ * of Search & Ask and the follow-up composer under a conversation — and a field
+ * that submits on Enter while its twin needs a modifier is the kind of
+ * inconsistency you only notice by losing a half-written question to it.
+ *
+ * `isComposing` is the non-obvious half: with an IME, Enter commits the
+ * candidate being composed. Sending on that keystroke would fire the question
+ * mid-word, and the guard is the only way to tell that Enter apart.
+ */
+export const submitOnEnter =
+  (send: () => void) =>
+  (e: KeyboardEvent): void => {
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
+    e.preventDefault();
+    send();
+  };
 
 /**
  * Checkbox popover for picking a subset of options: all, one, or several —
@@ -29,16 +51,7 @@ export function MultiSelect<T extends string>({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  // Click-away closes it; a popover left open on scroll/navigation is noise.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [open]);
+  useClickAway(ref, () => setOpen(false), open);
 
   const summary =
     selected.length === 0

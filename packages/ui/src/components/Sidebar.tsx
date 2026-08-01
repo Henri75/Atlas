@@ -1,7 +1,7 @@
 import type { Stats } from '../types';
 import { compact, duration, exact, relativeTime } from '../format';
-
-export type View = 'dashboard' | 'search' | 'timeline' | 'components' | 'sessions' | 'monitor';
+import { VIEWS, type View } from '../nav';
+import { SettingsMenu } from './SettingsMenu';
 
 /**
  * The rail answers one question: *how* am I looking? Projects — *what* am I
@@ -9,20 +9,8 @@ export type View = 'dashboard' | 'search' | 'timeline' | 'components' | 'session
  * different axes and stacking them in one column with the same treatment is
  * what made this panel confusing to read.
  *
- * The glyphs are deliberately geometric rather than pictorial: this is an
- * instrument, and a cute magnifying-glass icon would be the one templated note
- * in an otherwise typographic interface.
+ * The view list itself lives in ../nav, shared with the settings menu below.
  */
-const VIEWS: { key: View; label: string; hotkey: string; icon: string }[] = [
-  { key: 'search', label: 'Search & Ask', hotkey: '1', icon: '◎' },
-  { key: 'dashboard', label: 'Overview', hotkey: '2', icon: '▤' },
-  { key: 'timeline', label: 'Timeline', hotkey: '3', icon: '⋮' },
-  { key: 'components', label: 'Components', hotkey: '4', icon: '◧' },
-  { key: 'sessions', label: 'Sessions', hotkey: '5', icon: '✳' },
-  // Last in the rail because it is about Atlas rather than about your projects —
-  // the only view whose subject is the tool itself.
-  { key: 'monitor', label: 'Monitor', hotkey: '6', icon: '◔' },
-];
 
 /**
  * Shown only while the vector collection is being rebuilt (model switch or a
@@ -55,12 +43,16 @@ function BackfillBar({ backfill }: { backfill: NonNullable<Stats['backfill']> })
 export function Sidebar({
   view,
   stats,
+  startView,
   onView,
+  onStartView,
   onReindex,
 }: {
   view: View;
   stats: Stats | null;
+  startView: View;
   onView: (v: View) => void;
+  onStartView: (v: View) => void;
   onReindex: () => void;
 }) {
   return (
@@ -129,12 +121,15 @@ export function Sidebar({
             {stats.backfill && <BackfillBar backfill={stats.backfill} />}
           </>
         )}
-        <button
-          onClick={onReindex}
-          className="mt-1 w-full py-1 rounded border border-line text-muted hover:border-faint hover:text-ink"
-        >
-          Reindex now
-        </button>
+        <div className="mt-1 space-y-1">
+          <button
+            onClick={onReindex}
+            className="w-full py-1 rounded border border-line text-muted hover:border-faint hover:text-ink"
+          >
+            Reindex now
+          </button>
+          <SettingsMenu startView={startView} onStartView={onStartView} />
+        </div>
       </div>
     </aside>
   );
