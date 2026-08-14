@@ -167,8 +167,42 @@ const SEARCH_PARAMS = { quantization: { rescore: true } };
  * graph for a much lower peak — which is what a memory-constrained host feels.
  */
 const OPTIMIZERS = {
-  // ~64k vectors per segment: several smaller segments instead of one huge one.
-  max_segment_size: 64_000,
+  /**
+   * ~64k vectors per segment. THE UNIT IS KILOBYTES, NOT VECTORS.
+   *
+   * This read `64_000` with the comment "~64k vectors per segment" until
+   * 2026-08-14, and the two did not agree. Qdrant measures this in KB against a
+   * 256-dimension reference vector — "1Kb = 1 vector of size 256" — so the
+   * vector count is `max_segment_size / (dim / 256)`. At 768 dimensions each
+   * vector bills 3 KB, so 64_000 bought ~21.3k vectors per segment, a third of
+   * the intent.
+   *
+   * That is not a cosmetic drift, because several per-segment structures are a
+   * FIXED SIZE regardless of how few points the segment holds. Each indexed
+   * field's null-index allocates two 1 MiB `flags_a.dat` mmaps (`has_values`
+   * and `is_null`) — 2 MiB per field per segment, whether the segment holds 24k
+   * points or 200k. Measured on the live store, 2026-08-14:
+   *
+   *   560,694 points over 23 segments  (24,378 points/segment)
+   *   payload_index total                600.2 MB
+   *     of which null-index padding      385.9 MB   <- 64%, 8 fields x 23 x 2 MiB
+   *     of which real index data         214.3 MB
+   *
+   * so roughly two thirds of the payload index is empty padding bought by
+   * having three times as many segments as intended. Fixing the unit takes the
+   * collection to ~8 segments and the padding to ~134 MB — about 250 MB off a
+   * 642 MB resident footprint, for a one-line change and no data rewrite.
+   *
+   * 192_000 = 64_000 x (768 / 256), i.e. the number the old comment described.
+   * ⚠️ IT IS DIMENSION-DEPENDENT: a model change that moves `denseDim` changes
+   * how many vectors this buys. Re-derive it, do not carry it over.
+   *
+   * The boot-spike reasoning above still holds and still bounds this — at 64k
+   * vectors a segment's fp32 is ~192 MB, so the two concurrent optimization
+   * jobs below can hold ~384 MB, well under the 5.65 GiB peak that motivated
+   * the cap.
+   */
+  max_segment_size: 192_000,
   /**
    * Cap concurrent segment optimizations. Left unset, Qdrant sizes this from
    * the CPU budget — 16 cores here — and every concurrent job holds its

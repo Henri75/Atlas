@@ -1489,3 +1489,37 @@
 **Status:**
 - Completed
 ---
+---
+### [2026-08-14] - qdrant max_segment_size was in the wrong unit, and 64% of the payload index was empty padding
+
+**Objective:**
+- Review the (stopped) Atlas qdrant container for lowest memory usage, as part of a three-stack Qdrant memory pass (DeepCast, Lycos, Atlas).
+
+**Summary of Work:**
+- Measured the live store read-only from the OrbStack volume: 560,694 points across **23 segments**, 1.41 GB on disk, ~642 MB of load-time-resident structures (payload indexes 600.2 MB, id trackers 16.3 MB, payload-storage trackers 25.9 MB).
+- **FOUND A UNITS BUG.** `OPTIMIZERS.max_segment_size` read `64_000` with the comment "~64k vectors per segment". Qdrant measures that field in KILOBYTES against a 256-dimension reference vector ("1Kb = 1 vector of size 256"), so the vector count is `max_segment_size / (dim / 256)`. At 768 dimensions each vector bills 3 KB, so it bought ~21,333 vectors per segment — a THIRD of the intent. Predicted 21.3k vs measured 24,378 points/segment, which is the confirmation.
+- **WHY THAT IS EXPENSIVE, which is the non-obvious half:** several per-segment structures are FIXED SIZE regardless of how few points a segment holds. Each indexed field's null-index allocates two 1 MiB `flags_a.dat` mmaps (`has_values` and `is_null`) — verified byte-exact at 1,048,576 each — i.e. 2 MiB per field per segment whether the segment holds 24k points or 200k. With 8 indexed fields over 23 segments that is **385.9 MB of padding against 214.3 MB of real index data: 64% of the entire payload index**. The real bitset for 24k points is ~3 KB, so those files are >99% empty.
+- Fixed to `192_000` (= 64_000 x 768/256, the number the comment always described). Expected ~8 segments and ~134 MB of null padding, i.e. roughly 250 MB off a 642 MB resident footprint, with no data rewritten.
+- Added the resource limits and flush budget the container never had: `mem_limit: 4g`, `memswap_limit: 6g` (2g swap cushion), `stop_grace_period: 60s`.
+
+**Key Decisions & Rationale:**
+- **Explicitly did NOT add `QDRANT__STORAGE__LOW_MEMORY_MODE` here**, and left a comment saying why. It is the right lever on DeepCast and Lycos (both had every payload index pinned and nothing deliberate about it) and the WRONG one here: `no_resident` loads quantization "as if always_ram = false", and this collection sets `always_ram: true` on purpose — the int8 copy in RAM plus fp32 originals on disk IS the 2026-07-30 design. The mode would have silently undone the half of that work the stack depends on. Segment count is the equivalent lever here.
+- The memory limit is a SAFETY BOUND, not a target, and the comment says so: a cgroup limit is not a reservation and does not reduce usage on its own. 4g is generous against a measured sub-1 GB steady state because the 2026-07-30 mass storage conversion peaked at 5.65 GiB; `max_optimization_threads: 2` bounds that now, but a future bulk re-embed or `ensureStorageLayout` conversion is the one thing that could press it. Better to raise it for that pass than to live high.
+- An unbounded container was the actual hazard, not the size of the number: it cannot be OOM-killed for its own overrun, so the VM-wide killer picks a different victim and the real offender stays invisible. This box is shared with the DeepCast stack.
+- `stop_grace_period` was absent, so docker's 10s default applied — the condition that cost Lycos ~1,085 points on 2026-08-01 when a SIGKILL landed mid-flush. 1.4 GB is small enough that 60s is generous rather than marginal, and it costs a healthy stop nothing.
+- The guard asserts the DERIVATION (`64_000 * (dim / 256)`), not the literal `192_000`, so it fails if the embedding dimension ever moves and the constant is carried over unchanged. That is the bug class, not the value.
+
+**Code/Files Modified:**
+- packages/core/src/qdrant.ts
+- docker-compose.yml
+- test/core/qdrantStorage.test.ts
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** measuring the volume before reading the config. The 23-segment count was the visible symptom and it is what made the units comment testable — "~64k vectors" and 24,378 points/segment cannot both be true.
+- **What Worked:** the existing comments in qdrant.ts were unusually precise about `always_ram` vs `on_disk` and about rescore defaults, and that is exactly what stopped the DeepCast/Lycos fix being copied here by reflex. Precise prose earned its keep.
+- **Lesson:** a fixed-size per-segment allocation turns "more segments" from a mild trade into a multiplier. It is invisible on a large collection (DeepCast: 29 segments x 1 field x 2 MiB = 60.8 MB against 3.34 GB, noise) and dominates a small one. Points-per-segment, not segment count alone, is the number to look at.
+- **NOT MEASURED:** the container is stopped, so the ~8-segment / ~134 MB prediction is a model. Re-measure the volume after the optimizer settles.
+- **PRE-EXISTING, NOT MINE:** `npx tsc --noEmit -p tsconfig.base.json` reports 1,349 errors across packages/api and packages/core consumers; ZERO in qdrant.ts. Untouched, but worth someone's attention.
+
+**Status:**
+- Completed (config + guard). Not applied: the container is stopped at the operator's request. `max_segment_size` reaches an EXISTING collection only through `ensureStorageLayout()` (version-guarded) or `setIndexingThreshold()`, both of which send the full OPTIMIZERS object — so the next bulk-write pass carries it, or bump the storage-layout marker to force it.

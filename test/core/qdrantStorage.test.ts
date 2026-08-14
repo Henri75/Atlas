@@ -156,4 +156,33 @@ describe('VectorStore search params', () => {
     expect(args.using).toBe('sparse');
     expect(args.params).toBeUndefined();
   });
+  /**
+   * `max_segment_size` is in KILOBYTES against a 256-dim reference vector —
+   * "1Kb = 1 vector of size 256" — so the vector count it buys is
+   * `max_segment_size / (dim / 256)`, which is dimension-dependent.
+   *
+   * It read 64_000 with the comment "~64k vectors per segment" until
+   * 2026-08-14. At 768 dimensions that bought ~21.3k, a third of the intent,
+   * and the collection ran at 23 segments instead of ~8. That is expensive in
+   * a way segment count usually is not: each indexed field's null-index
+   * allocates two FIXED 1 MiB `flags_a.dat` mmaps per segment regardless of how
+   * few points it holds, so 8 fields x 23 segments = 385.9 MB of padding —
+   * measured 64% of the whole 600.2 MB payload index on the live store.
+   *
+   * Asserted as the DERIVATION rather than the literal, so it fails if the
+   * embedding dimension moves and the constant is carried over unchanged.
+   */
+  it('sizes segments in KB-of-256-dim-vectors, not in vectors', async () => {
+    const INTENDED_VECTORS_PER_SEGMENT = 64_000;
+    const dim = 768;
+    const fake = fakeClient();
+    await storeWith(fake.client).ensure(dim);
+
+    const args = fake.calls.createCollection[0]!.args as {
+      optimizers_config: { max_segment_size: number };
+    };
+    expect(args.optimizers_config.max_segment_size).toBe(
+      INTENDED_VECTORS_PER_SEGMENT * (dim / 256),
+    );
+  });
 });

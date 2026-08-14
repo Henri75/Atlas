@@ -274,3 +274,11 @@
 
 **Notable:** could not verify the layout visually — the Chrome extension is not connected and headless Chrome is blocked by the sandbox (hung once, then exit 127) — so the pixel result was handed back to the user rather than claimed. The check that mattered most was on the built CSS: `field-sizing-content` and `min-h-[4.5rem]` are arbitrary Tailwind values, and had they failed to generate, the field would have stayed one line tall with all 985 tests still passing.
 ---
+---
+### [2026-08-14 02:30 UTC]
+
+**User Prompt Summary:**
+> As part of a three-stack Qdrant memory pass (DeepCast, Lycos, Atlas), asked to review the stopped Atlas qdrant container and make sure its configuration is optimized for lowest memory usage.
+
+**AI Response Summary:**
+> Measured the live store read-only (560,694 points / 23 segments / 1.41 GB / ~642 MB load-time-resident) and found max_segment_size set in the wrong unit — KB-of-256-dim-vectors, so 64_000 bought ~21k vectors at 768 dims rather than the 64k its comment claimed. The cost is fixed-size per-segment padding: two 1 MiB flags_a.dat mmaps per indexed field per segment, 385.9 MB of 600.2 MB payload index, >99% empty. Fixed to 192_000, added mem_limit 4g / memswap_limit 6g / stop_grace_period 60s (none existed), and deliberately did NOT copy DeepCast's low_memory_mode here because it would undo this collection's intentional always_ram int8 pin. Guard asserts the derivation rather than the literal; mutation-verified. Nothing applied — the container stays stopped.

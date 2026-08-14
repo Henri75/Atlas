@@ -138,6 +138,43 @@ services:
       # io_uring Qdrant logs a warning and falls back to the blocking path, so
       # this is safe to leave on unconditionally.
       QDRANT__STORAGE__ASYNC_SCORER: 'true'
+      # ⚠️ DO NOT ADD QDRANT__STORAGE__LOW_MEMORY_MODE HERE.
+      # It is the right lever in DeepCast and Lycos and the WRONG one here.
+      # `no_resident` loads quantization "as if always_ram = false", and this
+      # collection sets `always_ram: true` on purpose (QUANTIZATION in
+      # packages/core/src/qdrant.ts): the int8 copy in RAM plus the fp32
+      # originals on disk IS the design. The mode would silently undo the half
+      # of the 2026-07-30 memory work that this stack actually depends on.
+      # The equivalent saving here comes from segment count instead — see
+      # OPTIMIZERS.max_segment_size, where a units bug had the collection at 23
+      # segments and 386 MB of fixed null-index padding.
+    # 60s. There was NO stop_grace_period, so docker's default 10s applied —
+    # the condition that cost Lycos ~1,085 points on 2026-08-01, when a SIGKILL
+    # landed mid-flush and the log warned "Mutable ID tracker mappings and
+    # versions count mismatch ... assuming automatic recovery by WAL".
+    # This store is far smaller (1.4 GB / 560k points), so 60s is generous
+    # rather than marginal, and it costs a healthy stop nothing — docker
+    # returns as soon as the process exits.
+    stop_grace_period: 60s
+    # NO limit existed here at all, on a box shared with the DeepCast stack.
+    # That is what makes an unbounded service dangerous: it cannot be OOM-killed
+    # for its own overrun, so the VM-wide killer picks a different victim and
+    # the real offender stays invisible.
+    #
+    # `memswap_limit` is memory+swap COMBINED, so 4g + 6g = a 2g swap cushion.
+    # The two MUST move together: omit memswap_limit and docker grants swap
+    # equal to memory, quietly authorising 8g.
+    #
+    # This is a SAFETY BOUND, not a target — a cgroup limit is not a
+    # reservation and does not by itself reduce usage. Measured steady state is
+    # well under 1 GB (~360 MB resident at 376k points on 2026-07-30, plus the
+    # payload index, which the max_segment_size fix cuts by ~250 MB). The
+    # headroom is for optimizer passes: the 2026-07-30 mass storage conversion
+    # peaked at 5.65 GiB before `max_optimization_threads: 2` bounded it, so a
+    # future bulk re-embed or `ensureStorageLayout` conversion is the one thing
+    # that could press this. Raise it for that pass rather than living high.
+    mem_limit: 4g
+    memswap_limit: 6g
     ports:
       - '127.0.0.1:${QDRANT_PORT:-6363}:6333'
       - '127.0.0.1:${QDRANT_GRPC_PORT:-6364}:6334'
