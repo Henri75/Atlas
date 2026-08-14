@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { VectorStore } from '@atlas/core';
 
@@ -22,10 +23,17 @@ import { VectorStore } from '@atlas/core';
 
 type Call = { collection: string; args: Record<string, unknown> };
 
-function fakeClient() {
+/**
+ * @param livePayloadSchema what `getCollection` reports the collection already
+ *   indexes. `undefined` means "the call fails", which is a real case the
+ *   reaper has to survive — not the same thing as an empty schema.
+ */
+function fakeClient(livePayloadSchema?: Record<string, unknown>) {
   const calls: Record<string, Call[]> = {
     createCollection: [],
     updateCollection: [],
+    createPayloadIndex: [],
+    deletePayloadIndex: [],
     query: [],
   };
   const record =
@@ -38,9 +46,19 @@ function fakeClient() {
     calls,
     client: {
       getCollections: async () => ({ collections: [] as { name: string }[] }),
+      getCollection: async () => {
+        if (livePayloadSchema === undefined) throw new Error('unreachable');
+        return { payload_schema: livePayloadSchema };
+      },
       createCollection: record('createCollection', true),
       updateCollection: record('updateCollection', true),
-      createPayloadIndex: async () => ({}),
+      createPayloadIndex: record('createPayloadIndex', {}),
+      // The real client takes (collection, fieldName, opts) — a positional
+      // third arg, not the (collection, args) shape everything else uses.
+      deletePayloadIndex: async (collection: string, field: string, opts?: unknown) => {
+        calls.deletePayloadIndex!.push({ collection, args: { field, opts } });
+        return {};
+      },
       query: record('query', { points: [] }),
     },
   };
@@ -184,5 +202,77 @@ describe('VectorStore search params', () => {
     expect(args.optimizers_config.max_segment_size).toBe(
       INTENDED_VECTORS_PER_SEGMENT * (dim / 256),
     );
+  });
+  /**
+   * An index is only worth its cost if something filters on it.
+   *
+   * `session_id` was indexed from the day the collection was created and never
+   * appeared in a single filter — the only mention of it in the repo was the
+   * line that created it. Measured 2026-08-14 on the live store: 79.7 MB, being
+   * 31.5 MB of real index plus 48.2 MB of fixed null-index padding (two 1 MiB
+   * flags_a.dat mmaps per segment), i.e. 13% of a 600.2 MB payload index spent
+   * answering a question nothing asks.
+   *
+   * Asserted as a BINDING against the filter builder in the same module, not as
+   * a hand-copied list: adding an index nothing queries has to fail here rather
+   * than quietly cost RAM. Only one direction — filtering without an index is a
+   * legitimate choice, Qdrant just full-scans.
+   */
+  it('indexes only fields the filter builder can actually query', async () => {
+    const src = readFileSync(
+      new URL('../../packages/core/src/qdrant.ts', import.meta.url),
+      'utf8',
+    );
+    const filtered = new Set([...src.matchAll(/key:\s*'([\w.]+)'/g)].map((m) => m[1]!));
+    expect(filtered.size).toBeGreaterThan(0); // the regex, not the schema, if this trips
+
+    const fake = fakeClient({});
+    await storeWith(fake.client).ensure(768);
+    const indexed = fake.calls.createPayloadIndex.map(
+      (c) => (c.args as { field_name: string }).field_name,
+    );
+    expect(indexed.length).toBeGreaterThan(0);
+
+    const unused = indexed.filter((f) => !filtered.has(f));
+    expect(unused).toEqual([]);
+    // The specific regression: it must not come back.
+    expect(indexed).not.toContain('session_id');
+  });
+
+  it('reaps a live index that is no longer wanted, and keeps the ones that are', async () => {
+    const fake = fakeClient({
+      project: { data_type: 'keyword' },
+      entry_id: { data_type: 'integer' },
+      session_id: { data_type: 'keyword' }, // dropped from PAYLOAD_INDEXES
+    });
+    const dropped = await storeWith(fake.client).dropUnusedPayloadIndexes();
+
+    expect(dropped).toEqual(['session_id']);
+    expect(fake.calls.deletePayloadIndex.map((c) => (c.args as { field: string }).field)).toEqual([
+      'session_id',
+    ]);
+  });
+
+  it('reaps nothing when the schema cannot be read', async () => {
+    // `undefined` makes getCollection throw. A failed read and a collection
+    // with no indexes must NOT be treated alike — deleting on a misread is the
+    // one outcome worth engineering against.
+    const fake = fakeClient(undefined);
+    expect(await storeWith(fake.client).dropUnusedPayloadIndexes()).toEqual([]);
+    expect(fake.calls.deletePayloadIndex).toEqual([]);
+  });
+
+  it('reaps nothing when the collection reports no indexes at all', async () => {
+    const fake = fakeClient({});
+    expect(await storeWith(fake.client).dropUnusedPayloadIndexes()).toEqual([]);
+    expect(fake.calls.deletePayloadIndex).toEqual([]);
+  });
+
+  it('retrofit runs the reaper, so a stale index cannot outlive the marker bump', async () => {
+    const fake = fakeClient({ project: { data_type: 'keyword' }, session_id: { data_type: 'keyword' } });
+    await storeWith(fake.client).ensureStorageLayout();
+    expect(fake.calls.deletePayloadIndex.map((c) => (c.args as { field: string }).field)).toEqual([
+      'session_id',
+    ]);
   });
 });

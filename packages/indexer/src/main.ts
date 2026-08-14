@@ -338,13 +338,29 @@ async function main() {
   // The marker is VERSIONED, not a boolean. v1 meant "quantization applied";
   // v2 adds the on_disk conversion that v1 was supposed to have delivered and
   // silently did not (see VECTORS in qdrant.ts). A collection stamped v1 still
-  // needs converting, so `!== 'v2'` is what re-runs it — a plain truthiness
+  // needs converting, so the inequality is what re-runs it — a plain truthiness
   // check would skip exactly the collections that need the fix most.
+  //
+  // v3 (2026-08-14) carries the corrected OPTIMIZERS.max_segment_size. That
+  // constant was in the wrong unit (KB-of-256-dim-vectors, not vectors), which
+  // held the live collection at 23 segments instead of its 8-segment target and
+  // cost 385.9 MB in fixed per-segment null-index padding — two 1 MiB
+  // flags_a.dat mmaps per indexed field per segment, 64% of the whole payload
+  // index. Fixing the constant alone would have been INERT here: createCollection
+  // only runs for a collection that does not exist, and this one is already
+  // stamped v2, so nothing would ever have pushed the new value at it. The bump
+  // is what makes the fix reach live data.
+  //
+  // Cheap: vectors, sparse and quantization are already in their target state,
+  // so that part of the PATCH is a no-op, and the optimizer change is metadata.
+  // The merging that follows is real work but bounded by
+  // max_optimization_threads: 2.
   const layoutKey = `quantized:${vectors.collection}`;
-  if ((await catalog.getSetting(layoutKey).catch(() => null)) !== 'v2') {
+  const LAYOUT_VERSION = 'v3';
+  if ((await catalog.getSetting(layoutKey).catch(() => null)) !== LAYOUT_VERSION) {
     try {
       await vectors.ensureStorageLayout();
-      await catalog.setSetting(layoutKey, 'v2').catch(() => {});
+      await catalog.setSetting(layoutKey, LAYOUT_VERSION).catch(() => {});
       console.log(`[indexer] storage layout (int8 + on-disk vectors) applied to ${vectors.collection}`);
     } catch (e) {
       console.warn(

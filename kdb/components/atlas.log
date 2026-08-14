@@ -1523,3 +1523,35 @@
 
 **Status:**
 - Completed (config + guard). Not applied: the container is stopped at the operator's request. `max_segment_size` reaches an EXISTING collection only through `ensureStorageLayout()` (version-guarded) or `setIndexingThreshold()`, both of which send the full OPTIMIZERS object — so the next bulk-write pass carries it, or bump the storage-layout marker to force it.
+---
+### [2026-08-14] - The max_segment_size fix was INERT, and a full parameter sweep found an unused index
+
+**Objective:**
+- Answer "did you actually reduce memory in Atlas?" honestly, then do the systematic parameter review the first pass skipped.
+
+**Summary of Work:**
+- **THE ANSWER WAS NO, AND THE EARLIER ENTRY OVERSTATED IT.** The `max_segment_size: 64_000 -> 192_000` fix could never have reached the live collection: `createCollection` only runs for a collection that does not exist, and `ensureStorageLayout()` is gated on a marker this collection is already stamped `v2` for. A restart would have changed nothing, and the previous entry's "Status: Completed" implied more than was true.
+- Fixed by bumping the layout marker to **v3** — the versioning mechanism the file already documents for exactly this ("v1 meant quantization applied; v2 adds the on_disk conversion"). v3 = the corrected segment size. Extracted the literal into `LAYOUT_VERSION`.
+- **VERIFIED THE SEGMENT MATH AGAINST THE SOURCE rather than assuming.** I had worried `default_segment_number` being unset would hold the collection near the CPU count and undercut the fix. It does not: `default_segment_number()` resolves to `clamp(get_num_cpus() / 2, 2, 8)` (lib/shard/src/optimizers/config.rs), so the merge target was already **8** and `max_segment_size` was the thing blocking it. 1,682,082 KB of vectors / 192,000 = ~8.8 segments, which meets that target. No extra setting needed.
+- **PARAMETER SWEEP** over every memory-relevant knob, comparing set-vs-default: `on_disk_payload` true (inherited, verified on the collection), `async_scorer` true, `mmap_advice` already defaults to Random, `hnsw_index.on_disk` false and `quantization.always_ram` true both deliberate, `vectors.dense.on_disk` / `sparse.index.on_disk` true, `default_segment_number` auto-8 (correct), `max_optimization_threads` 2. All sound. Two gaps found.
+- **GAP 1 — `session_id` was indexed and never filtered on.** Same defect class as Lycos MS6, found by asking the same question. Its only occurrence in the entire repo was the line creating it. Measured 79.7 MB: 31.5 MB real index + 48.2 MB fixed null padding, 13% of the 600.2 MB payload index. Removed.
+- Hoisted the field list to a module-level `PAYLOAD_INDEXES` (one source of truth for creating AND reaping) and added `dropUnusedPayloadIndexes()`, called from `ensureStorageLayout()` so the v3 bump reaps the live index rather than merely stopping its re-creation.
+- **GAP 2 — considered and REJECTED `max_concurrent_segment_loads`.** Default 8, and post-fix the collection has ~9 segments, so it would bound almost nothing on a 1.4 GB store. Adding a knob that reads as tuning and does nothing is the DeepCast `MMAP_ADVICE` mistake; not repeating it here.
+
+**Key Decisions & Rationale:**
+- The reaper lives in `ensureStorageLayout()`, not `ensure()`. `ensure()` runs on every boot and a delete does not belong on an unguarded hot path; the retrofit is already the marker-gated one-shot.
+- An EMPTY payload_schema read reaps NOTHING, and that is a deliberate branch with its own test: "collection has no indexes" and "we failed to understand the response shape" look identical, and deleting on a misread is the one outcome worth engineering against. A failed read is likewise distinct from an empty one.
+- Dropping an INDEX is not dropping the FIELD — every point keeps its session_id, readers are unaffected, and a filter would still work via full scan. That is what makes this reversible.
+
+**Code/Files Modified:**
+- packages/core/src/qdrant.ts, packages/indexer/src/main.ts, test/core/qdrantStorage.test.ts
+
+**Outcomes & Lessons Learned:**
+- **What Failed (mine):** claiming a config change was done without tracing whether anything would ever apply it. The constant was right and unreachable. "Changed the setting" and "changed the system" are different claims and I made the second one.
+- **What Failed (mine, second):** the first run of the reaper tests PASSED VACUOUSLY. The fake client had no `getCollection`, so the new code hit its catch and returned `[]` while the suite went green. Fixed by extending the fake — including modelling `deletePayloadIndex`'s positional third argument, which differs from every other method's shape.
+- **What Worked:** re-asking Lycos's question here. The payload-index sweep was not in the first Atlas pass at all, and it found 13% of the payload index serving nothing.
+- Mutation-verified: re-adding session_id fails three tests (the binding guard plus both reaper tests); removing the reaper call from the retrofit fails the retrofit test; reverting max_segment_size to 64_000 fails the units test.
+- **STILL NOT MEASURED.** The container is stopped. 23 -> ~9 segments and 600.2 -> ~180 MB payload index are MODELS. Re-measure the volume after the indexer next boots and the optimizer settles.
+
+**Status:**
+- Completed (config + reaper + guards + the marker that makes them reach live data). Applies on the next indexer boot, which the operator controls.

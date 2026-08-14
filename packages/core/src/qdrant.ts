@@ -231,6 +231,38 @@ const OPTIMIZERS = {
 const DEFAULT_INDEXING_THRESHOLD = 10_000;
 
 /**
+ * Every payload field that gets an index — the single source of truth for both
+ * creating them and reaping ones we no longer want.
+ *
+ * AN INDEX IS ONLY WORTH ITS COST IF SOMETHING FILTERS ON IT. `session_id` was
+ * indexed here from the start and never appeared in a filter: the only mention
+ * of it in the whole repo was the line that created it. Measured on the live
+ * store 2026-08-14 it cost 79.7 MB — 31.5 MB of real index plus 48.2 MB of
+ * fixed null-index padding (two 1 MiB `flags_a.dat` mmaps per segment) — 13% of
+ * a 600.2 MB payload index, to answer a question nothing asks. Removed.
+ *
+ * Keep this list in step with `toQdrantFilter` below; the guard test asserts
+ * `indexed ⊆ filtered` by parsing the filter keys out of this file, so adding
+ * an index nothing queries fails CI rather than quietly costing RAM. The
+ * reverse is deliberately NOT enforced — filtering without an index is a
+ * legitimate choice, Qdrant just full-scans.
+ */
+const PAYLOAD_INDEXES: [string, 'keyword' | 'integer' | 'datetime'][] = [
+  ['project', 'keyword'],
+  ['source_type', 'keyword'],
+  ['component', 'keyword'],
+  ['kind', 'keyword'],
+  ['doc_status', 'keyword'],
+  // Integer index so setDocStatus can address points by entry id.
+  ['entry_id', 'integer'],
+  // Range filtering on occurred_at works without this — Qdrant falls back to
+  // a full scan — but at a measured 3.11s vs 0.087s (36x) it was far too slow
+  // to expose date scoping as a normal filter. Every point already carries
+  // the RFC-3339 value; only the index was missing.
+  ['occurred_at', 'datetime'],
+];
+
+/**
  * Translate search filters into a Qdrant payload filter. An over-broad filter
  * silently returns the wrong rows and an over-narrow one silently returns
  * none, so this is worth testing on its own.
@@ -321,22 +353,7 @@ export class VectorStore {
     // Runs on existing collections too: payload fields added after a
     // collection was created (doc_status, entry_id) still need their index.
     // Re-creating an existing index is a cheap no-op for Qdrant.
-    const fields: [string, 'keyword' | 'integer' | 'datetime'][] = [
-      ['project', 'keyword'],
-      ['source_type', 'keyword'],
-      ['component', 'keyword'],
-      ['session_id', 'keyword'],
-      ['kind', 'keyword'],
-      ['doc_status', 'keyword'],
-      // Integer index so setDocStatus can address points by entry id.
-      ['entry_id', 'integer'],
-      // Range filtering on occurred_at works without this — Qdrant falls back to
-      // a full scan — but at a measured 3.11s vs 0.087s (36x) it was far too slow
-      // to expose date scoping as a normal filter. Every point already carries
-      // the RFC-3339 value; only the index was missing.
-      ['occurred_at', 'datetime'],
-    ];
-    for (const [field, schema] of fields) {
+    for (const [field, schema] of PAYLOAD_INDEXES) {
       await this.client
         .createPayloadIndex(this.collection, {
           field_name: field,
@@ -372,6 +389,58 @@ export class VectorStore {
       quantization_config: QUANTIZATION,
       optimizers_config: OPTIMIZERS,
     });
+    await this.dropUnusedPayloadIndexes();
+  }
+
+  /**
+   * Delete payload indexes the live collection carries that PAYLOAD_INDEXES no
+   * longer lists.
+   *
+   * Dropping a field from PAYLOAD_INDEXES stops it being (re)created; it does
+   * nothing to a collection that already has it, and `ensure()` runs on every
+   * boot so the stale index would simply persist forever. This is the reaping
+   * half, and it lives here rather than in `ensure()` on purpose: `ensure()` is
+   * a hot boot path and a delete is not something to run unguarded on every
+   * start. `ensureStorageLayout()` is already the one-shot retrofit, gated by
+   * the versioned marker in the indexer.
+   *
+   * ⚠️ Dropping an INDEX does not drop the payload FIELD. Every point keeps its
+   * `session_id`, anything reading it off the payload is unaffected, and a
+   * filter on it would still work — Qdrant would full-scan instead of using an
+   * index. Nothing is deleted that could not be rebuilt by re-adding the field
+   * to PAYLOAD_INDEXES.
+   *
+   * Best-effort by the same reasoning as the caller: a Qdrant hiccup while
+   * reaping must not stop the indexer from scanning.
+   */
+  async dropUnusedPayloadIndexes(): Promise<string[]> {
+    const wanted = new Set(PAYLOAD_INDEXES.map(([f]) => f));
+    let live: string[];
+    try {
+      const info = (await this.client.getCollection(this.collection)) as {
+        payload_schema?: Record<string, unknown>;
+      };
+      live = Object.keys(info?.payload_schema ?? {});
+    } catch {
+      return [];
+    }
+    // An EMPTY read is ambiguous — a collection with no indexes and a response
+    // shape we failed to understand look identical — so treat it as nothing to
+    // do rather than as "everything is unused". Deleting on a misread is the
+    // one outcome worth engineering against here.
+    if (live.length === 0) return [];
+
+    const dropped: string[] = [];
+    for (const field of live) {
+      if (wanted.has(field)) continue;
+      try {
+        await this.client.deletePayloadIndex(this.collection, field, { wait: true });
+        dropped.push(field);
+      } catch {
+        // leave it; next run retries
+      }
+    }
+    return dropped;
   }
 
   /**
