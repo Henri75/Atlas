@@ -349,12 +349,28 @@ async function scanGit(
     );
     stdout = r.stdout;
   } catch (e) {
-    // Empty repos / unborn HEAD exit non-zero — not an error worth logging loudly.
     const msg = (e as Error).message;
-    if (!/does not have any commits|unknown revision|bad revision/i.test(msg)) {
+    const benign = /does not have any commits|unknown revision|bad revision|invalid revision/i.test(msg);
+    if (!benign) {
       await deps.catalog.logError(projectId, job.rootPath, 'git-log', msg);
+      return 0;
     }
-    return 0;
+    if (!state?.ref) return 0; // genuinely empty repo — unchanged behaviour
+    // Stored watermark no longer resolves (remote force-push/rebase + gc — spec §4).
+    // Silent-swallow here wedged the repo FOREVER: never logged, never reset.
+    await deps.catalog.logError(projectId, job.rootPath, 'git-log',
+      `watermark ${state.ref} invalid (force-push/gc?); falling back to bounded full log: ${msg}`);
+    try {
+      const r = await execFileAsync(
+        'git',
+        ['-c', 'safe.directory=*', 'log', 'HEAD', '--name-status', `--pretty=format:${GIT_LOG_FORMAT}`, '-n', '5000'],
+        { cwd: job.rootPath, maxBuffer: 64 * 1024 * 1024 },
+      );
+      stdout = r.stdout; // dedup keys absorb the overlap with already-indexed commits
+    } catch (e2) {
+      await deps.catalog.logError(projectId, job.rootPath, 'git-log', (e2 as Error).message);
+      return 0;
+    }
   }
   const entries = parseGitLog(stdout, { projectSlug: job.projectSlug, repoPath: job.rootPath });
   applyIdentity(entries, { rootPath: job.rootPath });
