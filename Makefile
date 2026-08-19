@@ -36,7 +36,7 @@ COMPOSE := docker compose --env-file config/atlas.defaults.env $(if $(DOTENV),--
 # probe — otherwise every `make ps` would make a Doppler API round-trip.
 DOPPLER = $(shell doppler run --command 'true' >/dev/null 2>&1 && echo 'doppler run --')
 
-.PHONY: help install build test lint up down restart restart-build embedder-warm logs ps reindex reindex-full smoke config-check print-compose cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals
+.PHONY: help install build test lint up down restart restart-build embedder-warm logs ps reindex reindex-full smoke config-check print-compose cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal
 
 # The harness runs on the host, not in a container: a variant has to be a config
 # object rather than an image rebuild for an A/B to be possible at all. Ports come
@@ -223,3 +223,13 @@ eval-signals: ## record relevance signals for B4 calibration (no bands, no thres
 
 clean: ## remove build artifacts
 	rm -rf packages/*/dist packages/ui/dist
+
+# --- dedup-v3 migration rehearsal (spec §6.6) --------------------------------
+
+db-dump: ## Dump the catalog to backups/ (custom format). Run BEFORE the dedup-v3 migration.
+	@mkdir -p backups
+	$(COMPOSE) exec -T postgres pg_dump -U kdbscope -Fc kdbscope > backups/kdbscope-$$(date -u +%Y%m%d-%H%M%S).dump
+	@ls -lh backups/ | tail -1
+
+dedup-rehearsal: ## Rehearse the dedup-v3 migration against a COPY of the live DB. Never touches the real catalog; prints the verification report.
+	bash scripts/dedup_rehearsal.sh
