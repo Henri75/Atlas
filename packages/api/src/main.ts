@@ -12,10 +12,12 @@ import {
   dirSize,
   embedderServesCollection,
   getConfig,
+  loadMachinesFileIfPresent,
   mappingsFromConfig,
   ollamaAvailable,
   parseRedisMemory,
   qdrantCollectionSizes,
+  selfMachine,
 } from '@atlas/core';
 import type { StorageUsage } from '@atlas/core';
 import type { EmbeddingProvider } from '@atlas/core';
@@ -30,6 +32,13 @@ async function main() {
   const cfg = getConfig();
   const catalog = new Catalog(cfg.databaseUrl);
   await catalog.migrate();
+
+  // Same self-name rule as the indexer's scheduler (resolveSelfName): a
+  // present config/machines.yaml names this machine via ATLAS_SELF, an absent
+  // one means legacy single-machine mode. Resolved once at boot — the file is
+  // a committed SSoT that needs a restart to change anyway.
+  const machinesFleet = loadMachinesFileIfPresent(cfg.machinesFile);
+  const selfMachineName = machinesFleet ? selfMachine(machinesFleet, cfg.atlasSelf).name : 'local';
 
   // Prefer the collection the indexer registered (survives provider races).
   const published = await catalog.getSetting('active_collection');
@@ -161,6 +170,9 @@ async function main() {
       embedder ? { name: embedder.name, model: embedder.model, dim: embedder.dim } : null,
     backlogReview,
     backlogMatchThreshold: cfg.backlogMatchThreshold,
+    machines: () => ({ fleet: machinesFleet, self: selfMachineName }),
+    listMachineSync: () => catalog.listMachineSync(),
+    listProjectLocations: () => catalog.listProjectLocations(),
 
     // Walking Qdrant's storage tree is the slow part; sizes move slowly, so a
     // short TTL keeps the dashboard fresh without re-crawling on every poll.

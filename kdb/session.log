@@ -282,3 +282,11 @@
 
 **AI Response Summary:**
 > Measured the live store read-only (560,694 points / 23 segments / 1.41 GB / ~642 MB load-time-resident) and found max_segment_size set in the wrong unit — KB-of-256-dim-vectors, so 64_000 bought ~21k vectors at 768 dims rather than the 64k its comment claimed. The cost is fixed-size per-segment padding: two 1 MiB flags_a.dat mmaps per indexed field per segment, 385.9 MB of 600.2 MB payload index, >99% empty. Fixed to 192_000, added mem_limit 4g / memswap_limit 6g / stop_grace_period 60s (none existed), and deliberately did NOT copy DeepCast's low_memory_mode here because it would undo this collection's intentional always_ram int8 pin. Guard asserts the derivation rather than the literal; mutation-verified. Nothing applied — the container stays stopped.
+---
+### [2026-08-19 13:24 UTC]
+
+**User Prompt Summary:**
+> Implement Task 5 of the multi-machine spec: GET /api/machines (fleet config merged with live sync state) and per-project `locations` on GET /api/projects, per task-5-brief.md, in a git worktree on feature/multi-machine.
+
+**AI Response Summary:**
+> Added the two routes to packages/api/src/app.ts, extended ApiDeps with `machines`/`listMachineSync`/`listProjectLocations`, and wired real deps in main.ts using the same self-name resolution the indexer scheduler already established. TDD: wrote the brief's tests plus a legacy-mode test and a locations test first (RED), implemented, went GREEN; full suite 1015 tests green, tsc clean across both tsconfigs.

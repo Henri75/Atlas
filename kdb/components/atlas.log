@@ -1555,3 +1555,30 @@
 
 **Status:**
 - Completed (config + reaper + guards + the marker that makes them reach live data). Applies on the next indexer boot, which the operator controls.
+---
+### [2026-08-19] - Task 5: /api/machines + project locations (multi-machine spec)
+
+**Objective:**
+- Expose the machine fleet and per-project machine locations over the API, in the exact shapes later tasks (CLI table, UI Machines page) will consume.
+
+**Summary of Work:**
+- Added `GET /api/machines`: joins `deps.machines()` (fleet config + self, resolved once at boot from config/machines.yaml + ATLAS_SELF) with `deps.listMachineSync()` (live sync health) by machine name; legacy mode (no machines file) returns `{ self: 'local', machines: [] }` rather than 404ing.
+- `GET /api/projects` rows now carry `locations: [{ machine, hostPath, hasKdb }]` from `deps.listProjectLocations()`, keyed by project id; empty array when a project has no recorded locations.
+- Extended `ApiDeps` with `machines`, `listMachineSync`, `listProjectLocations`; wired real deps in `packages/api/src/main.ts`, resolving self the same way the indexer scheduler's `resolveSelfName` does.
+
+**Key Decisions & Rationale:**
+- A location's `hostPath` is passed through unchanged, not re-translated via `toHostPath` — it is already host-side at discovery time (indexer scanners.ts `toHost`), unlike `rootPath` which is a container path.
+- `/api/machines` machine fields are an explicit allowlist (name/address/user/codeRoots/claudeProjects/enabled/sync), deliberately dropping `remoteRsyncPath`/`slugOverrides` from the wire shape, since later tasks consume this response verbatim.
+- Fleet/self resolved once at boot (closure in main.ts) rather than re-read per request: config/machines.yaml is a committed SSoT that needs a restart to change anyway, matching the scheduler's existing precedent (resolveSelfName).
+
+**Code/Files Modified:**
+- packages/api/src/app.ts
+- packages/api/src/main.ts
+- test/api/routes.test.ts
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** TDD from the brief's own test snippets caught the route/shape contract early; the existing `makeDeps` idiom made the new deps a one-line addition with harmless legacy defaults, so all 73 pre-existing route tests kept passing unedited.
+- **What Failed:** N/A — no dead ends on this task.
+
+**Status:**
+- Completed

@@ -172,6 +172,10 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     vectorStats: async () => ({ points: 157_369, vectors: 314_201, segments: 7 }),
     embeddingsProvider: 'auto',
     servingEmbedder: () => ({ name: 'ollama', model: 'nomic-embed-text', dim: 768 }),
+    // Legacy single-machine defaults: harmless unless a test opts into the fleet.
+    machines: () => ({ fleet: null, self: 'local' }),
+    listMachineSync: async () => [],
+    listProjectLocations: async () => new Map(),
     ...overrides,
   };
 }
@@ -553,6 +557,85 @@ describe('api routes', () => {
     const body = await (await buildApp(makeDeps()).request('/api/projects')).json();
     expect(body[0].rootPath).toBe('/Users/nasta/__CODING NEW/DeepCast');
     expect(body[1].rootPath).toBe('');
+  });
+
+  /** rootPath is a container path; locations' hostPath is already host-side. */
+  it('GET /api/projects carries per-machine locations', async () => {
+    const deps = makeDeps({
+      listProjectLocations: async () =>
+        new Map([
+          [
+            1,
+            [
+              { machine: 'nasta-mbp', rootPath: '/data/code/DeepCast', hostPath: '/Users/nasta/code/DeepCast', hasKdb: true },
+              { machine: 'mac-mini', rootPath: '/data/remote/mac-mini/code0/DeepCast', hostPath: '/Users/nasta/mini/DeepCast', hasKdb: false },
+            ],
+          ],
+        ]),
+    });
+    deps.catalog.listProjects = async () => [
+      { id: 1, slug: 'deepcast', name: 'DeepCast', rootPath: '/data/code/DeepCast', entryCount: 10 },
+      { id: 2, slug: 'from-transcripts', name: 'x', rootPath: '', entryCount: 3 },
+    ] as any;
+    const body = await (await buildApp(deps).request('/api/projects')).json();
+    expect(body[0].locations).toEqual([
+      { machine: 'nasta-mbp', hostPath: '/Users/nasta/code/DeepCast', hasKdb: true },
+      { machine: 'mac-mini', hostPath: '/Users/nasta/mini/DeepCast', hasKdb: false },
+    ]);
+    // A project with no recorded locations still gets the field, just empty.
+    expect(body[1].locations).toEqual([]);
+  });
+
+  describe('GET /api/machines', () => {
+    const fleetOf = (overrides: Partial<{ name: string; enabled: boolean }> = {}) => ({
+      fleet: {
+        machines: [
+          {
+            name: overrides.name ?? 'nasta-mbp',
+            address: '127.0.0.1',
+            user: 'nasta',
+            codeRoots: ['/x'],
+            claudeProjects: '/y',
+            enabled: overrides.enabled ?? true,
+            remoteRsyncPath: '/opt/homebrew/bin/rsync',
+            slugOverrides: {},
+          },
+        ],
+        sync: { intervalMin: 10, excludes: [] },
+      },
+      self: overrides.name ?? 'nasta-mbp',
+    });
+
+    it('merges config and sync state', async () => {
+      const app = buildApp(makeDeps({
+        machines: () => fleetOf(),
+        listMachineSync: async () => [
+          { machine: 'nasta-mbp', lastAttemptAt: null, lastSuccessAt: null, status: 'never', bytes: null, durationMs: null, error: null },
+        ],
+      }));
+      const r = await app.request('/api/machines');
+      expect(r.status).toBe(200);
+      const body = await r.json();
+      expect(body.self).toBe('nasta-mbp');
+      expect(body.machines[0].sync.status).toBe('never');
+      expect(body.machines[0]).toMatchObject({
+        name: 'nasta-mbp', address: '127.0.0.1', user: 'nasta',
+        codeRoots: ['/x'], claudeProjects: '/y', enabled: true,
+      });
+    });
+
+    it('reports sync: null for a machine with no sync row yet', async () => {
+      const app = buildApp(makeDeps({ machines: () => fleetOf(), listMachineSync: async () => [] }));
+      const body = await (await app.request('/api/machines')).json();
+      expect(body.machines[0].sync).toBeNull();
+    });
+
+    /** No config/machines.yaml on disk = legacy single-machine mode. */
+    it('legacy mode returns self: local and an empty machine list', async () => {
+      const app = buildApp(makeDeps({ machines: () => ({ fleet: null, self: 'local' }) }));
+      const body = await (await app.request('/api/machines')).json();
+      expect(body).toEqual({ self: 'local', machines: [] });
+    });
   });
 
   it('GET /api/search decorates every hit with a host path', async () => {

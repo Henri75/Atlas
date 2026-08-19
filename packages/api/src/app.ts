@@ -22,6 +22,7 @@ import type {
   BacklogReviewService,
   Catalog,
   EntryKind,
+  MachinesFile,
   PathMapping,
   RouteClass,
   SearchHit,
@@ -86,6 +87,17 @@ export interface ApiDeps {
   backlogMatchThreshold: number;
   /** Default page size for the usage call log (config SSoT). */
   usagePageSize: number;
+  /**
+   * The committed machine fleet (config/machines.yaml) and which entry is this
+   * process, resolved once at boot — the same rule the scheduler uses (Task 4):
+   * file present → the ATLAS_SELF entry's name, absent → 'local' (legacy
+   * single-machine mode). `fleet: null` is what makes /api/machines legacy-mode.
+   */
+  machines: () => { fleet: MachinesFile | null; self: string };
+  /** Per-machine sync health, joined onto `machines().fleet` by name. */
+  listMachineSync: Catalog['listMachineSync'];
+  /** Every machine a project has been seen on, keyed by project id. */
+  listProjectLocations: Catalog['listProjectLocations'];
 }
 
 export interface BackfillProgress {
@@ -527,14 +539,49 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
   });
 
   app.get('/api/projects', async (c) => {
-    const projects = await deps.catalog.listProjects();
+    const [projects, locations] = await Promise.all([
+      deps.catalog.listProjects(),
+      deps.listProjectLocations(),
+    ]);
     // rootPath is a container path; nobody outside the stack has that folder.
     return c.json(
       projects.map((p) => ({
         ...p,
         rootPath: p.rootPath ? toHostPath(p.rootPath, deps.pathMappings) : p.rootPath,
+        // Unlike rootPath, a location's hostPath was already computed host-side
+        // at discovery time (scanners.ts toHost) — passed through, not translated.
+        locations: (locations.get(p.id) ?? []).map((l) => ({
+          machine: l.machine,
+          hostPath: l.hostPath,
+          hasKdb: l.hasKdb,
+        })),
       })),
     );
+  });
+
+  /**
+   * The fleet as configured, joined with live sync health by machine name.
+   * Legacy mode (no config/machines.yaml) answers `{ self: 'local', machines: [] }`
+   * rather than 404ing — callers (CLI, UI Machines page) can render either shape
+   * without branching on whether multi-machine is even turned on.
+   */
+  app.get('/api/machines', async (c) => {
+    const { fleet, self } = deps.machines();
+    if (!fleet) return c.json({ self, machines: [] });
+    const sync = await deps.listMachineSync();
+    const syncByName = new Map(sync.map((s) => [s.machine, s]));
+    return c.json({
+      self,
+      machines: fleet.machines.map((m) => ({
+        name: m.name,
+        address: m.address,
+        user: m.user,
+        codeRoots: m.codeRoots,
+        claudeProjects: m.claudeProjects,
+        enabled: m.enabled,
+        sync: syncByName.get(m.name) ?? null,
+      })),
+    });
   });
 
   const timelineOpts = (c: { req: { query: (k: string) => string | undefined } }) => ({
