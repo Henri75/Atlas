@@ -465,6 +465,17 @@ describe('api routes', () => {
     expect(search.search).toHaveBeenCalledWith('x', expect.objectContaining({ kind: 'insight' }), 20);
   });
 
+  it('GET /api/search passes the machine filter through', async () => {
+    const search = {
+      search: vi.fn(async (_q: string, _f: Record<string, unknown>) => ({
+        hits: [], mode: 'hybrid', degraded: false, tookMs: 1,
+      })),
+    };
+    const app = buildApp(makeDeps({ search: search as any }));
+    await app.request('/api/search?q=x&machine=nasta-mbp');
+    expect(search.search).toHaveBeenCalledWith('x', expect.objectContaining({ machine: 'nasta-mbp' }), 20);
+  });
+
   it('POST /api/ask returns synthesized answer', async () => {
     const res = await buildApp(makeDeps()).request('/api/ask', {
       method: 'POST',

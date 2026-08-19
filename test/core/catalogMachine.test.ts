@@ -123,6 +123,49 @@ describe('machine accessors', () => {
     expect(q.mock.calls[0]![1]).toEqual(['m4max', 'error', null]);
   });
 
+  /**
+   * spec §6: the two search paths must never disagree. `buildQdrantFilter`
+   * (qdrantFilter.test.ts) emits `{ key: 'machine', match: { value } }`; this
+   * is the FTS mirror, at the same precedence as component/kind/docStatus.
+   */
+  it('ftsSearch adds e.machine = $n when a machine filter is given', async () => {
+    const { cat, q } = stubbed();
+    q.mockResolvedValueOnce({ rows: [] });
+    await cat.ftsSearch('bug', { machine: 'nasta-mbp' });
+    expect(q.mock.calls[0]![0]).toMatch(/AND e\.machine = \$\d+/);
+    expect(q.mock.calls[0]![1]).toContain('nasta-mbp');
+  });
+
+  it('ftsSearch omits the machine clause when no machine filter is given', async () => {
+    const { cat, q } = stubbed();
+    q.mockResolvedValueOnce({ rows: [] });
+    await cat.ftsSearch('bug', {});
+    expect(q.mock.calls[0]![0]).not.toMatch(/e\.machine/);
+  });
+
+  /**
+   * CRITICAL (pre-flight-scan defect): insertEntries never wrote the machine
+   * column at all, so every row inserted after a boot kept the schema default
+   * '' regardless of what the scanning job actually tagged the entry with —
+   * silently missing it on the FTS side of the machine filter forever, since
+   * a re-scan never re-inserts an existing dedup_key.
+   */
+  it('insertEntries writes the machine column from e.machine, defaulting to \'\'', async () => {
+    const { cat, q } = stubbed();
+    q.mockResolvedValueOnce({ rows: [{ id: 1, dedup_key: 'k1' }, { id: 2, dedup_key: 'k2' }] });
+    const entries = [
+      { projectSlug: 'p', sourceType: 'kdb_changelog' as const, title: 't1', body: 'b1', sourcePath: '/x', machine: 'nasta-mbp' },
+      { projectSlug: 'p', sourceType: 'kdb_changelog' as const, title: 't2', body: 'b2', sourcePath: '/y' },
+    ];
+    await cat.insertEntries(7, entries as any);
+    const [sql, params] = q.mock.calls[0]!;
+    expect(sql).toMatch(/INSERT INTO entries \([^)]*machine[^)]*\)/);
+    // First row carries its explicit machine; the second (no `machine` set)
+    // must default to '' rather than null or undefined reaching Postgres.
+    expect(params).toContain('nasta-mbp');
+    expect(params).toContain('');
+  });
+
   it('listMachineSync returns camelCase rows with ISO dates', async () => {
     const { cat, q } = stubbed();
     q.mockResolvedValueOnce({

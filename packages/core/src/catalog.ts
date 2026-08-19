@@ -306,7 +306,7 @@ export function ftsQuery(q: string): string {
 
 /** Shared by every query that rebuilds an Entry from the catalog. */
 const ENTRY_COLUMNS = `e.id, e.source_type, e.component, e.session_id, e.title, e.body,
-              e.occurred_at, e.source_path, e.source_ref, e.meta, p.slug`;
+              e.occurred_at, e.source_path, e.source_ref, e.meta, e.machine, p.slug`;
 
 /** Row → Entry. Kept in one place so re-embedding paths cannot drift apart. */
 function rowToEntry(row: any): Entry & { id: number } {
@@ -323,6 +323,14 @@ function rowToEntry(row: any): Entry & { id: number } {
     sourceRef: row.source_ref ?? undefined,
     // Without meta a collection rebuild would drop kind/doc_status payloads.
     meta: row.meta ?? undefined,
+    // `machine` is NOT NULL DEFAULT '' (never null); '' is the legacy
+    // pre-machine-model sentinel, normalized to absent here like every other
+    // optional field — without this, `backfillVectors`/`rebuildSparseVectors`
+    // re-embedding entries loaded from Postgres (e.g. after a model switch)
+    // would write `machine: undefined` onto EVERY point regardless of what
+    // Postgres actually holds, wiping the machine filter for the whole
+    // collection instead of just the points that predate this column.
+    machine: row.machine || undefined,
   };
 }
 
@@ -1133,10 +1141,10 @@ export class Catalog {
     }
     const rows = [...byKey.values()];
 
-    // 11 params/row against Postgres's 65535-parameter ceiling → cap the chunk
+    // 12 params/row against Postgres's 65535-parameter ceiling → cap the chunk
     // well under it so a huge file still fits in whole statements.
-    const COLS = 11;
-    const MAX_ROWS = Math.floor(60000 / COLS); // ~5454
+    const COLS = 12;
+    const MAX_ROWS = Math.floor(60000 / COLS); // ~5000
     const out: InsertedEntry[] = [];
 
     for (let start = 0; start < rows.length; start += MAX_ROWS) {
@@ -1156,12 +1164,19 @@ export class Catalog {
           e.sourceRef ?? null,
           JSON.stringify(e.meta ?? {}),
           key,
+          // '' (never null — the column is NOT NULL DEFAULT '') is the
+          // pre-machine-model sentinel. CRITICAL: this was missing entirely
+          // until Task 16 — every row inserted after boot kept '' regardless
+          // of what the scan job tagged it with, so the FTS side of the
+          // machine filter silently missed it forever (a dedup'd re-scan
+          // never re-inserts the row to fix it).
+          e.machine ?? '',
         );
-        return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11})`;
+        return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},$${b + 12})`;
       });
       const r = await this.pool.query(
         `INSERT INTO entries (project_id, source_type, component, session_id, title, body,
-                              occurred_at, source_path, source_ref, meta, dedup_key)
+                              occurred_at, source_path, source_ref, meta, dedup_key, machine)
          VALUES ${tuples.join(',')}
          ON CONFLICT (dedup_key) DO NOTHING
          RETURNING id, dedup_key`,
@@ -1640,6 +1655,13 @@ export class Catalog {
       // meta is JSONB; at this scale a plain key lookup needs no extra index.
       params.push(filters.kind);
       where += ` AND e.meta->>'kind' = $${params.length}`;
+    }
+    // Mirrors buildQdrantFilter's machine clause exactly — same precedence,
+    // same "first ingested from" semantics (spec §6). The two paths degrade
+    // into one another and must never disagree about what this means.
+    if (filters.machine) {
+      params.push(filters.machine);
+      where += ` AND e.machine = $${params.length}`;
     }
     if (filters.docStatus === 'archived') {
       where += ` AND e.meta->>'docStatus' = 'archived'`;

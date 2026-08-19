@@ -146,6 +146,19 @@ describe('pipeline applies v3 identity at scan time', () => {
     expect(lineEntry!.identity!.ref).toMatch(/^occ:\d+$/); // dedup uses the stable ordinal instead
   });
 
+  it('scanKdb: every inserted entry carries machine = job.machine, and the Qdrant payload does too', async () => {
+    const { deps, insertCalls } = makeStubCatalog();
+    await processScanJob(deps, { ...baseJob, machine: 'nasta-mbp', sourceType: 'kdb' });
+
+    const entries = insertCalls.flat();
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((e) => (e as any).machine === 'nasta-mbp')).toBe(true);
+
+    const upserted = (deps.vectors.upsert as any).mock.calls.flatMap((c: any[]) => c[0]);
+    expect(upserted.length).toBeGreaterThan(0);
+    expect(upserted.every((p: any) => p.payload.machine === 'nasta-mbp')).toBe(true);
+  });
+
   it('scanDocs: every inserted entry carries identity', async () => {
     const { deps, insertCalls } = makeStubCatalog();
     await processScanJob(deps, { ...baseJob, hasKdb: false, sourceType: 'doc' });
@@ -155,6 +168,15 @@ describe('pipeline applies v3 identity at scan time', () => {
     expect(entries.every((e) => e.identity)).toBe(true);
   });
 
+  it('scanDocs: every inserted entry carries machine = job.machine', async () => {
+    const { deps, insertCalls } = makeStubCatalog();
+    await processScanJob(deps, { ...baseJob, hasKdb: false, machine: 'nasta-mbp', sourceType: 'doc' });
+
+    const entries = insertCalls.flat();
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((e) => (e as any).machine === 'nasta-mbp')).toBe(true);
+  });
+
   it('scanGit: every inserted entry carries identity', async () => {
     const { deps, insertCalls } = makeStubCatalog();
     await processScanJob(deps, { ...baseJob, hasKdb: false, sourceType: 'git_commit' });
@@ -162,6 +184,15 @@ describe('pipeline applies v3 identity at scan time', () => {
     const entries = insertCalls.flat();
     expect(entries.length).toBeGreaterThan(0);
     expect(entries.every((e) => e.identity)).toBe(true);
+  });
+
+  it('scanGit: every inserted entry carries machine = job.machine', async () => {
+    const { deps, insertCalls } = makeStubCatalog();
+    await processScanJob(deps, { ...baseJob, hasKdb: false, machine: 'nasta-mbp', sourceType: 'git_commit' });
+
+    const entries = insertCalls.flat();
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((e) => (e as any).machine === 'nasta-mbp')).toBe(true);
   });
 
   it('scanClaude: every inserted entry carries claude-scoped identity', async () => {
@@ -177,6 +208,21 @@ describe('pipeline applies v3 identity at scan time', () => {
     expect(entries.length).toBeGreaterThan(0);
     expect(entries.every((e) => e.identity)).toBe(true);
     expect(entries.every((e) => e.identity!.scope === 'claude')).toBe(true);
+  });
+
+  it('scanClaude: every inserted entry carries machine = job.machine', async () => {
+    const { deps, insertCalls } = makeStubCatalog();
+    await processScanJob(deps, {
+      ...baseJob,
+      hasKdb: false,
+      machine: 'nasta-mbp',
+      sourceType: 'claude_session',
+      claudeDirs: [claudeDir],
+    });
+
+    const entries = insertCalls.flat();
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((e) => (e as any).machine === 'nasta-mbp')).toBe(true);
   });
 });
 

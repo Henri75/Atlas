@@ -73,6 +73,14 @@ export interface Entry {
    * back to the legacy v2-shaped key from `projectSlug`/`sourcePath`/`sourceRef`.
    */
   identity?: EntryIdentity;
+  /**
+   * Which machine this entry was FIRST INGESTED FROM (spec §6) — set by the
+   * scan pipeline (`job.machine`) in the same pass as `applyIdentity`.
+   * `Catalog.insertEntries` writes it (defaulting to `''`) into the `machine`
+   * column, and `indexEntries` copies it onto the Qdrant payload, so both
+   * search paths see the same value for the same entry.
+   */
+  machine?: string;
 }
 
 export interface StoredEntry extends Entry {
@@ -137,6 +145,13 @@ export interface SearchFilters {
   until?: string;
   /** 'active' excludes archived docs; 'archived' targets them. Default: both. */
   docStatus?: 'active' | 'archived';
+  /**
+   * Which machine an entry was FIRST INGESTED FROM (spec §6) — provenance,
+   * not "currently present on". Both search paths must filter it identically
+   * (see `buildQdrantFilter` / `Catalog.ftsSearch`). '' is the legacy
+   * pre-machine-model sentinel; no surface sends it as a real filter value.
+   */
+  machine?: string;
 }
 
 export interface SearchHit {

@@ -40,6 +40,12 @@ export interface VectorPoint {
     /** 'archived' for docs under archive-style paths; absent means active. */
     doc_status?: string;
     occurred_at?: string;
+    /**
+     * Which machine this entry was first ingested from (spec §6). Absent on
+     * points written before this field existed — a `machine` filter misses
+     * those until the Task 17 backfill runs.
+     */
+    machine?: string;
   };
 }
 
@@ -289,6 +295,13 @@ export function buildQdrantFilter(
   else if (types.length > 1) must.push({ key: 'source_type', match: { any: types } });
   if (filters.component) must.push({ key: 'component', match: { value: filters.component } });
   if (filters.kind) must.push({ key: 'kind', match: { value: filters.kind } });
+  // 'machine' is filtered but deliberately NOT in PAYLOAD_INDEXES: it is
+  // two-valued today (self vs one remote) and low-selectivity — exactly the
+  // per-segment null-index padding cost the 2026-08-14 payload-index work
+  // (max_segment_size KB-vs-vectors, see OPTIMIZERS above) paid down. An
+  // unindexed filter here is a legitimate choice (Qdrant just full-scans),
+  // the same call PAYLOAD_INDEXES' own docs already permit.
+  if (filters.machine) must.push({ key: 'machine', match: { value: filters.machine } });
   // 'active' is expressed as NOT archived: most points carry no doc_status at
   // all, and a positive match would silently exclude every one of them.
   if (filters.docStatus === 'archived') {

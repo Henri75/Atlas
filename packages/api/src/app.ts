@@ -328,6 +328,7 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
         ...parseSources(c.req.query('source')),
         component: c.req.query('component') || undefined,
         kind: (c.req.query('kind') as EntryKind) || undefined,
+        machine: c.req.query('machine') || undefined,
         since: c.req.query('since') || undefined,
         until: c.req.query('until') || undefined,
         docStatus: (c.req.query('docStatus') as 'active' | 'archived') || undefined,
