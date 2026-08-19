@@ -226,8 +226,9 @@ Off by default: every port binds `127.0.0.1` only until you opt in.
    `ATLAS_BIND` with no `ATLAS_TOKEN` refuses to start rather than serve the
    LAN unauthenticated.
 2. `make restart-build` to apply it.
-3. **UI**: the first LAN visit prompts once for the token (stored in
-   `localStorage`, sent on every API call).
+3. **UI**: shows a one-time token prompt (`TokenGate`) the moment any API
+   call comes back 401 — in practice, the first visit with no token stored.
+   Saves to `localStorage` and reloads; every API call after that sends it.
 4. **Host clients** (CLI, the MCP shim) read the token from
    `~/.atlas/credentials`, written once per machine by `atlas connect
    --token <token>` (step 7 of the add-machine runbook, above).
