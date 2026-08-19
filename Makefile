@@ -36,7 +36,7 @@ COMPOSE := docker compose --env-file config/atlas.defaults.env $(if $(DOTENV),--
 # probe — otherwise every `make ps` would make a Doppler API round-trip.
 DOPPLER = $(shell doppler run --command 'true' >/dev/null 2>&1 && echo 'doppler run --')
 
-.PHONY: help install build test lint up down restart restart-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal
+.PHONY: help install build test lint up down restart restart-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose cli-link connect-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal
 
 # The harness runs on the host, not in a container: a variant has to be a config
 # object rather than an image rebuild for an A/B to be possible at all. Ports come
@@ -183,6 +183,10 @@ print-compose:
 cli-link: ## make the `atlas` command available on this machine
 	npm run build -w packages/cli && npm link --workspace packages/cli
 	@echo "try: atlas status"
+
+connect-link: ## Install the atlas-connect MCP shim on this machine's PATH (npm link; register once with: claude mcp add atlas -- atlas-connect)
+	npm run build -w packages/atlas-connect && npm link --workspace packages/atlas-connect
+	@echo "register once: claude mcp add atlas -- atlas-connect"
 
 kdb-rebuild: ## regenerate kdb/*.md views from kdb/*.log (never touches logs)
 	node bin/kdb_rebuild.mjs

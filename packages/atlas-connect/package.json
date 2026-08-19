@@ -1,0 +1,17 @@
+{
+  "name": "@atlas/connect",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stdio MCP shim — bridges Claude Code's fixed `atlas` registration to whichever machine is running the active Atlas instance (spec §8)",
+  "bin": {
+    "atlas-connect": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@atlas/core": "*",
+    "@modelcontextprotocol/sdk": "1.29.0"
+  }
+}
