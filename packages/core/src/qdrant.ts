@@ -656,6 +656,28 @@ export class VectorStore {
   }
 
   /**
+   * Merge arbitrary payload keys onto every chunk of the given entries, in
+   * place — no re-embedding. The `entry_id`-filter mechanism generalized out
+   * of `setDocStatus` for callers whose payload shape isn't `doc_status`; the
+   * Task 17 machine-payload backfill is the first of those.
+   *
+   * `wait: false`, like `setDocStatus`: this walks the whole catalog as a
+   * background reconciliation pass with nothing downstream blocking on any
+   * one write landing before the call returns — unlike `deleteByEntryIds`,
+   * whose caller (dedup migration) needs the delete durable before it
+   * proceeds. Acceptance is enough here.
+   */
+  async setPayloadByEntryIds(entryIds: number[], payload: Record<string, unknown>): Promise<void> {
+    if (!entryIds.length) return;
+    for (let i = 0; i < entryIds.length; i += 500) {
+      const filter = { must: [{ key: 'entry_id', match: { any: entryIds.slice(i, i + 500) } }] };
+      await withRetry(() =>
+        this.client.setPayload(this.collection, { payload, filter, wait: false }),
+      );
+    }
+  }
+
+  /**
    * Delete every point belonging to these entries.
    *
    * By payload filter rather than by point id: an entry becomes an unknown

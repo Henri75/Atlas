@@ -1562,6 +1562,26 @@ export class Catalog {
     return r.rows.map((row) => ({ ...rowToEntry(row), vectorizedIn: row.vectorized_in }));
   }
 
+  /**
+   * Like `vectorizedEntriesAfter`, but only `id` and `machine` — for the Task
+   * 17 payload backfill, which patches a single payload key per entry and has
+   * no use for title/body/meta. `vectorizedEntriesAfter`'s full ENTRY_COLUMNS
+   * projection (plus the `projects` join) would cost the whole catalog's text
+   * for a walk that never reads it.
+   */
+  async entryMachineAfter(
+    collection: string,
+    cursor: number,
+    limit: number,
+  ): Promise<{ id: number; machine: string }[]> {
+    const r = await this.pool.query(
+      `SELECT id, machine FROM entries
+       WHERE vectorized_in = $1 AND id > $2 ORDER BY id ASC LIMIT $3`,
+      [collection, cursor, limit],
+    );
+    return r.rows.map((row) => ({ id: row.id, machine: row.machine }));
+  }
+
   /** How many entries `vectorizedEntriesAfter` will walk — the rebuild's total. */
   async countVectorized(collection: string): Promise<number> {
     const r = await this.pool.query(

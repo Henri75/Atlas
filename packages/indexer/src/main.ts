@@ -33,6 +33,7 @@ import {
   type PipelineDeps,
   type ScanJobData,
 } from './pipeline.js';
+import { backfillMachinePayload } from './backfillMachinePayload.js';
 import { SCAN_QUEUE, resolveSelfName, scheduleScans, withSchedulerLock } from './scheduler.js';
 import { syncMachine, buildSyncExcludes } from './sync.js';
 
@@ -441,6 +442,17 @@ async function main() {
   } catch (e) {
     console.warn(`[indexer] orphan reclaim skipped: ${(e as Error).message}`);
   }
+
+  /**
+   * One-time (per collection) walk that stamps `machine` onto every point
+   * embedded before Task 16 added the field — without it, a `machine` filter
+   * silently misses everything older than this release (spec §6). Safe to
+   * call unconditionally: `backfillMachinePayload` gates and stamps itself,
+   * so a boot after the first finds nothing left to patch. Done after the
+   * collection is published and stable, like the sparse rebuild and the
+   * storage-layout retrofit above it.
+   */
+  await backfillMachinePayload(deps, (s) => console.log(s));
 
   const worker = new Worker<ScanJobData>(
     SCAN_QUEUE,
