@@ -33,6 +33,12 @@ export type ProgressFn = (info: { file: string; chunks: number }) => void | Prom
 
 const execFileAsync = promisify(execFile);
 
+// A mirror root is written by rsync, not `git`, so an optional lock file left
+// behind by a git invocation racing the next sync would sit there forever —
+// rsync's --delete only removes what the SOURCE no longer has. Harmless on a
+// self root; every `git` call this indexer makes gets it (spec §4).
+const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+
 export interface PipelineDeps {
   catalog: Catalog;
   vectors: VectorStore;
@@ -345,7 +351,7 @@ async function scanGit(
     const r = await execFileAsync(
       'git',
       ['-c', 'safe.directory=*', 'log', range, '--name-status', `--pretty=format:${GIT_LOG_FORMAT}`, '-n', '5000'],
-      { cwd: job.rootPath, maxBuffer: 64 * 1024 * 1024 },
+      { cwd: job.rootPath, maxBuffer: 64 * 1024 * 1024, env: GIT_ENV },
     );
     stdout = r.stdout;
   } catch (e) {
@@ -364,7 +370,7 @@ async function scanGit(
       const r = await execFileAsync(
         'git',
         ['-c', 'safe.directory=*', 'log', 'HEAD', '--name-status', `--pretty=format:${GIT_LOG_FORMAT}`, '-n', '5000'],
-        { cwd: job.rootPath, maxBuffer: 64 * 1024 * 1024 },
+        { cwd: job.rootPath, maxBuffer: 64 * 1024 * 1024, env: GIT_ENV },
       );
       stdout = r.stdout; // dedup keys absorb the overlap with already-indexed commits
     } catch (e2) {

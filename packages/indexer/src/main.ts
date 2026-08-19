@@ -34,6 +34,7 @@ import {
   type ScanJobData,
 } from './pipeline.js';
 import { SCAN_QUEUE, resolveSelfName, scheduleScans, withSchedulerLock } from './scheduler.js';
+import { syncMachine, buildSyncExcludes } from './sync.js';
 
 /**
  * Indexer entrypoint: migrate catalog, resolve the embedding provider,
@@ -445,7 +446,28 @@ async function main() {
     SCAN_QUEUE,
     async (job) => {
       // Manual trigger from the API: expand into per-project scan jobs.
-      const data = job.data as ScanJobData & { trigger?: string; project?: string };
+      const data = job.data as ScanJobData & { trigger?: string; project?: string; sync?: string };
+      /**
+       * Fleet sync (spec §4): rsync one machine's code roots + Claude
+       * transcripts into its mirror. Runs as a queued job, like `reconcile` and
+       * `adoption`, so it gets BullMQ's lock renewal for what can be a
+       * multi-minute rsync and never competes with the cron tick's 55s lock.
+       * Unknown/absent machine (deleted from machines.yaml between enqueue and
+       * run, or the file itself gone) logs and completes rather than throwing —
+       * a throw here would retry into the same dead end three times.
+       */
+      if (data.sync) {
+        const mf = loadMachinesFileIfPresent(cfg.machinesFile);
+        const machineConfig = mf?.machines.find((m) => m.name === data.sync);
+        if (!mf || !machineConfig) {
+          console.warn(`[indexer] sync job for unknown/absent machine "${data.sync}" — skipping`);
+          return { synced: 'skipped' };
+        }
+        const status = await syncMachine({ catalog }, machineConfig, {
+          excludes: buildSyncExcludes(mf.sync.excludes),
+        });
+        return { synced: status };
+      }
       /**
        * Continuous repair. Runs as a queued job rather than inline in the cron
        * tick because it embeds: the tick holds a 55s scheduler lock, while a
