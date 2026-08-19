@@ -316,9 +316,14 @@ async function rekeyOne(
        * cursor keeps the position, so a fixed build resumes where this left off.
        */
       if (holder.title !== source.title || contentHash(holder.body) !== contentHash(source.body)) {
+        // Names the file, not just the ids: this throw wedges the indexer in a
+        // restart loop, and the operator's first question is which file to go
+        // and look at. Entry ids alone cannot be resolved to one without a
+        // database session.
         throw new Error(
           `dedup migration: entry ${planned.id}'s v3 key is already held by entry ${holder.id}, ` +
-            'whose title/body differ — refusing to delete content that is not a duplicate',
+            'whose title/body differ — refusing to delete content that is not a duplicate ' +
+            `(processing project ${source.project_id}, ${source.source_path})`,
         );
       }
 
@@ -328,7 +333,10 @@ async function rekeyOne(
       if (loser === planned.id) return;         // our row was the duplicate; nothing left to rekey
     }
   }
-  throw new Error(`dedup migration: entry ${planned.id} still collides after its key holder was resolved`);
+  throw new Error(
+    `dedup migration: entry ${planned.id} still collides after its key holder was resolved ` +
+      `(processing project ${source.project_id}, ${source.source_path})`,
+  );
 }
 
 /**
@@ -466,11 +474,17 @@ export async function runDedupMigration(
       );
     }
 
-    // Marker before cursor: a crash between the two leaves a stale cursor that
-    // nothing ever reads again (the marker short-circuits every later boot),
-    // whereas the reverse order would cost a full — if entirely no-op — rescan.
-    await catalog.setSetting(DEDUP_SCHEME_KEY, DEDUP_SCHEME);
+    /**
+     * The marker is the LAST thing this migration writes — after the final
+     * page, and after the cursor is cleared. Stamping it any earlier ends the
+     * migration permanently: a crash mid-sweep would leave a half-migrated
+     * catalog that never runs this again, and every row still on a v2 key
+     * would re-insert as a duplicate forever, compounding. The window this
+     * ordering opens instead is cheap and bounded — a crash between the two
+     * costs one full rescan whose every UPDATE is a guarded no-op.
+     */
     await catalog.setSetting(DEDUP_CURSOR_KEY, '');
+    await catalog.setSetting(DEDUP_SCHEME_KEY, DEDUP_SCHEME);
     await client.query(`DROP INDEX IF EXISTS ${MIGRATION_INDEX}`).catch(() => {});
     return stats;
   } finally {
