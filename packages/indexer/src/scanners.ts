@@ -13,6 +13,8 @@ const IGNORED_DIRS = new Set([
   'target', 'vendor', '__pycache__', '.next', '.turbo', 'data',
 ]);
 
+export const SCANNER_IGNORED_DIRS = [...IGNORED_DIRS] as readonly string[];
+
 function safeReaddir(dir: string): string[] {
   try {
     return readdirSync(dir);
