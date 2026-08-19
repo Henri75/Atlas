@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { authMiddleware } from './auth.js';
 import {
   ADOPTION_REPORT_KEY,
   ROUTE_CLASSES,
@@ -94,6 +95,11 @@ export interface ApiDeps {
   backlogReview: BacklogReviewService;
   /** Fuzzy-link floor for legacy DONE:/RESOLVED: markers (config SSoT). */
   backlogMatchThreshold: number;
+  /**
+   * Bearer token gating non-loopback requests (spec §7). Undefined = legacy
+   * localhost-only mode — `authMiddleware` becomes a no-op on every route.
+   */
+  atlasToken?: string;
   /** Default page size for the usage call log (config SSoT). */
   usagePageSize: number;
   /**
@@ -143,6 +149,16 @@ type UsageVars = {
 export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
   const app = new Hono<{ Variables: UsageVars }>();
   app.use('/api/*', cors());
+
+  /**
+   * Bearer-token gate (spec §7), mounted right after CORS — so a real
+   * cross-origin preflight (`cors()` answers OPTIONS directly, before
+   * Authorization would ever be present on it) is never blocked — and before
+   * the usage-telemetry middleware, so a rejected request is never logged.
+   * `/api/instance` is Task 22's route (the S8 instance proof); exempted now
+   * so that task never has to touch this middleware.
+   */
+  app.use('/api/*', authMiddleware({ token: deps.atlasToken, exempt: ['/api/health', '/api/instance'] }));
 
   /**
    * Usage telemetry. EVERY `/api/*` request is recorded, polling included.

@@ -26,8 +26,30 @@ import type {
  */
 const CLIENT_HEADERS = { 'x-atlas-client': 'ui' };
 
+/**
+ * The token from TokenGate, if this instance requires one (spec §7). Read
+ * fresh on every call rather than cached in a module variable: TokenGate
+ * writes it and reloads, so a stale in-memory copy is never actually
+ * observable, but re-reading also means no import-order dependency on when
+ * TokenGate ran.
+ */
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem('atlasToken');
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
+/**
+ * A 401 means the stored token is missing or wrong. Every call site funnels
+ * through here so one 401, anywhere, reliably pops the prompt — App.tsx
+ * listens for this event and renders TokenGate.
+ */
+function flagIfUnauthorized(res: Response): void {
+  if (res.status === 401) window.dispatchEvent(new CustomEvent('atlas:unauthorized'));
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path, { headers: CLIENT_HEADERS });
+  const res = await fetch(path, { headers: { ...CLIENT_HEADERS, ...authHeaders() } });
+  flagIfUnauthorized(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json() as Promise<T>;
 }
@@ -35,9 +57,10 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS },
+    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS, ...authHeaders() },
     body: JSON.stringify(body),
   });
+  flagIfUnauthorized(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json() as Promise<T>;
 }
@@ -69,10 +92,11 @@ export async function* askStream(
 ): AsyncGenerator<AskEvent, void, unknown> {
   const res = await fetch('/api/ask/stream', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS },
+    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS, ...authHeaders() },
     body: JSON.stringify(body),
     signal,
   });
+  flagIfUnauthorized(res);
   if (!res.ok || !res.body) throw new Error(`${res.status}: ${await res.text()}`);
 
   const reader = res.body.getReader();

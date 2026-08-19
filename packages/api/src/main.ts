@@ -31,6 +31,17 @@ import { buildApp } from './app.js';
  */
 async function main() {
   const cfg = getConfig();
+
+  // Fail closed (spec §7): a non-loopback bind with no token would serve the
+  // LAN with no auth at all. Refuse to boot rather than do that silently.
+  if (cfg.atlasBind !== '127.0.0.1' && !cfg.atlasToken) {
+    console.error(
+      `[api] REFUSING TO START — ATLAS_BIND=${cfg.atlasBind} with no ATLAS_TOKEN set. ` +
+        'Set ATLAS_TOKEN or leave ATLAS_BIND at 127.0.0.1.',
+    );
+    process.exit(1);
+  }
+
   const catalog = new Catalog(cfg.databaseUrl);
   await catalog.migrate();
 
@@ -179,6 +190,7 @@ async function main() {
       embedder ? { name: embedder.name, model: embedder.model, dim: embedder.dim } : null,
     backlogReview,
     backlogMatchThreshold: cfg.backlogMatchThreshold,
+    atlasToken: cfg.atlasToken,
     machines: () => ({ fleet: machinesFleet, self: selfMachineName }),
     listMachineSync: () => catalog.listMachineSync(),
     listProjectLocations: () => catalog.listProjectLocations(),

@@ -116,6 +116,18 @@ const schema = z.object({
   machinesFile: z.string().default('/config/machines.yaml'),
   /** Which machines.yaml entry is THIS host. Required once the file exists. */
   atlasSelf: z.string().optional(),
+  /**
+   * Host bind address api/mcp/ui publish their ports on (spec §7). Also read
+   * at boot (api + mcp `main.ts`) to fail closed: a non-loopback bind with no
+   * `atlasToken` refuses to start rather than serve the LAN unauthenticated.
+   * qdrant/redis/postgres ignore this and stay on `127.0.0.1` regardless.
+   */
+  atlasBind: z.string().default('127.0.0.1'),
+  /**
+   * Bearer token required for non-loopback requests once set (spec §7).
+   * Empty/absent = legacy localhost-only mode: `authMiddleware` is a no-op.
+   */
+  atlasToken: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof schema>;
@@ -188,6 +200,8 @@ function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
     apiUrl: opt(env.KDBSCOPE_API_URL),
     machinesFile: opt(env.ATLAS_MACHINES_FILE),
     atlasSelf: opt(env.ATLAS_SELF),
+    atlasBind: opt(env.ATLAS_BIND),
+    atlasToken: opt(env.ATLAS_TOKEN),
   });
 }
 

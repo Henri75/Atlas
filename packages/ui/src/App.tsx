@@ -13,6 +13,7 @@ import { ComponentsView } from './views/ComponentsView';
 import { SessionsView } from './views/SessionsView';
 import { MonitorView } from './views/MonitorView';
 import { MachinesView } from './views/MachinesView';
+import { TokenGate } from './components/TokenGate';
 
 /**
  * Shell. Two axes, deliberately kept apart:
@@ -57,6 +58,16 @@ export default function App() {
   const [offline, setOffline] = useState(false);
   const [toast, setToast] = useState('');
   const searchRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Any API call 401ing (api.ts) means this instance is LAN-exposed and the
+  // stored token is missing or wrong (spec §7) — swap the whole shell for the
+  // prompt rather than trying to keep the rest of the app usable underneath.
+  const [needsToken, setNeedsToken] = useState(false);
+  useEffect(() => {
+    const onUnauthorized = () => setNeedsToken(true);
+    window.addEventListener('atlas:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('atlas:unauthorized', onUnauthorized);
+  }, []);
 
   const toggleFavorite = useCallback(
     (slug: string) =>
@@ -133,6 +144,8 @@ export default function App() {
   // traffic, which has no project dimension at all. Machines is the fleet, not
   // a project — the same argument applies.
   const showScope = view !== 'dashboard' && view !== 'monitor' && view !== 'machines';
+
+  if (needsToken) return <TokenGate />;
 
   return (
     <div className="flex min-h-screen">

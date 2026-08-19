@@ -1060,6 +1060,25 @@ describe('usage telemetry', () => {
    * Every `/api/*` call is recorded now, and polling noise is separated at READ
    * time by `route_class` instead, so the rows exist and the reader chooses.
    */
+  /**
+   * Privacy pin for the spec §7 claim "tokens are never logged". `recordCall`
+   * never receives headers at all — this proves that stays true once a
+   * request is actually gated by a token, not just in the unauthenticated
+   * default the other tests here run under.
+   */
+  it('never logs the Authorization header — the recorded path/query stay clean even when a token gates the request', async () => {
+    const app = buildApp(makeDeps({ atlasToken: 'sekret-token' }));
+    const res = await app.request('/api/search?q=hello', {
+      headers: { 'x-atlas-client': 'cli', authorization: 'Bearer sekret-token' },
+    });
+    expect(res.status).toBe(200); // the token was valid — this call was actually authorized
+    await flush();
+    expect(usageRows).toHaveLength(1);
+    const row = usageRows[0] as { path: string; query?: string };
+    expect(row.path).not.toMatch(/sekret-token|bearer/i);
+    expect(row.query ?? '').not.toMatch(/sekret-token|bearer/i);
+  });
+
   it('records unlabeled (UI) requests too, as an unknown client', async () => {
     await buildApp(makeDeps()).request('/api/search?q=hello');
     await flush();

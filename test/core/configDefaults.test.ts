@@ -95,7 +95,7 @@ describe('config/atlas.defaults.env', () => {
   it('leaves every secret empty, because secrets come from Doppler', () => {
     // A key committed here would be a key in git history. The slots exist so the
     // shape is documented; the values come from the shell at container creation.
-    for (const secret of ['EMBEDDINGS_API_KEY', 'LLM_API_KEY']) {
+    for (const secret of ['EMBEDDINGS_API_KEY', 'LLM_API_KEY', 'ATLAS_TOKEN']) {
       const m = new RegExp(`^${secret}=(.*)$`, 'm').exec(defaultsFile);
       expect(m, `${secret} should be present as an empty slot`).not.toBeNull();
       expect(m![1]!.trim()).toBe('');
