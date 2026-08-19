@@ -135,9 +135,21 @@ const schema = z.object({
    * safety check meant to prevent two stacks writing the same index at
    * once, so it belongs in a one-off shell/Doppler override for the boot
    * that needs it, never in the committed fleet-wide defaults.
+   *
+   * The documented value is `ATLAS_FORCE_ACTIVE=true` (spec §8, boot error
+   * text) — but this one flag ALSO accepts `1`/`0`, unlike every other
+   * boolean flag in this schema, which stay strict `true`/`false` only.
+   * This is the one place where a rejected value is actively dangerous: an
+   * operator overriding the guard is already mid-incident, reaching for the
+   * Unix-y `=1` habit, and a `ZodError` at that moment means the process
+   * never starts at all — the exact opposite of what the override was for.
+   * Belt and braces for an emergency flag.
    */
   atlasForceActive: z
-    .union([z.boolean(), z.enum(['true', 'false']).transform((v) => v === 'true')])
+    .union([
+      z.boolean(),
+      z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1'),
+    ])
     .default(false),
 });
 

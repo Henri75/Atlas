@@ -123,9 +123,19 @@ export async function guardTick(deps: GuardDeps): Promise<void> {
   const probe = deps.probe ?? probePeer;
   const warn = deps.warn ?? ((s: string) => console.warn(`[guard] ${s}`));
 
-  const results = await Promise.all(
-    deps.peers.map(async (peer) => ({ peer, result: await probe(peer.url, deps.token) })),
-  );
+  // `allSettled`, not `all`: the real `probePeer` never rejects (every
+  // branch is inside its own try/catch), but an injected `probe` override
+  // (tests, or a future caller) might. `Promise.all` would abort the whole
+  // tick on one rejection and silently discard every peer that had already
+  // resolved — a single flaky probe would blind the guard to a genuine live
+  // peer sitting right next to it. A rejection reads the same as any other
+  // non-answer: `unreachable`.
+  const settled = await Promise.allSettled(deps.peers.map((peer) => probe(peer.url, deps.token)));
+  const results = deps.peers.map((peer, i) => {
+    const outcome = settled[i]!;
+    const result: ProbeResult = outcome.status === 'fulfilled' ? outcome.value : { ok: false, reason: 'unreachable' };
+    return { peer, result };
+  });
 
   const live: string[] = [];
   let warned = false;
@@ -144,4 +154,67 @@ export async function guardTick(deps: GuardDeps): Promise<void> {
   }
 
   if (live.length > 0) deps.onConflict(live);
+}
+
+export interface BootGuardDeps {
+  self: string;
+  bootId: string;
+  peers: GuardPeer[];
+  token?: string;
+  /** The `ATLAS_FORCE_ACTIVE=true` escape hatch — proceed past a detected live peer instead of refusing to boot. */
+  forceActive: boolean;
+  probe?: typeof probePeer;
+  /** Shared with `guardTick`'s own token-mismatch warning. Defaults to `console.warn`. */
+  warn?: (s: string) => void;
+  /** Defaults to `console.error`. Injectable so tests can assert the refusal message without real stderr noise. */
+  error?: (s: string) => void;
+  /** Defaults to `process.exit`. Injectable so tests can assert a refusal without killing the test runner. */
+  exit?: (code: number) => void;
+}
+
+/**
+ * The boot-time half of the single-active guard (spec §8): one guard pass
+ * BEFORE the listener binds. A detected live peer refuses the boot —
+ * unless `forceActive` is set, in which case it's logged and boot proceeds.
+ * Legacy mode (no peers) is a no-op.
+ *
+ * Pulled out of `main.ts` specifically so this decision is unit-testable
+ * without booting the whole process (Postgres, Redis, BullMQ, embedder
+ * resolution): a review caught `ATLAS_FORCE_ACTIVE` throwing a `ZodError`
+ * before `main()` even ran, and the reason it slipped through 1224 green
+ * tests is that nothing exercised this branch directly — only the schema.
+ */
+export async function runBootGuard(deps: BootGuardDeps): Promise<void> {
+  if (deps.peers.length === 0) return; // legacy mode: guard never runs
+
+  const warn = deps.warn ?? ((s: string) => console.warn(`[guard] ${s}`));
+  const error = deps.error ?? ((s: string) => console.error(s));
+  const exit = deps.exit ?? ((code: number) => process.exit(code));
+
+  let live: string[] = [];
+  await guardTick({
+    self: deps.self,
+    bootId: deps.bootId,
+    peers: deps.peers,
+    token: deps.token,
+    onConflict: (names) => {
+      live = names;
+    },
+    warn,
+    probe: deps.probe,
+  });
+
+  if (live.length === 0) return;
+
+  if (!deps.forceActive) {
+    error(
+      `[api] REFUSING TO START — live Atlas instance already running on: ${live.join(', ')}. ` +
+        'Run `make down` on one of them before starting this one ' +
+        '(or set ATLAS_FORCE_ACTIVE=true to override — emergency use only).',
+    );
+    exit(1);
+    return;
+  }
+
+  warn(`ATLAS_FORCE_ACTIVE=true — starting anyway despite live peer(s): ${live.join(', ')}`);
 }

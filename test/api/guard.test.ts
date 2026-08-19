@@ -1,6 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { guardTick, probePeer } from '../../packages/api/src/guard.js';
+import { guardTick, probePeer, runBootGuard } from '../../packages/api/src/guard.js';
 import { canonicalJson } from '../../packages/api/src/instance.js';
 import type { ProbeResult } from '../../packages/api/src/guard.js';
 
@@ -275,4 +275,159 @@ describe('guardTick', () => {
     });
     expect(onConflict).not.toHaveBeenCalled();
   }, 3000);
+
+  /**
+   * `Promise.all` would reject the WHOLE tick the instant any one probe
+   * rejects, discarding every already-resolved detection along with it — a
+   * single flaky probe (an injected override, or some future edge case)
+   * would blind the guard to a genuine live peer sitting right next to the
+   * one that threw. `Promise.allSettled` (guard.ts) treats a rejection the
+   * same as any other non-answer: `unreachable`, and the other peer's real
+   * result still stands.
+   */
+  it('a probe that rejects does not discard another peer\'s already-resolved live detection', async () => {
+    const onConflict = vi.fn();
+    const probe = vi.fn(async (url: string): Promise<ProbeResult> => {
+      if (url.includes('flaky')) throw new Error('boom — injected probe failure');
+      return { ok: true, machine: 'mac-mini', bootId: PEER_BOOT_ID, state: 'active' };
+    });
+
+    await guardTick({
+      self: 'nasta-mbp',
+      bootId: MY_BOOT_ID,
+      peers: [
+        { name: 'flaky-peer', url: 'http://flaky:8710/api/instance' },
+        { name: 'mac-mini', url: 'http://mac-mini:8710/api/instance' },
+      ],
+      token: TOKEN,
+      onConflict,
+      probe,
+    });
+
+    expect(onConflict).toHaveBeenCalledTimes(1);
+    expect(onConflict).toHaveBeenCalledWith(['mac-mini']);
+  });
+});
+
+describe('runBootGuard', () => {
+  it('no peers (legacy mode) → probe never called, no exit, no error', async () => {
+    const probe = vi.fn(async (): Promise<ProbeResult> => ({ ok: false, reason: 'unreachable' }));
+    const exit = vi.fn();
+    const error = vi.fn();
+
+    await runBootGuard({
+      self: 'nasta-mbp',
+      bootId: MY_BOOT_ID,
+      peers: [],
+      token: TOKEN,
+      forceActive: false,
+      probe,
+      exit,
+      error,
+    });
+
+    expect(probe).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('no live peer → boot proceeds, no exit, no error', async () => {
+    const probe = vi.fn(async (): Promise<ProbeResult> => ({ ok: false, reason: 'unreachable' }));
+    const exit = vi.fn();
+    const error = vi.fn();
+
+    await runBootGuard({
+      self: 'nasta-mbp',
+      bootId: MY_BOOT_ID,
+      peers: [{ name: 'mac-mini', url: 'http://mac-mini:8710/api/instance' }],
+      token: TOKEN,
+      forceActive: false,
+      probe,
+      exit,
+      error,
+    });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('live peer, forceActive false (default) → logs the exact remedy and exits(1)', async () => {
+    const probe = vi.fn(
+      async (): Promise<ProbeResult> => ({ ok: true, machine: 'mac-mini', bootId: PEER_BOOT_ID, state: 'active' }),
+    );
+    const exit = vi.fn();
+    const error = vi.fn();
+
+    await runBootGuard({
+      self: 'nasta-mbp',
+      bootId: MY_BOOT_ID,
+      peers: [{ name: 'mac-mini', url: 'http://mac-mini:8710/api/instance' }],
+      token: TOKEN,
+      forceActive: false,
+      probe,
+      exit,
+      error,
+    });
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]![0]).toContain('mac-mini');
+    expect(error.mock.calls[0]![0]).toContain('make down');
+    expect(error.mock.calls[0]![0]).toContain('ATLAS_FORCE_ACTIVE=true');
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  /**
+   * The review's core point: exercise the ACTUAL boot-check function with
+   * the flag set, not just the config schema in isolation — a live peer
+   * must not stop the boot when the operator has explicitly overridden it.
+   */
+  it('live peer, forceActive TRUE → boot proceeds past the detected peer: no exit, warns instead of erroring', async () => {
+    const probe = vi.fn(
+      async (): Promise<ProbeResult> => ({ ok: true, machine: 'mac-mini', bootId: PEER_BOOT_ID, state: 'active' }),
+    );
+    const exit = vi.fn();
+    const error = vi.fn();
+    const warn = vi.fn();
+
+    await runBootGuard({
+      self: 'nasta-mbp',
+      bootId: MY_BOOT_ID,
+      peers: [{ name: 'mac-mini', url: 'http://mac-mini:8710/api/instance' }],
+      token: TOKEN,
+      forceActive: true,
+      probe,
+      exit,
+      error,
+      warn,
+    });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain('mac-mini');
+    expect(warn.mock.calls[0]![0]).toContain('ATLAS_FORCE_ACTIVE=true');
+  });
+
+  it('hairpin at boot (peer answers with MY bootId) → boot proceeds regardless of forceActive', async () => {
+    const probe = vi.fn(
+      async (): Promise<ProbeResult> => ({ ok: true, machine: 'nasta-mbp', bootId: MY_BOOT_ID, state: 'active' }),
+    );
+    const exit = vi.fn();
+    const error = vi.fn();
+
+    await runBootGuard({
+      self: 'nasta-mbp',
+      bootId: MY_BOOT_ID,
+      peers: [{ name: 'nasta-mbp-stale-dns', url: 'http://stale:8710/api/instance' }],
+      token: TOKEN,
+      forceActive: false,
+      probe,
+      exit,
+      error,
+    });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
 });

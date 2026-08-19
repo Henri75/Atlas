@@ -115,3 +115,33 @@ describe('multi-machine config', () => {
     expect(parseConfig({}).atlasSelf).toBeUndefined();
   });
 });
+
+/**
+ * Regression coverage for a review finding (2026-08-19): the documented
+ * override value `ATLAS_FORCE_ACTIVE=true` worked, but the schema's enum
+ * only accepted exactly `'true'`/`'false'` — an operator typing the Unix-y
+ * `=1` (what the boot error text itself said before this fix) got a
+ * `ZodError` out of `getConfig()` before `main()` even ran, crashing the
+ * process instead of overriding the guard. This flag alone accepts `1`/`0`
+ * as a lenient belt-and-braces parse; every other boolean flag in the
+ * schema stays strict on purpose (see `config.ts`'s comment on why).
+ */
+describe('atlasForceActive — the emergency escape hatch accepts true/false AND 1/0', () => {
+  it('defaults to false when unset', () => {
+    expect(parseConfig({}).atlasForceActive).toBe(false);
+  });
+
+  it('"true" and "1" both yield true', () => {
+    expect(parseConfig({ ATLAS_FORCE_ACTIVE: 'true' }).atlasForceActive).toBe(true);
+    expect(parseConfig({ ATLAS_FORCE_ACTIVE: '1' }).atlasForceActive).toBe(true);
+  });
+
+  it('"false" and "0" both yield false', () => {
+    expect(parseConfig({ ATLAS_FORCE_ACTIVE: 'false' }).atlasForceActive).toBe(false);
+    expect(parseConfig({ ATLAS_FORCE_ACTIVE: '0' }).atlasForceActive).toBe(false);
+  });
+
+  it('does not throw on the documented value (this was the review-caught bug)', () => {
+    expect(() => parseConfig({ ATLAS_FORCE_ACTIVE: 'true' })).not.toThrow();
+  });
+});

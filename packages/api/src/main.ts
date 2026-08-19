@@ -24,7 +24,7 @@ import {
 import type { StorageUsage } from '@atlas/core';
 import type { EmbeddingProvider } from '@atlas/core';
 import { buildApp } from './app.js';
-import { guardTick } from './guard.js';
+import { guardTick, runBootGuard } from './guard.js';
 import { bootId, setConflicted } from './instance.js';
 
 /**
@@ -69,39 +69,21 @@ async function main() {
     : [];
   const guardWarn = (s: string) => console.warn(`[api] ${s}`);
 
-  if (guardPeers.length > 0) {
-    // One pass BEFORE the listener binds (spec §8: "at boot, probe peers — a
-    // live peer ⇒ refuse to start"). Deliberately run before the heavier
-    // boot work below (embedder resolution, Redis, BullMQ) so a doomed boot
-    // exits fast instead of standing all of that up first just to tear it
-    // down. `ATLAS_FORCE_ACTIVE=1` is the documented escape hatch — an
-    // emergency override, never something the committed defaults set.
-    let liveAtBoot: string[] = [];
-    await guardTick({
-      self: selfMachineName,
-      bootId,
-      peers: guardPeers,
-      token: cfg.atlasToken,
-      onConflict: (names) => {
-        liveAtBoot = names;
-      },
-      warn: guardWarn,
-    });
-
-    if (liveAtBoot.length > 0 && !cfg.atlasForceActive) {
-      console.error(
-        `[api] REFUSING TO START — live Atlas instance already running on: ${liveAtBoot.join(', ')}. ` +
-          'Run `make down` on one of them before starting this one ' +
-          '(or set ATLAS_FORCE_ACTIVE=1 to override — emergency use only).',
-      );
-      process.exit(1);
-    }
-    if (liveAtBoot.length > 0) {
-      console.warn(
-        `[api] ATLAS_FORCE_ACTIVE=1 — starting anyway despite live peer(s): ${liveAtBoot.join(', ')}`,
-      );
-    }
-  }
+  // One pass BEFORE the listener binds (spec §8: "at boot, probe peers — a
+  // live peer ⇒ refuse to start"). Deliberately run before the heavier boot
+  // work below (embedder resolution, Redis, BullMQ) so a doomed boot exits
+  // fast instead of standing all of that up first just to tear it down.
+  // `runBootGuard` (guard.ts) is a no-op when `guardPeers` is empty (legacy
+  // mode) and owns the `ATLAS_FORCE_ACTIVE=true` refusal/override decision —
+  // pulled out to its own testable function, see its doc comment.
+  await runBootGuard({
+    self: selfMachineName,
+    bootId,
+    peers: guardPeers,
+    token: cfg.atlasToken,
+    forceActive: cfg.atlasForceActive,
+    warn: guardWarn,
+  });
 
   // `installId` (spec §8): a settings-row identity, minted once and reused
   // across restarts — unlike `bootId` (instance.ts), which is per-process and
