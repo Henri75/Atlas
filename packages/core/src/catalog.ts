@@ -216,6 +216,36 @@ ALTER TABLE usage_reply ADD COLUMN IF NOT EXISTS attempts INT;
 ALTER TABLE usage_reply ADD COLUMN IF NOT EXISTS request_id TEXT;
 -- The monitor's hot query: one class, newest first.
 CREATE INDEX IF NOT EXISTS usage_log_class_at_idx ON usage_log (route_class, at DESC);
+
+-- Which machine a row was FIRST ingested from (spec §6: ingestion provenance,
+-- not presence). '' means "predates the machine model"; backfillMachine()
+-- rewrites it to the self machine name on the first multi-machine boot.
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS machine TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS machine TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS entries_machine ON entries (machine);
+
+-- One row per (project, machine) location. projects.root_path stays the SELF
+-- machine's path (spec §5); remote locations live only here.
+CREATE TABLE IF NOT EXISTS project_locations (
+  project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  machine TEXT NOT NULL,
+  root_path TEXT NOT NULL,
+  host_path TEXT NOT NULL DEFAULT '',
+  has_kdb BOOLEAN NOT NULL DEFAULT false,
+  seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (project_id, machine)
+);
+
+-- Per-machine sync health. status: never | ok | unreachable | error | running.
+CREATE TABLE IF NOT EXISTS machine_sync (
+  machine TEXT PRIMARY KEY,
+  last_attempt_at TIMESTAMPTZ,
+  last_success_at TIMESTAMPTZ,
+  status TEXT NOT NULL DEFAULT 'never',
+  bytes BIGINT,
+  duration_ms INT,
+  error TEXT
+);
 `;
 
 export interface ScanState {
@@ -336,6 +366,79 @@ export class Catalog {
       [p.slug, p.name, p.rootPath, p.hasKdb],
     );
     return r.rows[0].id;
+  }
+
+  async upsertProjectLocation(loc: { projectId: number; machine: string; rootPath: string; hostPath: string; hasKdb: boolean }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO project_locations (project_id, machine, root_path, host_path, has_kdb)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (project_id, machine) DO UPDATE
+         SET root_path = EXCLUDED.root_path, host_path = EXCLUDED.host_path,
+             has_kdb = EXCLUDED.has_kdb, seen_at = now()`,
+      [loc.projectId, loc.machine, loc.rootPath, loc.hostPath, loc.hasKdb],
+    );
+  }
+
+  async listProjectLocations(): Promise<Map<number, { machine: string; rootPath: string; hostPath: string; hasKdb: boolean }[]>> {
+    const r = await this.pool.query(
+      `SELECT project_id, machine, root_path, host_path, has_kdb FROM project_locations ORDER BY machine`,
+    );
+    const map = new Map<number, { machine: string; rootPath: string; hostPath: string; hasKdb: boolean }[]>();
+    for (const row of r.rows) {
+      const list = map.get(row.project_id) ?? [];
+      list.push({ machine: row.machine, rootPath: row.root_path, hostPath: row.host_path, hasKdb: row.has_kdb });
+      map.set(row.project_id, list);
+    }
+    return map;
+  }
+
+  /** First multi-machine boot: stamp pre-machine rows with the self machine. */
+  async backfillMachine(selfName: string): Promise<number> {
+    const a = await this.pool.query(`UPDATE entries SET machine = $1 WHERE machine = ''`, [selfName]);
+    const b = await this.pool.query(`UPDATE sessions SET machine = $1 WHERE machine = ''`, [selfName]);
+    return (a.rowCount ?? 0) + (b.rowCount ?? 0);
+  }
+
+  async recordSyncStart(machine: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO machine_sync (machine, last_attempt_at, status) VALUES ($1, now(), 'running')
+       ON CONFLICT (machine) DO UPDATE SET last_attempt_at = now(), status = 'running', error = NULL`,
+      [machine],
+    );
+  }
+
+  async recordSyncResult(machine: string, r: { status: 'ok' | 'unreachable' | 'error'; bytes?: number; durationMs?: number; error?: string }): Promise<void> {
+    if (r.status === 'ok') {
+      await this.pool.query(
+        `INSERT INTO machine_sync (machine, last_attempt_at, last_success_at, status, bytes, duration_ms)
+         VALUES ($1, now(), now(), 'ok', $2, $3)
+         ON CONFLICT (machine) DO UPDATE SET last_success_at = now(), status = 'ok',
+           bytes = EXCLUDED.bytes, duration_ms = EXCLUDED.duration_ms, error = NULL`,
+        [machine, r.bytes ?? null, r.durationMs ?? null],
+      );
+    } else {
+      await this.pool.query(
+        `INSERT INTO machine_sync (machine, last_attempt_at, status, error)
+         VALUES ($1, now(), $2, $3)
+         ON CONFLICT (machine) DO UPDATE SET status = $2, error = $3`,
+        [machine, r.status, r.error ?? null],
+      );
+    }
+  }
+
+  async listMachineSync(): Promise<{ machine: string; lastAttemptAt: string | null; lastSuccessAt: string | null; status: string; bytes: number | null; durationMs: number | null; error: string | null }[]> {
+    const r = await this.pool.query(
+      `SELECT machine, last_attempt_at, last_success_at, status, bytes, duration_ms, error FROM machine_sync ORDER BY machine`,
+    );
+    return r.rows.map((row) => ({
+      machine: row.machine,
+      lastAttemptAt: row.last_attempt_at ? new Date(row.last_attempt_at).toISOString() : null,
+      lastSuccessAt: row.last_success_at ? new Date(row.last_success_at).toISOString() : null,
+      status: row.status,
+      bytes: row.bytes,
+      durationMs: row.duration_ms,
+      error: row.error,
+    }));
   }
 
   /**
