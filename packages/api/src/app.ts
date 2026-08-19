@@ -569,7 +569,22 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     const { fleet, self } = deps.machines();
     if (!fleet) return c.json({ self, machines: [] });
     const sync = await deps.listMachineSync();
-    const syncByName = new Map(sync.map((s) => [s.machine, s]));
+    // Picked explicitly: the row also carries `machine`, which is redundant
+    // with the map key and not part of the documented wire shape — passing
+    // the row through whole would leak it onto every machine's `sync`.
+    const syncByName = new Map(
+      sync.map((s) => [
+        s.machine,
+        {
+          lastAttemptAt: s.lastAttemptAt,
+          lastSuccessAt: s.lastSuccessAt,
+          status: s.status,
+          bytes: s.bytes,
+          durationMs: s.durationMs,
+          error: s.error,
+        },
+      ]),
+    );
     return c.json({
       self,
       machines: fleet.machines.map((m) => ({

@@ -610,17 +610,35 @@ describe('api routes', () => {
       const app = buildApp(makeDeps({
         machines: () => fleetOf(),
         listMachineSync: async () => [
-          { machine: 'nasta-mbp', lastAttemptAt: null, lastSuccessAt: null, status: 'never', bytes: null, durationMs: null, error: null },
+          {
+            machine: 'nasta-mbp',
+            lastAttemptAt: '2026-08-19T12:00:00.000Z',
+            lastSuccessAt: '2026-08-19T12:00:05.000Z',
+            status: 'ok',
+            bytes: 4096,
+            durationMs: 5000,
+            error: null,
+          },
         ],
       }));
       const r = await app.request('/api/machines');
       expect(r.status).toBe(200);
       const body = await r.json();
       expect(body.self).toBe('nasta-mbp');
-      expect(body.machines[0].sync.status).toBe('never');
       expect(body.machines[0]).toMatchObject({
         name: 'nasta-mbp', address: '127.0.0.1', user: 'nasta',
         codeRoots: ['/x'], claudeProjects: '/y', enabled: true,
+      });
+      // Exact key set: the sync row also carries `machine` (redundant with the
+      // map key), which must NOT leak onto the wire — later tasks (CLI table,
+      // UI Machines page) consume this shape verbatim.
+      expect(body.machines[0].sync).toEqual({
+        lastAttemptAt: '2026-08-19T12:00:00.000Z',
+        lastSuccessAt: '2026-08-19T12:00:05.000Z',
+        status: 'ok',
+        bytes: 4096,
+        durationMs: 5000,
+        error: null,
       });
     });
 
