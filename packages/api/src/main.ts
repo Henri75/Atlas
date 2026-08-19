@@ -209,6 +209,16 @@ async function main() {
      * 'manual' and 'reconcile'. The work has to happen over there: adoption
      * reads ~/.claude/projects, which is mounted into the indexer only.
      */
+    // Same queue, same job shape the scheduler's own cadence enqueues
+    // (scheduler.ts:213) — a fixed jobId per machine means this collapses
+    // onto a pending scheduled sync instead of racing it.
+    triggerSync: async (machine: string) => {
+      await queue.add(
+        `sync/${machine}`,
+        { sync: machine },
+        { jobId: `sync--${machine}`, removeOnComplete: true, removeOnFail: true },
+      );
+    },
     usagePageSize: cfg.usagePageSize,
     enqueueAdoption: async () => {
       await queue.add(

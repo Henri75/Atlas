@@ -43,6 +43,13 @@ export interface ApiDeps {
   /** Enqueue scan jobs; returns number of jobs enqueued. */
   enqueueScan: (opts: { project?: string; full?: boolean }) => Promise<number>;
   /**
+   * Enqueue an immediate sync for one fleet machine — the same job shape
+   * (`{ sync: <machine> }`, jobId `sync--<machine>`) the scheduler's own
+   * cadence enqueues (scheduler.ts), so an admin-triggered sync collapses
+   * onto a pending scheduled one instead of racing it.
+   */
+  triggerSync: (machine: string) => Promise<void>;
+  /**
    * Ask the indexer to recompute the adoption report. Separate from enqueueScan
    * because it is not a scan: it reads transcripts this container cannot see and
    * writes a cached report, rather than touching the index at all.
@@ -894,6 +901,24 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
       full: body.full === true,
     });
     return c.json({ enqueued });
+  });
+
+  /**
+   * Immediate sync for one fleet machine (spec §4) — the scheduler already
+   * syncs every enabled non-self machine on its own cadence; this is the
+   * "don't wait for the tick" button. Unknown/disabled machines are rejected
+   * before anything is enqueued rather than left for the worker to skip
+   * silently (scheduler.ts / main.ts's `data.sync` branch).
+   */
+  app.post('/api/admin/sync', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const machine = typeof body.machine === 'string' ? body.machine : '';
+    const { fleet } = deps.machines();
+    const m = fleet?.machines.find((x) => x.name === machine);
+    if (!m) return c.json({ error: `unknown machine "${machine}"` }, 404);
+    if (!m.enabled) return c.json({ error: `machine "${machine}" is disabled` }, 400);
+    await deps.triggerSync(machine);
+    return c.json({ enqueued: true }, 202);
   });
 
   app.get('/api/admin/errors', async (c) =>

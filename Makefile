@@ -36,7 +36,7 @@ COMPOSE := docker compose --env-file config/atlas.defaults.env $(if $(DOTENV),--
 # probe — otherwise every `make ps` would make a Doppler API round-trip.
 DOPPLER = $(shell doppler run --command 'true' >/dev/null 2>&1 && echo 'doppler run --')
 
-.PHONY: help install build test lint up down restart restart-build embedder-warm logs ps reindex reindex-full smoke config-check print-compose cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal
+.PHONY: help install build test lint up down restart restart-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal
 
 # The harness runs on the host, not in a container: a variant has to be a config
 # object rather than an image rebuild for an A/B to be possible at all. Ports come
@@ -63,6 +63,7 @@ lint: ## typecheck all packages
 	npm run lint
 
 up: ## build images and start the full stack
+	@bash scripts/preflight.sh
 	$(DOPPLER) $(COMPOSE) up -d --build
 	@echo "UI    → http://127.0.0.1:$${UI_PORT:-8712}"
 	@echo "API   → http://127.0.0.1:$${API_PORT:-8710}/api/health"
@@ -163,6 +164,10 @@ reindex: ## trigger an incremental reindex now
 
 reindex-full: ## reprocess everything from scratch
 	curl -s -X POST http://127.0.0.1:$${API_PORT:-8710}/api/admin/reindex -H 'content-type: application/json' -d '{"full":true}' && echo
+
+sync-now: ## Trigger an immediate sync of MACHINE=<name> (404s on unknown; the scheduler tick also syncs on its own cadence)
+	@test -n "$(MACHINE)" || (echo "usage: make sync-now MACHINE=<name>" && exit 1)
+	curl -s -X POST http://127.0.0.1:$${API_PORT:-8710}/api/admin/sync -H 'content-type: application/json' -d '{"machine":"$(MACHINE)"}' && echo
 
 smoke: ## poke health + search endpoints of a running stack
 	bash scripts/smoke.sh

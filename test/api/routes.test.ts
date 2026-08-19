@@ -154,6 +154,7 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     backlogMatchThreshold: 0.5,
     usagePageSize: 100,
     enqueueScan: vi.fn(async () => 1),
+    triggerSync: vi.fn(async () => {}),
     enqueueAdoption: vi.fn(async () => 1),
     vectorCount: async () => 123,
     meta: () => ({ embedder: 'ollama/nomic-embed-text', collection: 'kdbscope_x' }),
@@ -653,6 +654,74 @@ describe('api routes', () => {
       const app = buildApp(makeDeps({ machines: () => ({ fleet: null, self: 'local' }) }));
       const body = await (await app.request('/api/machines')).json();
       expect(body).toEqual({ self: 'local', machines: [] });
+    });
+  });
+
+  describe('POST /api/admin/sync', () => {
+    const fleetWith = (machines: { name: string; enabled: boolean }[]) => ({
+      fleet: {
+        machines: machines.map((m) => ({
+          name: m.name,
+          address: '127.0.0.1',
+          user: 'nasta',
+          codeRoots: ['/x'],
+          claudeProjects: '/y',
+          enabled: m.enabled,
+          remoteRsyncPath: '/opt/homebrew/bin/rsync',
+          slugOverrides: {},
+        })),
+        sync: { intervalMin: 10, excludes: [] },
+      },
+      self: 'nasta-mbp',
+    });
+
+    it('404s on an unknown machine', async () => {
+      const deps = makeDeps({ machines: () => fleetWith([{ name: 'nasta-mbp', enabled: true }]) });
+      const res = await buildApp(deps).request('/api/admin/sync', {
+        method: 'POST',
+        body: JSON.stringify({ machine: 'nope' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(404);
+      expect(deps.triggerSync).not.toHaveBeenCalled();
+    });
+
+    it('400s on a disabled machine', async () => {
+      const deps = makeDeps({
+        machines: () => fleetWith([{ name: 'mac-mini', enabled: false }]),
+      });
+      const res = await buildApp(deps).request('/api/admin/sync', {
+        method: 'POST',
+        body: JSON.stringify({ machine: 'mac-mini' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(400);
+      expect(deps.triggerSync).not.toHaveBeenCalled();
+    });
+
+    it('202s and enqueues on an enabled machine', async () => {
+      const deps = makeDeps({
+        machines: () => fleetWith([{ name: 'mac-mini', enabled: true }]),
+      });
+      const res = await buildApp(deps).request('/api/admin/sync', {
+        method: 'POST',
+        body: JSON.stringify({ machine: 'mac-mini' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ enqueued: true });
+      expect(deps.triggerSync).toHaveBeenCalledWith('mac-mini');
+    });
+
+    /** Legacy single-machine mode (no config/machines.yaml): no fleet to sync. */
+    it('404s in legacy mode (no fleet)', async () => {
+      const deps = makeDeps({ machines: () => ({ fleet: null, self: 'local' }) });
+      const res = await buildApp(deps).request('/api/admin/sync', {
+        method: 'POST',
+        body: JSON.stringify({ machine: 'anything' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(404);
     });
   });
 

@@ -56,6 +56,9 @@ const CONSUMED_BY_COMPOSE = new Set([
   'CLAUDE_PROJECTS_HOST',
   'CODE_ROOT',
   'CLAUDE_PROJECTS_DIR',
+  // Interpolated straight into the indexer's `/keys` bind-mount source
+  // (docker-compose.yml) — nothing in packages/core reads it directly.
+  'ATLAS_KEYS_DIR',
 ]);
 
 /**
