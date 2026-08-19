@@ -20,6 +20,15 @@ const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
  */
 export const DEFAULT_SYNC_INTERVAL_MIN = 10;
 
+/**
+ * Default `remoteRsyncPath` — Homebrew's rsync on Apple Silicon. Stock macOS
+ * `/usr/bin/rsync` is openrsync and must never be used (spec §4). Exported so
+ * the CLI's add-machine openrsync preflight (`packages/cli/src/rsyncPreflight.ts`)
+ * checks the exact path a new entry will actually get, instead of a second,
+ * independently-drifting literal.
+ */
+export const DEFAULT_REMOTE_RSYNC_PATH = '/opt/homebrew/bin/rsync';
+
 const machineSchema = z.object({
   name: z.string().regex(NAME_RE, 'name must match [a-z0-9][a-z0-9-]*'),
   address: z.string().min(1).refine((a) => !a.endsWith('.local'), {
@@ -30,7 +39,7 @@ const machineSchema = z.object({
   claudeProjects: z.string().min(1),
   enabled: z.boolean().default(true),
   /** Stock macOS /usr/bin/rsync is openrsync — never use it (spec §4). */
-  remoteRsyncPath: z.string().default('/opt/homebrew/bin/rsync'),
+  remoteRsyncPath: z.string().default(DEFAULT_REMOTE_RSYNC_PATH),
   /** dir-basename → slug, for unrelated same-named projects (spec §5). */
   slugOverrides: z.record(z.string(), z.string()).default({}),
 });

@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { Command } from 'commander';
 import {
   AtlasResolveError,
+  DEFAULT_REMOTE_RSYNC_PATH,
   loadMachinesFileIfPresent,
   machinesFilePath,
   probeInstance,
@@ -15,6 +16,7 @@ import {
 } from '@atlas/core';
 import { get, post, postStream, qs } from './api.js';
 import { addMachine, removeMachine } from './machinesFile.js';
+import { checkRemoteRsync, type Exec } from './rsyncPreflight.js';
 import {
   SOURCE_BADGE,
   bold,
@@ -211,12 +213,68 @@ machinesCmd
     [] as string[],
   )
   .requiredOption('--claude-projects <path>', 'that machine\'s ~/.claude/projects directory')
+  .option(
+    '--skip-preflight',
+    'DANGEROUS: skip the reachability + openrsync check. Only for pre-provisioning a ' +
+      'machine that is not reachable yet — until you verify it manually (docs/multi-machine.md ' +
+      'step 4), its first sync job may fail outright, or run against openrsync with different ' +
+      '--delete/filter semantics than the sync engine assumes.',
+  )
   .action(async (o) => {
     if (!o.codeRoot.length) {
       console.error(red('at least one --code-root is required'));
       process.exitCode = 1;
       return;
     }
+
+    if (o.skipPreflight) {
+      console.warn(
+        yellow(
+          `⚠️  --skip-preflight: enrolling "${o.name}" WITHOUT verifying it is reachable or that its ` +
+            `rsync is GNU rsync (not openrsync). Verify manually before the first sync: ` +
+            `ssh ${o.user}@${o.address} ${DEFAULT_REMOTE_RSYNC_PATH} --version`,
+        ),
+      );
+    } else {
+      const preflightExec: Exec = async (cmd, args, opts) => {
+        const r = await execFile(cmd, args, { timeout: opts?.timeoutMs });
+        return { stdout: r.stdout };
+      };
+      const result = await checkRemoteRsync(preflightExec, {
+        user: o.user,
+        address: o.address,
+        remoteRsyncPath: DEFAULT_REMOTE_RSYNC_PATH,
+      });
+      if (!result.ok) {
+        if (result.reason === 'unreachable') {
+          console.error(
+            red(
+              `cannot reach ${o.user}@${o.address} (${result.detail}) — the machine must be reachable ` +
+                `to enroll (ssh-keyscan needs it too, see docs/multi-machine.md step 3). Use ` +
+                `--skip-preflight only to pre-provision a machine that is genuinely offline right now.`,
+            ),
+          );
+        } else if (result.reason === 'openrsync') {
+          console.error(
+            red(
+              `${o.address}'s rsync is openrsync ("${result.detail}") — stock macOS /usr/bin/rsync, ` +
+                `whose --delete/filter semantics differ from GNU rsync (docs/multi-machine.md step 4). ` +
+                `Run "brew install rsync" on ${o.address}, then retry.`,
+            ),
+          );
+        } else {
+          console.error(
+            red(
+              `could not verify ${o.address}'s rsync — unexpected "--version" output ` +
+                `("${result.detail}"), refusing as suspect (docs/multi-machine.md step 4).`,
+            ),
+          );
+        }
+        process.exitCode = 1;
+        return;
+      }
+    }
+
     const path = machinesFilePath();
     const docText = existsSync(path) ? readFileSync(path, 'utf8') : 'machines: []\n';
     try {

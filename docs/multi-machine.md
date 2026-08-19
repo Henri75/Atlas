@@ -47,17 +47,27 @@ host unless stated otherwise.
    ssh-keyscan <addr> >> config/known_hosts
    ```
 
-4. **openrsync preflight.** Stock macOS `/usr/bin/rsync` is openrsync
-   (protocol 29) and will not work as the sync target — verify Homebrew's
-   rsync is what a non-interactive SSH session actually finds:
+4. **openrsync check.** Stock macOS `/usr/bin/rsync` is openrsync (protocol
+   29) and its `--delete`/filter semantics differ from GNU rsync's, which is
+   why the sync engine always requires Homebrew's rsync (`--rsync-path`,
+   `packages/indexer/src/sync.ts`). `atlas machines add` (next step) now runs
+   this check itself, automatically, before writing the entry — refusing to
+   enroll a machine that is unreachable, running openrsync, or returns
+   unparseable `--version` output — so this is no longer a step you have to
+   remember to do by hand. The same command is still useful to run yourself
+   first (or to debug a refusal), since it's exactly what the CLI runs:
    ```bash
-   ssh <user>@<addr> /opt/homebrew/bin/rsync --version
+   ssh -o BatchMode=yes -o ConnectTimeout=5 <user>@<addr> /opt/homebrew/bin/rsync --version
    ```
-   If that fails (missing) or the output says `openrsync` instead of a
-   version line naming `protocol version 3x`, install the real thing on the
-   remote: `brew install rsync`. (`remoteRsyncPath` in machines.yaml is
-   configurable per machine if Homebrew lives somewhere else, e.g. Intel Macs
-   at `/usr/local/bin/rsync`.)
+   A refusal because the real thing isn't there: `brew install rsync` on the
+   remote, then retry `atlas machines add`. (`remoteRsyncPath` in
+   machines.yaml is configurable per machine after enrollment if Homebrew
+   lives somewhere else, e.g. Intel Macs at `/usr/local/bin/rsync` — the
+   preflight itself always checks the Apple Silicon default path.)
+   **`--skip-preflight`** bypasses the check with a loud warning — only for
+   pre-provisioning a machine that is genuinely not reachable yet; until you
+   verify it by hand, its first sync job may fail outright, or succeed
+   against openrsync with different semantics than the sync engine assumes.
 
 5. **Add the machines.yaml entry** — with the machine's REAL paths, never
    invented ones:
@@ -65,7 +75,8 @@ host unless stated otherwise.
    atlas machines add --name m4max --address 192.168.1.30 --user serge \
      --code-root "/Users/serge/CODING" --claude-projects "/Users/serge/.claude/projects"
    ```
-   (`--code-root` repeats for more than one tree.) This edits
+   (`--code-root` repeats for more than one tree.) Runs the openrsync check
+   from step 4 first and refuses to proceed if it fails. This edits
    `config/machines.yaml` on the checkout — commit and push it (and
    `config/known_hosts` from step 3) so every machine sees the same fleet.
    `enabled` defaults to `true`; for a staged rollout, hand-edit it to
