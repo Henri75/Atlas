@@ -8,6 +8,8 @@ import {
   DOCS_PARSER_VERSION,
   GIT_LOG_FORMAT,
   VectorStore,
+  applyIdentity,
+  assignOccurrenceOrdinals,
   chunk,
   deterministicUuid,
   distillClaudeJsonl,
@@ -229,6 +231,11 @@ async function scanKdb(
             modifiedAt: new Date(stat.mtimeMs).toISOString(),
           }).map((e) => ({ ...e, sourceType: 'kdb_report' as const }));
       }
+      // Per file, before insert: syncBacklogMeta (below) recomputes dedupKey
+      // from this SAME entries array to UPDATE existing rows BY KEY, so it
+      // must see identity too — mutating in place here covers both callers.
+      applyIdentity(entries, { rootPath: job.rootPath });
+      assignOccurrenceOrdinals(entries);
       const inserted = await deps.catalog.insertEntries(projectId, entries);
       if (f.sourceType === 'kdb_backlog') {
         await deps.catalog.syncBacklogMeta(projectId, entries);
@@ -292,6 +299,7 @@ async function scanClaude(
         const { entries, meta } = distillClaudeJsonl(lines, {
           projectSlug: job.projectSlug, sourcePath: path, sessionId,
         });
+        applyIdentity(entries, { claudeDirName: basename(dir) });
         const inserted = await deps.catalog.insertEntries(projectId, entries);
         indexed += await indexEntries(deps, inserted, (c) => progress?.({ file: path, chunks: c }));
 
@@ -349,6 +357,7 @@ async function scanGit(
     return 0;
   }
   const entries = parseGitLog(stdout, { projectSlug: job.projectSlug, repoPath: job.rootPath });
+  applyIdentity(entries, { rootPath: job.rootPath });
   const inserted = await deps.catalog.insertEntries(projectId, entries);
   const indexed = await indexEntries(deps, inserted, (c) =>
     progress?.({ file: job.rootPath, chunks: c }),
@@ -394,6 +403,7 @@ async function scanDocs(
           modifiedAt: new Date(stat.mtimeMs).toISOString(),
           archived,
         });
+        applyIdentity(entries, { rootPath: job.rootPath });
         const inserted = await deps.catalog.insertEntries(projectId, entries);
         indexed += await indexEntries(deps, inserted, (c) => progress?.({ file: path, chunks: c }));
         await deps.catalog.setScanState(projectId, 'doc', path, {
