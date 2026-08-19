@@ -11,6 +11,7 @@ describe('rsync args', () => {
     expect(args).toContain('--partial-dir=.rsync-partial');
     expect(args).not.toContain('--partial');
     expect(args).toContain('--delete');
+    expect(args).toContain('--stats'); // makes transferred bytes parseable for machine_sync
     expect(args).toContain('--rsync-path=/opt/homebrew/bin/rsync');
     expect(args.some((a) => a === '--exclude=node_modules')).toBe(true);
     expect(args.some((a) => a === '--exclude=.env*')).toBe(true);
