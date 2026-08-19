@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import {
   discoverProjects,
   listDocFiles,
@@ -65,6 +65,59 @@ describe('discoverProjects', () => {
   it('tolerates a root that does not exist', () => {
     const projects = discoverProjects([{ container: root }, { container: '/no/such/root' }]);
     expect(projects.length).toBeGreaterThan(0);
+  });
+});
+
+describe('discoverProjects — machine-aware roots', () => {
+  const machRoot = mkdtempSync(join(tmpdir(), 'kdbscope-mach-'));
+  afterAll(() => rmSync(machRoot, { recursive: true, force: true }));
+
+  const rootA = join(machRoot, 'rootA');
+  const rootB = join(machRoot, 'rootB');
+  const rootC = join(machRoot, 'rootC');
+  mkdirSync(join(rootA, 'Notes/kdb'), { recursive: true });
+  mkdirSync(join(rootA, 'Notes/Sub/kdb'), { recursive: true });
+  mkdirSync(join(rootB, 'Notes/kdb'), { recursive: true });
+  mkdirSync(join(rootC, 'Notes/kdb'), { recursive: true });
+
+  it('tags each discovered project with its root machine, and maps the host path', () => {
+    const projects = discoverProjects([
+      { container: rootA, host: '/Users/serge/CODING', machine: 'm1' },
+    ]);
+    const notes = projects.find((p) => p.slug === 'notes')!;
+    expect(notes.machine).toBe('m1');
+    expect(notes.hostPath).toBe('/Users/serge/CODING/Notes');
+  });
+
+  it('applies slugOverrides to a top-level dir but not to a nested project', () => {
+    const projects = discoverProjects([
+      { container: rootA, slugOverrides: { Notes: 'm1-notes' } },
+    ]);
+    expect(projects.find((p) => p.name === 'Notes')?.slug).toBe('m1-notes');
+    expect(projects.find((p) => p.name === 'Notes/Sub')?.slug).toBe('notes-sub');
+  });
+
+  it('keeps both projects when the same slug is discovered on two different machines', () => {
+    const projects = discoverProjects([
+      { container: rootA, machine: 'm1' },
+      { container: rootB, machine: 'm2' },
+    ]);
+    const notesEntries = projects.filter((p) => p.slug === 'notes');
+    expect(notesEntries).toHaveLength(2);
+    expect(notesEntries.map((p) => p.machine).sort()).toEqual(['m1', 'm2']);
+  });
+
+  it('first-wins and warns once (naming both paths) on the same slug twice on one machine', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const projects = discoverProjects([{ container: rootA }, { container: rootC }]);
+    const notesEntries = projects.filter((p) => p.slug === 'notes');
+    expect(notesEntries).toHaveLength(1);
+    expect(notesEntries[0]!.rootPath).toBe(join(rootA, 'Notes'));
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const message = warnSpy.mock.calls[0]!.join(' ');
+    expect(message).toContain(join(rootA, 'Notes'));
+    expect(message).toContain(join(rootC, 'Notes'));
+    warnSpy.mockRestore();
   });
 });
 
