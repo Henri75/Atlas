@@ -36,7 +36,7 @@ COMPOSE := docker compose --env-file config/atlas.defaults.env $(if $(DOTENV),--
 # probe — otherwise every `make ps` would make a Doppler API round-trip.
 DOPPLER = $(shell doppler run --command 'true' >/dev/null 2>&1 && echo 'doppler run --')
 
-.PHONY: help install build test lint up down restart restart-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose cli-link connect-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal
+.PHONY: help install build test lint up down restart restart-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose cli-link connect-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal help-audit
 
 # The harness runs on the host, not in a container: a variant has to be a config
 # object rather than an image rebuild for an A/B to be possible at all. Ports come
@@ -48,7 +48,7 @@ EVAL_ENV := DATABASE_URL=postgres://kdbscope:kdbscope@127.0.0.1:$${POSTGRES_PORT
 EVAL := npm run --silent build -w packages/core -w packages/eval >/dev/null && $(EVAL_ENV) node packages/eval/dist/main.js
 
 help: ## list targets
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | grep -v '## @internal' | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 install: ## install workspace dependencies
 	npm install
@@ -175,9 +175,12 @@ smoke: ## poke health + search endpoints of a running stack
 config-check: ## assert compose resolves configuration the way the design assumes
 	bash scripts/config-sources.sh
 
+help-audit: ## Fail when a Make target's description is missing (mark deliberate exceptions @internal) — §3 guard
+	npx vitest run test/makefile_help.test.ts
+
 # Not in help: an accessor so scripts can test the *real* compose invocation
 # rather than restating its flags and drifting from it.
-print-compose:
+print-compose: ## @internal
 	@echo '$(COMPOSE)'
 
 cli-link: ## make the `atlas` command available on this machine

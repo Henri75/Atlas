@@ -47,6 +47,9 @@ bar while the rest fills in.
 ## Architecture (7 containers)
 
 ```
+other machines ──ssh-pull──► remote_mirror
+                                   │
+                                   ▼
 ~/.claude  ──ro──►┌─────────┐   BullMQ    ┌────────┐
 __CODING NEW ─ro─►│ indexer │◄──(redis)──►│  api   │◄── ui (nginx :8712)
                   └────┬────┘             └───┬────┘◄── atlas CLI (host)
@@ -55,6 +58,17 @@ __CODING NEW ─ro─►│ indexer │◄──(redis)──►│  api   │�
                   │ qdrant  │            │ postgres │
                   └─────────┘            └──────────┘
 ```
+
+**Multi-machine (optional).** Atlas can index more than one Mac: one active
+instance holds the index and SSH-pulls every other configured machine's code
++ Claude transcripts into the `remote_mirror` volume above, on a cadence
+(`sync.intervalMin`, default 10 min) — the scanners read it exactly like a
+local checkout, machine-blind. A cross-machine-safe dedup key means
+git-synced content (and Migration-Assistant-copied transcripts) collapses
+onto one entry instead of double-indexing. See
+[`docs/multi-machine.md`](docs/multi-machine.md) for enrolling a machine,
+moving the stack, and opening LAN access; single-machine installs are
+unaffected — nothing here activates without a `config/machines.yaml`.
 
 - **Hybrid search**: dense embeddings + hash-based sparse (BM25/IDF in Qdrant),
   fused with RRF. Degrades gracefully: hybrid → sparse-only → Postgres FTS.
@@ -112,6 +126,12 @@ make smoke     # health-checks a running stack
 
 ## Security posture
 
-No authentication by design: every port binds to `127.0.0.1` only and the tool is
-single-user local. Do not expose the ports beyond localhost without adding auth.
-Project mounts are read-only; the stack cannot modify indexed repositories.
+Single-user local by default: every port binds to `127.0.0.1` only, no
+authentication required. Opting into LAN access (`ATLAS_BIND=0.0.0.0`, for
+multi-machine setups) **requires** `ATLAS_TOKEN` — a non-loopback bind with
+no token refuses to boot rather than serve unauthenticated. Qdrant, Redis
+and Postgres never leave loopback regardless of `ATLAS_BIND`. The threat
+model is a trusted home LAN over cleartext HTTP, not a hostile network —
+see [`docs/multi-machine.md`](docs/multi-machine.md#lan-access-setup) for
+setup and the documented Tailscale/TLS upgrade path. Project mounts are
+read-only; the stack cannot modify indexed repositories.

@@ -3,6 +3,7 @@
 # Configuration
 
 ## Revision History
+- 2026-08-19 22:01 UTC — Multi-machine: `ATLAS_SELF`, `ATLAS_MACHINES_FILE`, `ATLAS_BIND`, `ATLAS_TOKEN`, `ATLAS_KEYS_DIR`, `ATLAS_FORCE_ACTIVE`, and `config/machines.yaml`. See `docs/multi-machine.md` for the operator runbook.
 - 2026-07-30 00:45 UTC — Qdrant memory layout documented: dense originals and the sparse index moved to disk, why `always_ram` is not the flag that does that, and why `rescore` must be set explicitly once they are.
 - 2026-07-29 18:40 UTC — Configuration sources restructured: `config/atlas.defaults.env` is committed and authoritative, Doppler supplies secrets, `.env` is an optional override that is absent by default. `make env` removed.
 - 2026-07-29 17:50 UTC — `KDB_ALLOW_EMBEDDER_DOWNGRADE` and *Why `auto` will refuse to start*: the probe retries, and a fallback can no longer silently migrate the index.
@@ -272,7 +273,30 @@ We trim, strip control characters, and truncate to 128 chars before sending —
 mirroring G2P's own server-side sanitising — so a client id read off the
 dashboard always matches what is configured here.
 
-## Ports (all bound to 127.0.0.1)
+## Multi-machine
+
+Full design: `docs/superpowers/specs/2026-08-19-multi-machine-design.md`.
+Operator runbook (enrolling a machine, moving the stack, the migration
+rollout, LAN access): [`multi-machine.md`](multi-machine.md).
+
+| Var | Default | Meaning |
+|---|---|---|
+| `ATLAS_MACHINES_FILE` | `/config/machines.yaml` (container) | Path to the fleet SSoT. Host-side tools (CLI, `atlas-connect`) resolve the repo-relative `config/machines.yaml` instead when unset — leave this unset on the host. Absent file = legacy single-machine mode. |
+| `ATLAS_SELF` | unset | Which `config/machines.yaml` entry is **this** host. Belongs in the per-machine gitignored `.env`, never in the committed defaults. Boot fails loudly if a machines file exists and this is unset or names no entry — no hostname guessing. |
+| `ATLAS_BIND` | `127.0.0.1` | Host bind address for `api`/`mcp`/`ui` (also drives their `docker-compose.yml` port bindings). Set `0.0.0.0` to serve the LAN — **only** together with `ATLAS_TOKEN`: a non-loopback bind with no token refuses to boot (fail closed). `qdrant`/`redis`/`postgres` stay `127.0.0.1` regardless. |
+| `ATLAS_TOKEN` | unset | Secret bearer token required on every `api`/`mcp` route once `ATLAS_BIND` is non-loopback (the liveness routes and `/api/instance` are exempt). Via Doppler or `.env`, never committed. Host clients read it from `~/.atlas/credentials`, written once per machine by `atlas connect --token <token>`. |
+| `ATLAS_KEYS_DIR` | `${HOME}/.atlas/keys` | Host directory holding the dedicated `atlas_sync` SSH keypair, bind-mounted read-only into `indexer` at `/keys`. Directory (not file) mount on purpose — Docker turns a missing bind-mount *file* into a directory, which would hand ssh a directory as an identity file; `make up`'s preflight creates it and warns if the key itself is missing while a remote is enabled. Compose-consumed only — never read by `packages/core`. |
+| `ATLAS_FORCE_ACTIVE` | `false` | Emergency escape hatch for the boot-time single-active guard: a live peer normally refuses to let this instance start. Deliberately absent from the committed defaults — it overrides a safety check meant to prevent two stacks writing the same index at once, so it belongs in a one-off shell/Doppler override for the boot that needs it. Documented value is `true`/`false`; also lenient-accepts `1`/`0`, unlike every other boolean flag here, because an operator reaching for this is already mid-incident. |
+
+`config/machines.yaml` (committed, mounted read-only into `indexer`/`api`) is
+the fleet itself — name (frozen once indexed data exists), address, SSH
+user, code roots, Claude projects dir, `enabled`, plus per-machine
+`remoteRsyncPath`/`slugOverrides` overrides and a top-level `sync.intervalMin`/
+`sync.excludes`. Edited directly or via `atlas machines add|remove|list`; the
+UI Machines page is read-only in v1. See `multi-machine.md` for the
+add-machine runbook and `packages/core/src/machines.ts` for the schema.
+
+## Ports (all bound to `127.0.0.1`, or `ATLAS_BIND` for `api`/`mcp`/`ui` — see *Multi-machine* above)
 
 | Var | Default | Service |
 |---|---|---|

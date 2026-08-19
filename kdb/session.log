@@ -290,3 +290,11 @@
 
 **AI Response Summary:**
 > Added the two routes to packages/api/src/app.ts, extended ApiDeps with `machines`/`listMachineSync`/`listProjectLocations`, and wired real deps in main.ts using the same self-name resolution the indexer scheduler already established. TDD: wrote the brief's tests plus a legacy-mode test and a locations test first (RED), implemented, went GREEN; full suite 1015 tests green, tsc clean across both tsconfigs.
+---
+### [2026-08-19 22:06 UTC]
+
+**User Prompt Summary:**
+> Task 27 (final task of the multi-machine feature): write the ops runbooks, ADR, doc updates (incl. two deferred stale-auth-prose fixes), a new `make help-audit` guard for CLAUDE.md §3's "help is generated" rule, the feature-level KDB closure, then a full audit and one commit+push.
+
+**AI Response Summary:**
+> Added `test/makefile_help.test.ts` + a `help-audit` Make target (mutation-verified twice: a stripped description and a stripped `## @internal` marker both went RED, then were restored); wrote `docs/multi-machine.md` (add-machine, moving-the-stack, migration-rollout + wedge-recovery, LAN-access runbooks, known limitations) and `docs/adr/20260819-multi-machine-one-active-instance.md`; updated `docs/architecture.md` (new Machines section), `docs/configuration.md` (new env vars + machines.yaml), `docs/api.md`/`README.md` (fixed the stale no-auth prose, README diagram gained the mirror), `docs/index.md`; appended this feature's KDB closure (component entry, changelog COMPLETED line, this session block, backlog lines for the curated deferred follow-ups) and rebuilt the `*.md` views. Full audit green: 1289/1289 tests, lint clean, help-audit clean.

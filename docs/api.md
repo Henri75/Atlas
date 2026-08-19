@@ -3,6 +3,7 @@
 # REST API
 
 ## Revision History
+- 2026-08-19 22:01 UTC — Multi-machine: auth is no longer "none" — bearer-token auth (`ATLAS_TOKEN`) is required on every route (`/api/health` and `/api/instance` excepted) once `ATLAS_BIND` leaves loopback. Localhost-only, no-`ATLAS_BIND` installs are unaffected. See `docs/multi-machine.md#lan-access-setup`.
 - 2026-07-30 00:40 UTC — **Gateway headers are the source of truth for the served model.** The buffered ask path (`/api/ask`, which MCP uses) read `model` from the response *body*, which echoes the requested name — so every model substitution was recorded as the model we asked for. It now reads `x-g2p-reply-model` like the streaming path always did, via a shared `readGatewayMeta`, and also records `x-g2p-reply-attempts` and `x-request-id` in new nullable `usage_reply.attempts` / `request_id` columns. Substitution is judged in one place (`isSubstitution`) on the bare model name, so a vendor prefix (`google/x` vs `x`) is not reported as a swap. Verified live: the same route recorded `gemini-3-flash-preview` before and `google/gemini-3-flash-preview` after.
 - 2026-07-30 00:25 UTC — **Monitor filters, insights, cursor paging**: `/api/admin/usage/calls` gains `hideNoise`, returns `facets` (counts by client and by tool over the filtered set) plus `nextCursor`, and pages by keyset `cursorAt`+`cursorId` rather than `offset` — the log grows while you read it, so an offset page is measured from a top that has moved. New `GET /api/admin/usage/insights?days=N`: outcome rates per mode (searches returning nothing, asks with no sources, aborted, degraded/failed), a log-scaled latency histogram, which models actually answered, weekday spread, most-repeated questions.
 - 2026-07-29 21:20 UTC — **Usage monitoring**: **every** `/api/*` request is now logged (previously only `x-atlas-client` callers), with a new `route_class` column classifying the route (`query|read|write|status|admin|other`) so polling is separated at read time instead of discarded. Search and ask store what they replied — answer, result count, top hits, served model, tokens, TTFT — in a new 1:1 `usage_reply` table; `/api/ask/stream` records itself on close/cancel, so an aborted answer is kept at `status 499` with its partial text and a real duration. New routes: `GET /api/admin/usage/calls`, `GET /api/admin/usage/calls/:id`, `GET /api/admin/adoption`, `POST /api/admin/adoption/refresh`. `/api/admin/usage` gains `p50Ms`/`p95Ms`, per-tool percentiles, `byClass` and `byHour` (additively — existing fields unchanged). See `docs/adr/20260729-usage-telemetry-and-reply-capture.md`.
@@ -17,7 +18,12 @@
 - 2026-07-09 01:50 UTC — Streaming Ask (SSE), source deep links, richer /api/stats.
 - 2026-07-09 01:20 UTC — Initial version.
 
-Base: `http://127.0.0.1:8710`. JSON everywhere. No auth (localhost-only tool).
+Base: `http://127.0.0.1:8710`. JSON everywhere. Localhost-only by default, no
+auth required. Once `ATLAS_BIND` is set to serve the LAN (multi-machine
+setups), every route requires `Authorization: Bearer <ATLAS_TOKEN>` except
+`GET /api/health` and `GET /api/instance` — see
+[Configuration → Multi-machine](configuration.md#multi-machine) and
+[`multi-machine.md`](multi-machine.md#lan-access-setup).
 
 | Method | Path | Params / body | Returns |
 |---|---|---|---|
