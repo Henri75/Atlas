@@ -1,4 +1,6 @@
-<!-- GENERATED VIEW — do not edit. Rebuilt from backlog.log by bin/kdb_rebuild.mjs -->
+# KDB Backlog
+
+> Generated from `kdb/backlog.log`. Do not edit directly.
 
 - [2026-07-09] [kdbscope] Ask mode: stream the LLM answer token-by-token (SSE) instead of waiting for the full completion
 - [2026-07-09] [kdbscope] Embeddings: prefer Ollama by default; auto-pull nomic-embed-text; document the speedup
@@ -64,3 +66,6 @@ SEVERE — a 2-second probe can replace the whole index with an inferior one. au
 - [2026-08-19] [atlas] config/machines.yaml has no per-machine port fields — every fleet machine must run api on the default 8710, since the resolver and single-active guard probe RESOLVER_API_PORT by convention, not a configured value (spec/Task 24 limitation; documented in docs/multi-machine.md#known-limitations).
 - [2026-08-19] [atlas] docs/api.md's endpoint table never gained rows for GET /api/machines, GET /api/instance, or POST /api/admin/sync (added by Tasks 5/15/22) — found while fixing the stale no-auth prose in Task 27; out of that task's scope, worth a follow-up doc pass.
 - [2026-08-19] [atlas] Sync-job-side first-run rsync-version re-check is not implemented — a machine added with --skip-preflight, or whose remote rsync later changes/degrades to openrsync, has no runtime defense; only atlas machines add checks it, once, at enroll time.
+- [2026-08-19] [atlas] Dashboard conflicted banner not built — spec §8 defines a UI surface for the single-active guard's `conflicted` state (X-Atlas-State / `/api/instance`), but the plan never scheduled it; today a split-brain is visible only via `atlas which` or the CLI's resolver error.
+- [2026-08-19] [atlas] Mirror-size dashboard card not built — spec §4/§9 call for showing per-machine mirror bytes (machine_sync.bytes is already recorded and served on /api/machines), but the plan never scheduled the UI surface; only the CLI table shows it.
+- [2026-08-20] [atlas] Surface divergence warnings in the dashboard UI too (spec §5 names dashboard + atlas machines + index_errors; /api/machines carries divergences[] since c216f92, only the CLI renders it)
