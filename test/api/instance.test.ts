@@ -208,6 +208,18 @@ describe('canonicalJson / proofFor stability', () => {
   it('a changed VALUE still changes the canonical form (order isn\'t the only thing signed)', () => {
     expect(canonicalJson({ a: 1 })).not.toBe(canonicalJson({ a: 2 }));
   });
+
+  /**
+   * `JSON.stringify(undefined)` silently returns the 5-char text
+   * `undefined`, not valid JSON — a caller signing an accidentally
+   * incomplete payload should see that at the call site, not sign a
+   * corrupt-but-consistent proof.
+   */
+  it('throws on an undefined value instead of silently emitting invalid JSON', () => {
+    expect(() => canonicalJson(undefined)).toThrow(/undefined/i);
+    expect(() => canonicalJson({ machine: 'm', installId: undefined })).toThrow(/undefined/i);
+    expect(() => canonicalJson([1, undefined, 3])).toThrow(/undefined/i);
+  });
 });
 
 describe('X-Atlas-Machine / X-Atlas-State headers (default state)', () => {

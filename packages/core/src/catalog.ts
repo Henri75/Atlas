@@ -1852,6 +1852,35 @@ export class Catalog {
     return r.rows[0]?.value ?? null;
   }
 
+  /**
+   * Atomic get-or-create: mints `value` only if `key` is absent, and never
+   * overwrites an existing row — unlike `setSetting`, a last-writer-wins
+   * upsert. Needed for identities that must stay stable once minted (e.g.
+   * `install_id`, spec §8): a check-then-act `getSetting` + conditional
+   * `setSetting` races two concurrent boots into minting two different
+   * values, and whichever `setSetting` lands last silently wins — leaving
+   * the other boot reporting an unpersisted value until its next restart.
+   *
+   * `ON CONFLICT (key) DO NOTHING RETURNING value` returns the row it just
+   * inserted, or no row when a concurrent writer's insert already won —
+   * Postgres's unique index serializes the two, so by the time ours sees
+   * the conflict the other's row is already committed and visible. The
+   * follow-up SELECT then reads whatever IS durably there, which is always
+   * the value whichever writer actually won, never a value this call
+   * minted and immediately discarded.
+   */
+  async ensureSetting(key: string, value: string): Promise<string> {
+    const inserted = await this.pool.query(
+      `INSERT INTO settings (key, value, updated_at) VALUES ($1,$2,now())
+       ON CONFLICT (key) DO NOTHING
+       RETURNING value`,
+      [key, value],
+    );
+    if (inserted.rows[0]) return inserted.rows[0].value;
+    const existing = await this.pool.query('SELECT value FROM settings WHERE key=$1', [key]);
+    return existing.rows[0].value;
+  }
+
   async logError(projectId: number | null, path: string, stage: string, message: string) {
     await this.pool.query(
       'INSERT INTO index_errors (project_id, path, stage, message) VALUES ($1,$2,$3,$4)',

@@ -203,6 +203,41 @@ describe('machine accessors', () => {
     expect(params).toContain('');
   });
 
+  /**
+   * spec §8: `install_id` must stay stable once minted, which rules out a
+   * check-then-act `getSetting` + `setSetting` pair (two concurrent boots
+   * could each mint a different id, and `setSetting`'s last-writer-wins
+   * upsert silently picks one). `ensureSetting` is the atomic replacement:
+   * `INSERT ... ON CONFLICT (key) DO NOTHING RETURNING value`.
+   */
+  it('ensureSetting inserts with ON CONFLICT (key) DO NOTHING and returns the inserted value on a fresh key', async () => {
+    const { cat, q } = stubbed();
+    q.mockResolvedValueOnce({ rows: [{ value: 'minted-uuid' }] });
+    const result = await cat.ensureSetting('install_id', 'minted-uuid');
+    expect(q.mock.calls[0]![0]).toMatch(/ON CONFLICT \(key\) DO NOTHING/);
+    expect(q.mock.calls[0]![0]).toMatch(/RETURNING value/);
+    expect(q.mock.calls[0]![1]).toEqual(['install_id', 'minted-uuid']);
+    expect(result).toBe('minted-uuid');
+    // Only one query when the INSERT itself returns a row — no fallback SELECT needed.
+    expect(q).toHaveBeenCalledTimes(1);
+  });
+
+  it('ensureSetting falls back to the existing row when the INSERT returns nothing (a concurrent writer already won)', async () => {
+    const { cat, q } = stubbed();
+    // First call: the INSERT lost the race (ON CONFLICT DO NOTHING → no row).
+    q.mockResolvedValueOnce({ rows: [] });
+    // Second call: the follow-up SELECT reads whatever the winner persisted.
+    q.mockResolvedValueOnce({ rows: [{ value: 'other-boots-uuid' }] });
+    const result = await cat.ensureSetting('install_id', 'this-boots-uuid');
+    // The value returned is the durably-persisted one, NOT the freshly-minted
+    // candidate this call offered — that's the whole point of the guard.
+    expect(result).toBe('other-boots-uuid');
+    expect(result).not.toBe('this-boots-uuid');
+    expect(q).toHaveBeenCalledTimes(2);
+    expect(q.mock.calls[1]![0]).toMatch(/SELECT value FROM settings WHERE key=\$1/);
+    expect(q.mock.calls[1]![1]).toEqual(['install_id']);
+  });
+
   it('listMachineSync returns camelCase rows with ISO dates', async () => {
     const { cat, q } = stubbed();
     q.mockResolvedValueOnce({

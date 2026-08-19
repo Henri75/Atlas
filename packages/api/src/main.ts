@@ -58,14 +58,14 @@ async function main() {
   // never persisted. The restore runbook deliberately re-mints this on a
   // volume copy, which is why `bootId` (not this) is the load-bearing
   // self-recognition check for the single-active guard.
-  let installIdRow = await catalog.getSetting('install_id');
-  if (!installIdRow) {
-    installIdRow = randomUUID();
-    await catalog.setSetting('install_id', installIdRow);
-  }
-  // `const` (not the `let` above) so the closure below type-checks as
-  // `string`, not `string | null` — TS can't narrow a captured `let`.
-  const installId: string = installIdRow;
+  //
+  // `ensureSetting` (not getSetting+setSetting): a check-then-act pair races
+  // two concurrent boots into minting two different ids, with the later
+  // `setSetting` silently winning and the other boot reporting its own
+  // unpersisted id until restart — undermining installId's stable-identity
+  // role in the cloned-volume story. `ensureSetting` mints atomically and
+  // both boots converge on whichever value actually won.
+  const installId = await catalog.ensureSetting('install_id', randomUUID());
 
   // Prefer the collection the indexer registered (survives provider races).
   const published = await catalog.getSetting('active_collection');

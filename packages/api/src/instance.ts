@@ -52,8 +52,18 @@ export function conflictPeers(): string[] {
  * data always canonicalizes to the same string no matter what order it was
  * built in. The HMAC proof below signs THIS string, never
  * `JSON.stringify`'s insertion-order-dependent one.
+ *
+ * Every field passed in must be defined. `JSON.stringify(undefined)` returns
+ * the literal 5-char text `undefined` — not valid JSON, and silently so — so
+ * this throws instead: a caller signing an accidentally-incomplete payload
+ * (e.g. a field left off during a refactor) should see that at the call
+ * site, not sign a corrupt-but-internally-consistent proof that later fails
+ * a legitimate verifier for reasons neither side can see.
  */
 export function canonicalJson(value: unknown): string {
+  if (value === undefined) {
+    throw new TypeError('canonicalJson: undefined is not valid JSON — every field must be defined');
+  }
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   const keys = Object.keys(value as Record<string, unknown>).sort();
