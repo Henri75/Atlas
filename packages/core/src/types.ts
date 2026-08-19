@@ -36,6 +36,19 @@ export interface Project {
   discoveredAt: string;
 }
 
+/**
+ * Machine-independent identity triple for dedup key v3 (spec §6): `scope` is
+ * the project slug (or the literal `claude` for transcripts), `path` is the
+ * source path normalized relative to a known root, `ref` is a content-derived
+ * locator (sha, anchor, or `occ:<k>` occurrence ordinal — never a raw line
+ * number, which shifts under concurrent appends).
+ */
+export interface EntryIdentity {
+  scope: string;
+  path: string;
+  ref: string;
+}
+
 /** Browsable unit: one changelog line, one session block, one commit, one doc section… */
 export interface Entry {
   projectSlug: string;
@@ -59,7 +72,7 @@ export interface Entry {
    * pipeline never ran identity normalization — `Catalog.dedupKey` then falls
    * back to the legacy v2-shaped key from `projectSlug`/`sourcePath`/`sourceRef`.
    */
-  identity?: { scope: string; path: string; ref: string };
+  identity?: EntryIdentity;
 }
 
 export interface StoredEntry extends Entry {

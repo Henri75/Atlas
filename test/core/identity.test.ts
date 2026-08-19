@@ -65,6 +65,9 @@ describe('v3 identity', () => {
     const kdbEntries = parseChangelog(`${kdbLine}\n`, CTX);
     applyIdentity(kdbEntries, { rootPath: '/data/code/kdb' });
     const kdbEntry = kdbEntries[0]!;
+    // Pin the actual expected value — the agreement check below only proves
+    // the two twins match each other, not that either is right.
+    expect(kdbEntry.identity).toEqual({ scope: 'kdb', path: 'kdb/changelog.log', ref: 'line:1' });
     expect(
       identityFromStored(
         {
@@ -90,6 +93,7 @@ describe('v3 identity', () => {
     applyIdentity(docEntries, { rootPath: '/data/code/kdb' });
     const docEntry = docEntries.find((e) => e.sourceRef === '#anchor-section')!;
     expect(docEntry).toBeDefined();
+    expect(docEntry.identity).toEqual({ scope: 'kdb', path: 'docs/readme.md', ref: '#anchor-section' });
     expect(
       identityFromStored(
         {
@@ -112,6 +116,7 @@ describe('v3 identity', () => {
     const gitEntries = parseGitLog(gitRaw, { projectSlug: 'kdb', repoPath: '/data/code/kdb' });
     applyIdentity(gitEntries, { rootPath: '/data/code/kdb' });
     const gitEntry = gitEntries[0]!;
+    expect(gitEntry.identity).toEqual({ scope: 'kdb', path: '.', ref: 'abc123def456' });
     expect(
       identityFromStored(
         {
@@ -139,6 +144,11 @@ describe('v3 identity', () => {
     );
     applyIdentity(claudeEntries, {});
     const claudeEntry = claudeEntries[0]!;
+    expect(claudeEntry.identity).toEqual({
+      scope: 'claude',
+      path: '-Users-nasta---CODING-NEW-kdb/abc123.jsonl',
+      ref: '',
+    });
     expect(
       identityFromStored(
         {
@@ -153,5 +163,54 @@ describe('v3 identity', () => {
         ['/data/claude/projects'],
       ),
     ).toEqual(claudeEntry.identity);
+  });
+
+  it('relativeTo: a trailing-slash root still resolves the repo root to "."', () => {
+    // Every git commit hits sourcePath === repoPath — a naive prefix check
+    // ('/repo/' vs '/repo') would demote it to the full absolute path instead.
+    const e: Entry = {
+      projectSlug: 'kdb', sourceType: 'git_commit', title: 'init', body: 'init',
+      sourcePath: '/data/code/kdb', sourceRef: 'sha1',
+    };
+    applyIdentity([e], { rootPath: '/data/code/kdb/' });
+    expect(e.identity).toEqual({ scope: 'kdb', path: '.', ref: 'sha1' });
+  });
+
+  it('relativeTo: an empty root falls back to the full stored path', () => {
+    const e: Entry = { projectSlug: 'x', sourceType: 'doc', title: 't', body: 'b', sourcePath: '/weird/path.md' };
+    applyIdentity([e], { rootPath: '' });
+    expect(e.identity).toEqual({ scope: 'x', path: '/weird/path.md', ref: '' });
+  });
+
+  it('identityFromStored: an empty root (ghost project) never de-slashes the stored path', () => {
+    // A ghost project's root_path is '' — the naive `${root}/` prefix was
+    // '/', which every absolute path starts with, so '/weird/path.md' would
+    // silently become 'weird/path.md': a de-slashed string that can collide
+    // with a genuinely relative stored path (§6.3's no-false-collision rule).
+    const id = identityFromStored(
+      { source_type: 'doc', source_path: '/weird/path.md', source_ref: null, title: 't', body: 'b' },
+      'ghost-project',
+      [''],
+      [],
+    );
+    expect(id).toEqual({ scope: 'ghost-project', path: '/weird/path.md', ref: '' });
+  });
+
+  it('ordinals: dedup key multiset is stable under reordering of identical lines (interleaved re-scan)', () => {
+    // Simulates a git merge interleaving two machines' append-only tails:
+    // relative order among duplicates of the SAME line is preserved even
+    // when unrelated lines land between them, so ordinals — and therefore
+    // dedup keys — must not depend on absolute position.
+    const lineA = '- [DONE] - [2026-08-01] - [Fix] - [core] - [reorder case A]';
+    const lineB = '- [DONE] - [2026-08-02] - [Fix] - [core] - [reorder case B]';
+    const orderABA = parseChangelog(`${lineA}\n${lineB}\n${lineA}\n`, CTX);
+    const orderBAA = parseChangelog(`${lineB}\n${lineA}\n${lineA}\n`, CTX);
+    applyIdentity(orderABA, { rootPath: '/data/code/kdb' });
+    applyIdentity(orderBAA, { rootPath: '/data/code/kdb' });
+    assignOccurrenceOrdinals(orderABA);
+    assignOccurrenceOrdinals(orderBAA);
+    const keysABA = orderABA.map((e) => Catalog.dedupKey(e)).sort();
+    const keysBAA = orderBAA.map((e) => Catalog.dedupKey(e)).sort();
+    expect(keysABA).toEqual(keysBAA);
   });
 });

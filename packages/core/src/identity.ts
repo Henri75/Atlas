@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import type { Entry } from './types.js';
+import type { Entry, EntryIdentity } from './types.js';
 import { contentHash } from './ids.js';
 
 /**
@@ -17,10 +17,25 @@ export const DEDUP_SCHEME = 'v3';
 
 const LINE_REF = /^line:\d+$/;
 
+/**
+ * Shared by both `applyIdentity` and `identityFromStored` so they can't
+ * independently drift on the root-relative branch.
+ *
+ * An empty/falsy `root` returns null rather than matching every path as a
+ * prefix — `''.endsWith('/')` is false, so the naive `${root}/` prefix was
+ * `'/'`, which every absolute path starts with; a ghost project's
+ * `root_path=''` would then strip the leading slash off any stored path
+ * (`/weird/path.md` → `weird/path.md`), a de-slashed string that can
+ * genuinely collide with a real relative path — exactly what §6.3's
+ * "no false collision" guarantee forbids. Trailing slashes on `root` are
+ * normalized before the equality test so `/repo` and `/repo/` agree on the
+ * repo-root case (`sourcePath === repoPath`) that every git commit hits.
+ */
 function relativeTo(p: string, root: string): string | null {
-  if (p === root) return '.';
-  const prefix = root.endsWith('/') ? root : `${root}/`;
-  return p.startsWith(prefix) ? p.slice(prefix.length) : null;
+  if (!root) return null; // '' would match everything as a prefix
+  const r = root.replace(/\/+$/, '');
+  if (p === r) return '.';
+  return p.startsWith(`${r}/`) ? p.slice(r.length + 1) : null;
 }
 
 /** Spec §6 table. Mutates entries in place (they are fresh from a parser). */
@@ -33,7 +48,7 @@ export function applyIdentity(entries: Entry[], ctx: { rootPath?: string; claude
       e.identity = { scope: 'claude', path: `${dir}/${basename(e.sourcePath)}`, ref: e.sourceRef ?? '' };
       continue;
     }
-    const rel = ctx.rootPath ? relativeTo(e.sourcePath, ctx.rootPath) : null;
+    const rel = relativeTo(e.sourcePath, ctx.rootPath ?? '');
     e.identity = {
       scope: e.projectSlug,
       path: rel ?? e.sourcePath,          // conservative fallback (spec §6.3)
@@ -42,32 +57,53 @@ export function applyIdentity(entries: Entry[], ctx: { rootPath?: string; claude
   }
 }
 
-/** Replace unstable line refs with content-occurrence ordinals (spec §6). */
+/**
+ * Replace unstable line refs with content-occurrence ordinals (spec §6).
+ *
+ * MUST run after `applyIdentity` — it rewrites `identity.ref` in place, so an
+ * entry without `identity` yet has nothing to rewrite. A `line:<n>`-ref entry
+ * missing `identity` throws rather than silently skipping: a silent no-op
+ * here would leave that entry's `identity.ref` as the raw, position-shifting
+ * line number, quietly disabling cross-machine dedup for it instead of
+ * failing loudly at the call site that got the order wrong.
+ */
 export function assignOccurrenceOrdinals(entries: Entry[]): void {
   const counts = new Map<string, number>();
   for (const e of entries) {
-    if (!e.identity || !LINE_REF.test(e.sourceRef ?? '')) continue;
-    const k = `${e.identity.path}${e.title}${contentHash(e.body)}`;
+    if (!LINE_REF.test(e.sourceRef ?? '')) continue;
+    if (!e.identity) {
+      throw new Error(
+        `assignOccurrenceOrdinals: entry with sourceRef "${e.sourceRef}" has no identity — call applyIdentity first`,
+      );
+    }
+    const k = `${e.identity.path}\x1f${e.title}\x1f${contentHash(e.body)}`;
     const n = (counts.get(k) ?? 0) + 1;
     counts.set(k, n);
     e.identity.ref = `occ:${n}`;
   }
 }
 
+/** The last two `/`-segments of `path` — always the `<dir>/<file>` shape. */
+function lastTwoSegments(path: string): string {
+  const parts = path.split('/').filter(Boolean);
+  return parts.slice(-2).join('/');
+}
+
 /**
  * Recover a stored claude transcript's `<dirName>/<fileName>` identity path.
  * Strips whichever of `claudeDirs` prefixes the stored path (each is a full
- * claude-projects-root path, self or remote); when none matches (an unknown
- * or moved mount), falls back to the last two path segments — still
- * `<dirName>/<fileName>` shaped, just not verified against a known root.
+ * claude-projects-root path, self or remote), then reduces to the last two
+ * segments of what's left — so a match always emits exactly `<dir>/<file>`,
+ * same shape as its `applyIdentity` twin, even if the matched prefix left
+ * more than two segments behind. When no prefix matches (an unknown or moved
+ * mount) the same last-two-segments reduction applies to the full path.
  */
 function claudeRelativePath(sourcePath: string, claudeDirs: string[]): string {
   for (const dir of claudeDirs) {
     const prefix = dir.endsWith('/') ? dir : `${dir}/`;
-    if (sourcePath.startsWith(prefix)) return sourcePath.slice(prefix.length);
+    if (sourcePath.startsWith(prefix)) return lastTwoSegments(sourcePath.slice(prefix.length));
   }
-  const parts = sourcePath.split('/').filter(Boolean);
-  return parts.slice(-2).join('/');
+  return lastTwoSegments(sourcePath);
 }
 
 /**
@@ -87,7 +123,7 @@ export function identityFromStored(
   projectSlug: string,
   roots: string[],
   claudeDirs: string[],
-): { scope: string; path: string; ref: string } {
+): EntryIdentity {
   if (row.source_type === 'claude_session') {
     return {
       scope: 'claude',
