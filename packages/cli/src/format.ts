@@ -62,3 +62,17 @@ export function duration(totalSeconds: number | null | undefined): string {
 export function hr(): string {
   return dim('─'.repeat(Math.min(process.stdout.columns ?? 80, 100)));
 }
+
+/** machine_sync.status values → color. Anything else (or absent) reads as 'never'. */
+const SYNC_STATUS_COLOR: Record<string, (s: string) => string> = {
+  ok: green,
+  running: cyan,
+  unreachable: yellow,
+  error: red,
+};
+
+/** Colored sync-status badge for `atlas machines`; unknown/absent renders dim 'never'. */
+export function syncBadge(status?: string | null): string {
+  const s = status ?? 'never';
+  return (SYNC_STATUS_COLOR[s] ?? dim)(s);
+}

@@ -397,6 +397,33 @@ describe('api routes', () => {
     );
   });
 
+  /**
+   * Gap found while wiring the MCP atlas_ask `machine` param (Task 19):
+   * GET /api/search already forwards `machine` (see 'passes the machine
+   * filter through' above), but POST /api/ask built its filters object
+   * without it — the field existed on SearchFilters and flowed straight
+   * through Ask.ask -> SearchService.search, only the route dropped it.
+   */
+  it('POST /api/ask forwards machine to the search filter', async () => {
+    const ask = {
+      ask: vi.fn(async (_q: string, _f: Record<string, unknown>) => ({
+        answer: 'a', sources: [], model: 'm', degraded: false,
+      })),
+    };
+    const app = buildApp(makeDeps({ ask: ask as any }));
+    await app.request('/api/ask', {
+      method: 'POST',
+      body: JSON.stringify({ question: 'q', machine: 'nasta-mbp' }),
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(ask.ask).toHaveBeenCalledWith(
+      'q',
+      expect.objectContaining({ machine: 'nasta-mbp' }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it('POST /api/ask requires question', async () => {
     const res = await buildApp(makeDeps()).request('/api/ask', {
       method: 'POST',

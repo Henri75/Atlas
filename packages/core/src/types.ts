@@ -167,6 +167,12 @@ export interface SearchHit {
   sourcePath: string;
   sourceRef?: string;
   /**
+   * First-ingested-from machine (spec §6: provenance, not presence — shared
+   * git-synced content belongs to whichever machine synced first). Absent
+   * for a legacy pre-machine-model entry that hasn't been backfilled yet.
+   */
+  machine?: string;
+  /**
    * Doc staleness: 'archived' (archive-style path, downranked) or 'aging'
    * (old but untouched, label only). Absent = active or not a doc.
    */

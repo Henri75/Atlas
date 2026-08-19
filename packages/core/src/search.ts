@@ -203,6 +203,8 @@ export class SearchService {
         occurredAt: row.occurred_at?.toISOString?.() ?? undefined,
         sourcePath: row.source_path,
         sourceRef: row.source_ref ?? undefined,
+        // `||`, not `??` — machine is NOT NULL DEFAULT '' (rowToEntry's convention).
+        machine: row.machine || undefined,
         ...(row.meta?.docStatus === 'archived' ? { docStatus: 'archived' as const } : {}),
       });
     }

@@ -136,11 +136,48 @@ describe('machine accessors', () => {
     expect(q.mock.calls[0]![1]).toContain('nasta-mbp');
   });
 
-  it('ftsSearch omits the machine clause when no machine filter is given', async () => {
+  it('ftsSearch omits the machine WHERE clause when no machine filter is given', async () => {
     const { cat, q } = stubbed();
     q.mockResolvedValueOnce({ rows: [] });
     await cat.ftsSearch('bug', {});
-    expect(q.mock.calls[0]![0]).not.toMatch(/e\.machine/);
+    // The SELECT list still carries e.machine (ENTRY_COLUMNS, for hydration
+    // provenance) even with no filter — only the WHERE-clause equality is
+    // conditional on one being given.
+    expect(q.mock.calls[0]![0]).not.toMatch(/AND e\.machine = \$/);
+  });
+
+  /**
+   * Carried-forward prerequisite from Task 18's review: getEntries/ftsSearch
+   * did not SELECT `machine` at all, so a hydrated search hit's `.machine`
+   * was undefined on every response even though decoration would pass it
+   * through. Both now go through ENTRY_COLUMNS, which carries it.
+   */
+  it('getEntries selects e.machine so hydration can carry provenance through', async () => {
+    const { cat, q } = stubbed();
+    q.mockResolvedValueOnce({ rows: [] });
+    await cat.getEntries([1]);
+    expect(q.mock.calls[0]![0]).toMatch(/e\.machine/);
+  });
+
+  it('ftsSearch returns machine on each hit, normalizing the \'\' sentinel to absent', async () => {
+    const { cat, q } = stubbed();
+    q.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 1, source_type: 'doc', component: null, session_id: null, title: 't',
+          body: 'b', occurred_at: new Date('2026-08-01T00:00:00Z'), source_path: '/x',
+          source_ref: null, meta: null, machine: 'nasta-mbp', slug: 'p', rank: 0.5,
+        },
+        {
+          id: 2, source_type: 'doc', component: null, session_id: null, title: 't2',
+          body: 'b2', occurred_at: new Date('2026-08-01T00:00:00Z'), source_path: '/y',
+          source_ref: null, meta: null, machine: '', slug: 'p', rank: 0.4,
+        },
+      ],
+    });
+    const hits = await cat.ftsSearch('bug', {});
+    expect(hits[0]!.machine).toBe('nasta-mbp');
+    expect(hits[1]!.machine).toBeUndefined();
   });
 
   /**

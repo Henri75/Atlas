@@ -1,6 +1,10 @@
 #!/usr/bin/env node
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { get, post, postStream, qs } from './api.js';
+import { addMachine, removeMachine } from './machinesFile.js';
 import {
   SOURCE_BADGE,
   bold,
@@ -14,6 +18,7 @@ import {
   magenta,
   num,
   red,
+  syncBadge,
   yellow,
 } from './format.js';
 
@@ -74,12 +79,16 @@ program
   .option('-s, --source <types>', 'one source type or a comma-separated subset (doc,kdb_component)')
   .option('-c, --component <name>')
   .option('-k, --kind <kind>', 'insight | plan | summary | action | prompt | response')
+  .option(
+    '-m, --machine <name>',
+    'first ingested from — shared git-synced content belongs to whichever machine synced first',
+  )
   .option('-n, --limit <n>', 'max results', '10')
   .option('--doc-status <s>', 'active (exclude archived docs) | archived (only them)')
   .description('hybrid search across all indexed history')
   .action(async (words, o) => {
     const r = await get(
-      `/api/search${qs({ q: words.join(' '), project: o.project, source: o.source, component: o.component, kind: o.kind, docStatus: o.docStatus, limit: o.limit })}`,
+      `/api/search${qs({ q: words.join(' '), project: o.project, source: o.source, component: o.component, kind: o.kind, machine: o.machine, docStatus: o.docStatus, limit: o.limit })}`,
     );
     out(r, () => {
       if (r.degraded) console.log(yellow(`⚠ ${degradedReason(r.mode)}\n`));
@@ -141,6 +150,131 @@ program
         );
       }
     });
+  });
+
+/**
+ * config/machines.yaml — resolved relative to the CLI's own file location,
+ * not the process cwd: `atlas` is npm-linked from this repo (bin ->
+ * dist/main.js), so import.meta.url always points inside the checkout
+ * regardless of where it's invoked from. dist/main.js -> packages/cli/dist,
+ * three levels up is the repo root. ATLAS_MACHINES_FILE overrides this when
+ * set — but note the in-container default (config/atlas.defaults.env) is a
+ * *container* path (/config/machines.yaml); on the host, leave it unset.
+ */
+function machinesFilePath(): string {
+  if (process.env.ATLAS_MACHINES_FILE) return process.env.ATLAS_MACHINES_FILE;
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+  return join(repoRoot, 'config', 'machines.yaml');
+}
+
+const machinesCmd = program
+  .command('machines')
+  .description('fleet status and config (config/machines.yaml) — see subcommands');
+
+machinesCmd
+  .command('list', { isDefault: true })
+  .description('fleet status: sync health, last success, bytes per machine (from /api/machines)')
+  .action(async () => {
+    const r = await get('/api/machines');
+    out(r, () => {
+      if (!r.machines.length) {
+        console.log(dim('single-machine mode — no config/machines.yaml configured'));
+        return;
+      }
+      for (const m of r.machines) {
+        const tag = m.name === r.self ? ' (self)' : '';
+        console.log(
+          `${bold((m.name + tag).padEnd(26))} ${dim(m.address.padEnd(16))} ` +
+            `${m.enabled ? green('enabled ') : dim('disabled')}  ${syncBadge(m.sync?.status)}  ` +
+            `${dim('last success')} ${date(m.sync?.lastSuccessAt) || dim('never')}  ${bytes(m.sync?.bytes)}`,
+        );
+        if (m.sync?.error) console.log(`   ${red(m.sync.error)}`);
+        // Not part of the documented /api/machines wire shape as of this
+        // writing — rendered defensively so a future divergence-warning
+        // field (spec §5) shows up here without another CLI change.
+        if (Array.isArray(m.divergenceWarnings) && m.divergenceWarnings.length) {
+          console.log(`   ${yellow(`⚠ ${m.divergenceWarnings.join('; ')}`)}`);
+        }
+      }
+    });
+  });
+
+machinesCmd
+  .command('add')
+  .description('register a machine in config/machines.yaml (edits the checkout — commit + push after)')
+  .requiredOption('--name <name>', 'machine name — frozen once it has indexed data')
+  .requiredOption('--address <address>', 'IP or LAN DNS name resolvable from peers (not *.local)')
+  .requiredOption('--user <user>', 'SSH user on that machine')
+  .option(
+    '--code-root <path>',
+    'a code root to sync (repeatable: --code-root a --code-root b)',
+    (v: string, prev: string[]) => [...prev, v],
+    [] as string[],
+  )
+  .requiredOption('--claude-projects <path>', 'that machine\'s ~/.claude/projects directory')
+  .action(async (o) => {
+    if (!o.codeRoot.length) {
+      console.error(red('at least one --code-root is required'));
+      process.exitCode = 1;
+      return;
+    }
+    const path = machinesFilePath();
+    const docText = existsSync(path) ? readFileSync(path, 'utf8') : 'machines: []\n';
+    try {
+      const updated = addMachine(docText, {
+        name: o.name,
+        address: o.address,
+        user: o.user,
+        codeRoots: o.codeRoot,
+        claudeProjects: o.claudeProjects,
+      });
+      writeFileSync(path, updated);
+      console.log(green(`added "${o.name}" to ${path} — commit + push, then enable it on the next restart`));
+    } catch (e) {
+      console.error(red(`could not add machine: ${(e as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+machinesCmd
+  .command('remove <name>')
+  .description(
+    'remove a machine from config/machines.yaml — refused if it has ever synced (frozen-name rule, spec §3)',
+  )
+  .action(async (name) => {
+    const path = machinesFilePath();
+    if (!existsSync(path)) {
+      console.error(red(`${path} does not exist — nothing to remove`));
+      process.exitCode = 1;
+      return;
+    }
+    // Fail closed: an unreachable API means sync history can't be ruled out.
+    let status: any;
+    try {
+      status = await get('/api/machines');
+    } catch (e) {
+      console.error(
+        red(`cannot verify sync history — API unreachable (${(e as Error).message}); refusing to remove`),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const known = status.machines.find((x: any) => x.name === name);
+    if (known?.sync) {
+      console.error(
+        red(`"${name}" has sync history — removing it would orphan indexed data (frozen-name rule)`),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      const updated = removeMachine(readFileSync(path, 'utf8'), name);
+      writeFileSync(path, updated);
+      console.log(green(`removed "${name}" from ${path} — commit + push`));
+    } catch (e) {
+      console.error(red(`could not remove machine: ${(e as Error).message}`));
+      process.exitCode = 1;
+    }
   });
 
 program

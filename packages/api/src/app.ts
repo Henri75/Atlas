@@ -412,7 +412,7 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     c.set('usageQuery', question);
     const result = await deps.ask.ask(
       question,
-      { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, since: body.since, until: body.until, docStatus: body.docStatus },
+      { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, machine: body.machine || undefined, since: body.since, until: body.until, docStatus: body.docStatus },
       Math.min(Number(body.k ?? 12), 30),
       sanitizeHistory(body.history),
     );

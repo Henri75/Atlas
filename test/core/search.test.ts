@@ -13,7 +13,7 @@ function fakeCatalog(rows: Record<number, any>, ftsHits: any[] = [], activeColle
   } as any;
 }
 
-const row = (id: number) => ({
+const row = (id: number, machine = 'nasta-mbp') => ({
   id,
   slug: 'deepcast',
   source_type: 'kdb_changelog',
@@ -24,6 +24,7 @@ const row = (id: number) => ({
   occurred_at: new Date('2026-07-08T10:00:00Z'),
   source_path: '/x/changelog.log',
   source_ref: null,
+  machine,
 });
 
 describe('SearchService degradation chain', () => {
@@ -134,6 +135,25 @@ describe('SearchService degradation chain', () => {
     const s = new SearchService(fakeCatalog({ 1: row(1) }), vectors, null);
     const r = await s.search('q');
     expect(r.hits.map((h) => h.entryId)).toEqual([1]);
+  });
+
+  /**
+   * Carried-forward prerequisite from Task 18's review: `hydrate` built the
+   * SearchHit field-by-field and simply never read `row.machine`, so every
+   * hit's `.machine` was undefined regardless of what the catalog held.
+   */
+  it('hydrate carries the entry\'s machine through to the hit', async () => {
+    const vectors = { query: async () => [{ entryId: 1, score: 0.9 }] } as any;
+    const s = new SearchService(fakeCatalog({ 1: row(1, 'm4max') }), vectors, null);
+    const r = await s.search('q');
+    expect(r.hits[0]!.machine).toBe('m4max');
+  });
+
+  it('hydrate normalizes the \'\' pre-machine-model sentinel to absent', async () => {
+    const vectors = { query: async () => [{ entryId: 1, score: 0.9 }] } as any;
+    const s = new SearchService(fakeCatalog({ 1: row(1, '') }), vectors, null);
+    const r = await s.search('q');
+    expect(r.hits[0]!.machine).toBeUndefined();
   });
 });
 

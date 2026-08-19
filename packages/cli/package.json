@@ -10,6 +10,8 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "commander": "15.0.0"
+    "@atlas/core": "*",
+    "commander": "15.0.0",
+    "yaml": "2.9.0"
   }
 }

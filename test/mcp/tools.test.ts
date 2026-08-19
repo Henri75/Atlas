@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SERVER_INSTRUCTIONS, SOURCE_TYPES, TOOLS } from '../../packages/mcp/src/tools.js';
+import { mergeToolResponse, SERVER_INSTRUCTIONS, SOURCE_TYPES, TOOLS } from '../../packages/mcp/src/tools.js';
 
 describe('MCP tool registry', () => {
   it('exposes the expected tools', () => {
@@ -105,6 +105,33 @@ describe('MCP tool registry', () => {
     expect(path).toBe('/api/ask');
     expect(init?.method).toBe('POST');
     expect(JSON.parse(String(init?.body))).toEqual({ question: 'what changed?' });
+  });
+
+  /**
+   * spec §6 / Task 19: the machine filter means ingestion provenance, not
+   * presence, and every surface that exposes it must say so — pin both the
+   * plumbing (param reaches the API call) and the caveat text (verbatim per
+   * the Task 19 dispatch) on both tools that carry it.
+   */
+  it('atlas_search forwards the machine filter, with the provenance caveat on the param', () => {
+    const t = TOOLS.find((t) => t.name === 'atlas_search')!;
+    expect(t.request({ query: 'qdrant', machine: 'nasta-mbp' }).path).toBe(
+      '/api/search?q=qdrant&machine=nasta-mbp',
+    );
+    expect((t.schema.machine as { description?: string }).description).toContain('first ingested');
+  });
+
+  it('atlas_ask forwards the machine filter, with the provenance caveat on the param', () => {
+    const t = TOOLS.find((t) => t.name === 'atlas_ask')!;
+    const { init } = t.request({ question: 'q', machine: 'nasta-mbp' });
+    expect(JSON.parse(String(init?.body))).toMatchObject({ machine: 'nasta-mbp' });
+    expect((t.schema.machine as { description?: string }).description).toContain('first ingested');
+  });
+
+  it('atlas_status requests a per-machine sync merge from /api/machines', () => {
+    const t = TOOLS.find((t) => t.name === 'atlas_status')!;
+    expect(t.request({}).path).toBe('/api/stats');
+    expect(t.merge?.({})).toEqual({ key: 'machines', path: '/api/machines' });
   });
 
   it('atlas_component_history URL-encodes path params', () => {
@@ -276,6 +303,39 @@ it('server instructions require reporting a SKIP, not just a use', () => {
   expect(SERVER_INSTRUCTIONS).toMatch(/did NOT use it/);
   expect(SERVER_INSTRUCTIONS).toMatch(/did not think of it/);
   expect(SERVER_INSTRUCTIONS).toMatch(/silent omission/i);
+});
+
+describe('mergeToolResponse', () => {
+  it('merges the secondary JSON under key onto the primary', () => {
+    const merged = mergeToolResponse('{"a":1}', 'machines', { ok: true, text: '{"b":2}' });
+    expect(JSON.parse(merged)).toEqual({ a: 1, machines: { b: 2 } });
+  });
+
+  it('leaves a non-JSON primary untouched — nothing to merge into', () => {
+    expect(mergeToolResponse('not json', 'machines', { ok: true, text: '{}' })).toBe('not json');
+  });
+
+  it('degrades to a generic error when the secondary fetch failed', () => {
+    const merged = mergeToolResponse('{"a":1}', 'machines', { ok: false, text: '' });
+    expect(JSON.parse(merged)).toEqual({ a: 1, machines: { error: 'machines data unavailable' } });
+  });
+
+  it('degrades to a generic error when the secondary is not valid JSON', () => {
+    const merged = mergeToolResponse('{"a":1}', 'machines', { ok: true, text: 'nope' });
+    expect(JSON.parse(merged).machines).toEqual({ error: 'machines data unavailable' });
+  });
+
+  /** The raw fetch error text must never leak (could carry internal hostnames). */
+  it('never embeds the secondary\'s raw response text on failure', () => {
+    const merged = mergeToolResponse('{}', 'machines', { ok: false, text: 'connection refused to 10.0.0.5' });
+    expect(merged).not.toContain('10.0.0.5');
+  });
+});
+
+/** The same provenance semantics stated for the param descriptions, in the cross-tool instructions. */
+it('server instructions carry the machine-filter provenance caveat', () => {
+  expect(SERVER_INSTRUCTIONS).toMatch(/first ingested from/);
+  expect(SERVER_INSTRUCTIONS).toMatch(/whichever machine synced first/);
 });
 
 /** atlas_ask is the right first call for "why/what happened" questions. */

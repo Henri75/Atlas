@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { getConfig } from '@atlas/core';
-import { SERVER_INSTRUCTIONS, TOOLS } from './tools.js';
+import { mergeToolResponse, SERVER_INSTRUCTIONS, TOOLS } from './tools.js';
 
 /**
  * Stateless streamable-HTTP MCP server. Each request gets a fresh
@@ -32,12 +32,29 @@ function buildMcpServer(): McpServer {
           ...init,
           headers: { ...init?.headers, 'x-atlas-client': 'mcp', 'x-atlas-tool': tool.name },
         });
-        const text = await res.text();
+        let text = await res.text();
         if (!res.ok) {
           return {
             content: [{ type: 'text' as const, text: `API error ${res.status}: ${text.slice(0, 500)}` }],
             isError: true,
           };
+        }
+        // A second REST call folded into the same tool answer (atlas_status +
+        // /api/machines) — see mergeToolResponse for the merge/degrade rules;
+        // this stays plumbing (fetch, call the helper, return).
+        if (tool.merge) {
+          const { key, path: mergePath, init: mergeInit } = tool.merge(args ?? {});
+          let secondary: { ok: boolean; text: string };
+          try {
+            const mergeRes = await fetch(`${cfg.apiUrl}${mergePath}`, {
+              ...mergeInit,
+              headers: { ...mergeInit?.headers, 'x-atlas-client': 'mcp', 'x-atlas-tool': tool.name },
+            });
+            secondary = { ok: mergeRes.ok, text: await mergeRes.text() };
+          } catch {
+            secondary = { ok: false, text: '' };
+          }
+          text = mergeToolResponse(text, key, secondary);
         }
         return { content: [{ type: 'text' as const, text }] };
       },
