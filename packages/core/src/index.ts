@@ -2,6 +2,8 @@ export * from './types.js';
 export * from './config.js';
 export * from './auth.js';
 export * from './machines.js';
+export * from './instanceProof.js';
+export * from './resolve.js';
 export * from './parsers/kdbLog.js';
 export * from './backlog.js';
 export * from './backlogReview.js';
