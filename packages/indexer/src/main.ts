@@ -451,8 +451,22 @@ async function main() {
    * so a boot after the first finds nothing left to patch. Done after the
    * collection is published and stable, like the sparse rebuild and the
    * storage-layout retrofit above it.
+   *
+   * try/catch, like the storage-layout retrofit and orphan reclaim above:
+   * this is a search-quality repair, not a boot-critical one, and a
+   * persistent Qdrant/Catalog failure here must not crash-loop the whole
+   * indexer over it. Safe to skip — the walk is idempotent and self-gating,
+   * and the stamp only writes on completion, so an interrupted run is
+   * indistinguishable from one that never started and simply retries from
+   * scratch next boot.
    */
-  await backfillMachinePayload(deps, (s) => console.log(s));
+  try {
+    await backfillMachinePayload(deps, (s) => console.log(s));
+  } catch (e) {
+    console.warn(
+      `[indexer] machine payload backfill skipped (will retry next boot): ${(e as Error).message}`,
+    );
+  }
 
   const worker = new Worker<ScanJobData>(
     SCAN_QUEUE,

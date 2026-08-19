@@ -148,4 +148,24 @@ describe('backfillMachinePayload', () => {
 
     expect(log).toHaveBeenCalled();
   });
+
+  /**
+   * The function itself does not catch a persistent store failure — it is
+   * main.ts's job (a try/catch around the boot-time call, "will retry next
+   * boot") to keep this from crash-looping the whole indexer. Pinned here
+   * because main.ts has no test coverage: this is what proves the caller's
+   * catch is load-bearing rather than defensive dead code.
+   */
+  it('rejects when the vector store fails persistently, leaving containment to the caller', async () => {
+    const rows: Row[] = [{ id: 1, machine: 'mac-a' }];
+    const { deps, settings } = makeDeps(rows);
+    deps.vectors.setPayloadByEntryIds = vi.fn(async () => {
+      throw new Error('qdrant unreachable');
+    });
+
+    await expect(backfillMachinePayload(deps)).rejects.toThrow('qdrant unreachable');
+    // Not stamped: a failed pass must look exactly like one that never ran,
+    // so the next boot retries it rather than treating it as done.
+    expect(settings.get(MACHINE_PAYLOAD_BACKFILLED_KEY)).toBeUndefined();
+  });
 });
