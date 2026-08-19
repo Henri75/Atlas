@@ -1,4 +1,5 @@
 import { serve } from '@hono/node-server';
+import { randomUUID } from 'node:crypto';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import {
@@ -51,6 +52,20 @@ async function main() {
   // a committed SSoT that needs a restart to change anyway.
   const machinesFleet = loadMachinesFileIfPresent(cfg.machinesFile);
   const selfMachineName = machinesFleet ? selfMachine(machinesFleet, cfg.atlasSelf).name : 'local';
+
+  // `installId` (spec §8): a settings-row identity, minted once and reused
+  // across restarts — unlike `bootId` (instance.ts), which is per-process and
+  // never persisted. The restore runbook deliberately re-mints this on a
+  // volume copy, which is why `bootId` (not this) is the load-bearing
+  // self-recognition check for the single-active guard.
+  let installIdRow = await catalog.getSetting('install_id');
+  if (!installIdRow) {
+    installIdRow = randomUUID();
+    await catalog.setSetting('install_id', installIdRow);
+  }
+  // `const` (not the `let` above) so the closure below type-checks as
+  // `string`, not `string | null` — TS can't narrow a captured `let`.
+  const installId: string = installIdRow;
 
   // Prefer the collection the indexer registered (survives provider races).
   const published = await catalog.getSetting('active_collection');
@@ -194,6 +209,13 @@ async function main() {
     machines: () => ({ fleet: machinesFleet, self: selfMachineName }),
     listMachineSync: () => catalog.listMachineSync(),
     listProjectLocations: () => catalog.listProjectLocations(),
+    // `entries` reuses the same `catalog.stats()` call `/api/dashboard`
+    // already makes — no dedicated COUNT query for `/api/instance`.
+    instance: async () => ({
+      machine: selfMachineName,
+      installId,
+      entries: (await catalog.stats()).entries,
+    }),
 
     // Walking Qdrant's storage tree is the slow part; sizes move slowly, so a
     // short TTL keeps the dashboard fresh without re-crawling on every poll.

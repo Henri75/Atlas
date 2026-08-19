@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { authMiddleware } from './auth.js';
+import { getState, instancePayload, proofFor } from './instance.js';
 import {
   ADOPTION_REPORT_KEY,
   ROUTE_CLASSES,
@@ -113,6 +114,14 @@ export interface ApiDeps {
   listMachineSync: Catalog['listMachineSync'];
   /** Every machine a project has been seen on, keyed by project id. */
   listProjectLocations: Catalog['listProjectLocations'];
+  /**
+   * The three fields `/api/instance` needs that aren't process-wide
+   * singletons (spec §8): this machine's name, the settings-row `installId`
+   * minted once at boot, and the entry count. `entries` reuses the same
+   * `catalog.stats()` call `/api/dashboard` already makes — never a second
+   * COUNT query for the same number.
+   */
+  instance: () => Promise<{ machine: string; installId: string; entries: number }>;
 }
 
 export interface BackfillProgress {
@@ -149,6 +158,25 @@ type UsageVars = {
 export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
   const app = new Hono<{ Variables: UsageVars }>();
   app.use('/api/*', cors());
+
+  /**
+   * Advertise this instance's identity/state on EVERY `/api/*` response, not
+   * only `/api/instance` (spec §8) — Task 24's resolver watches
+   * `X-Atlas-State: conflicted` on ANY call to invalidate its cache and
+   * re-probe immediately, instead of waiting out the ~5 min TTL. Mounted
+   * ahead of the auth gate so it wraps the whole chain and still runs on a
+   * 401 (set after `next()`, Hono's documented post-routing header recipe).
+   *
+   * Reads `deps.machines().self` — the same cheap, synchronous source
+   * `/api/machines` already uses — rather than `deps.instance()`, which
+   * calls `catalog.stats()` (6 queries) and would otherwise run on every
+   * single API request just to label a header.
+   */
+  app.use('/api/*', async (c, next) => {
+    await next();
+    c.header('X-Atlas-Machine', deps.machines().self);
+    c.header('X-Atlas-State', getState());
+  });
 
   /**
    * Bearer-token gate (spec §7), mounted right after CORS — so a real
@@ -272,6 +300,34 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
   };
 
   app.get('/api/health', (c) => c.json({ ok: true, service: 'atlas-api' }));
+
+  /**
+   * Accepts an 8-64 char hex nonce — generous enough to never reject a real
+   * resolver/guard-generated one, tight enough to reject empty/garbage input
+   * outright (spec §8).
+   */
+  const NONCE_RE = /^[0-9a-fA-F]{8,64}$/;
+
+  /**
+   * Nonce-challenged identity (spec §8) — deliberately UNAUTHENTICATED
+   * (exempted in `authMiddleware` above): the client must never send the
+   * token first, so this endpoint proves the reverse — that the SERVER holds
+   * it — via an HMAC over the nonce the client just supplied plus the whole
+   * payload. `proof` is present only when a token is configured (legacy
+   * no-token mode omits the key rather than sending `null`). The endpoint
+   * knowingly discloses machine name/state/entry count to unauthenticated
+   * LAN callers — accepted and documented (spec §8).
+   */
+  app.get('/api/instance', async (c) => {
+    const nonce = c.req.query('nonce') ?? '';
+    if (!NONCE_RE.test(nonce)) {
+      return c.json({ error: 'nonce must be 8-64 hex characters' }, 400);
+    }
+    const payload = instancePayload(await deps.instance());
+    return c.json(
+      deps.atlasToken ? { ...payload, proof: proofFor(deps.atlasToken, nonce, payload) } : payload,
+    );
+  });
 
   app.get('/api/stats', async (c) => {
     const [stats, chunks, queue, backfillRaw] = await Promise.all([

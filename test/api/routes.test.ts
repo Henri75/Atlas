@@ -177,6 +177,7 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     machines: () => ({ fleet: null, self: 'local' }),
     listMachineSync: async () => [],
     listProjectLocations: async () => new Map(),
+    instance: async () => ({ machine: 'local', installId: 'test-install-id', entries: 10 }),
     ...overrides,
   };
 }
@@ -186,6 +187,23 @@ describe('api routes', () => {
     const res = await buildApp(makeDeps()).request('/api/health');
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true });
+  });
+
+  /**
+   * Spec §8: Task 24's resolver watches this header on ANY response (not
+   * just /api/instance) to invalidate its cache the moment a peer conflict
+   * is detected. Proven here on an unrelated route and on a 404, so the
+   * middleware's "EVERY response" claim isn't just true for its own route.
+   */
+  it('every /api/* response carries X-Atlas-Machine and X-Atlas-State, even a 404', async () => {
+    const app = buildApp(makeDeps({ machines: () => ({ fleet: null, self: 'nasta-mbp' }) }));
+    const ok = await app.request('/api/health');
+    expect(ok.headers.get('X-Atlas-Machine')).toBe('nasta-mbp');
+    expect(ok.headers.get('X-Atlas-State')).toBe('active');
+    const notFound = await app.request('/api/projects/nope/components');
+    expect(notFound.status).toBe(404);
+    expect(notFound.headers.get('X-Atlas-Machine')).toBe('nasta-mbp');
+    expect(notFound.headers.get('X-Atlas-State')).toBe('active');
   });
 
   it('GET /api/stats merges catalog stats + vector count + meta + queue depth', async () => {
