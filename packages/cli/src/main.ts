@@ -1,8 +1,18 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Command } from 'commander';
+import {
+  AtlasResolveError,
+  loadMachinesFileIfPresent,
+  machinesFilePath,
+  probeInstance,
+  readToken,
+  resolveActive,
+  writeCredentials,
+  RESOLVER_API_PORT,
+} from '@atlas/core';
 import { get, post, postStream, qs } from './api.js';
 import { addMachine, removeMachine } from './machinesFile.js';
 import {
@@ -13,6 +23,7 @@ import {
   date,
   dim,
   duration,
+  formatWhichRows,
   green,
   hr,
   magenta,
@@ -20,7 +31,10 @@ import {
   red,
   syncBadge,
   yellow,
+  type WhichRow,
 } from './format.js';
+
+const execFile = promisify(execFileCb);
 
 /**
  * atlas — terminal client for Atlas. Every command supports --json for
@@ -152,21 +166,6 @@ program
     });
   });
 
-/**
- * config/machines.yaml — resolved relative to the CLI's own file location,
- * not the process cwd: `atlas` is npm-linked from this repo (bin ->
- * dist/main.js), so import.meta.url always points inside the checkout
- * regardless of where it's invoked from. dist/main.js -> packages/cli/dist,
- * three levels up is the repo root. ATLAS_MACHINES_FILE overrides this when
- * set — but note the in-container default (config/atlas.defaults.env) is a
- * *container* path (/config/machines.yaml); on the host, leave it unset.
- */
-function machinesFilePath(): string {
-  if (process.env.ATLAS_MACHINES_FILE) return process.env.ATLAS_MACHINES_FILE;
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-  return join(repoRoot, 'config', 'machines.yaml');
-}
-
 const machinesCmd = program
   .command('machines')
   .description('fleet status and config (config/machines.yaml) — see subcommands');
@@ -273,6 +272,92 @@ machinesCmd
       console.log(green(`removed "${name}" from ${path} — commit + push`));
     } catch (e) {
       console.error(red(`could not remove machine: ${(e as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command('connect')
+  .requiredOption('--token <token>', 'bearer token for this fleet (must match ATLAS_TOKEN on every machine)')
+  .description('save a fleet token to ~/.atlas/credentials (mode 0600), then probe and report the active instance')
+  .action(async (o) => {
+    // Saved before the probe, deliberately: the token should stick even if
+    // the fleet isn't reachable right now (spec §8 — this is a config step,
+    // not a connectivity check).
+    writeCredentials(o.token);
+    try {
+      const resolved = await resolveActive({ machinesFile: machinesFilePath(), token: o.token, cachePath: null });
+      out(resolved, () => {
+        console.log(green(`connected: ${resolved.machine} (${resolved.baseUrl})`));
+        console.log(dim(`  mcp  ${resolved.mcpUrl}`));
+        console.log(dim(`  ui   ${resolved.uiUrl}`));
+      });
+    } catch (e) {
+      if (!(e instanceof AtlasResolveError)) throw e;
+      out({ error: e.detail }, () => console.error(red(e.detail)));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command('which')
+  .description('probe every machine in config/machines.yaml right now (ignores the resolver cache) and show which one is active')
+  .action(async () => {
+    const machinesFile = machinesFilePath();
+    const token = readToken();
+    const mf = loadMachinesFileIfPresent(machinesFile);
+
+    if (!mf || mf.machines.length === 0) {
+      out({ rows: [], winner: undefined }, () => {
+        console.log(dim(`single-machine mode — no ${machinesFile}`));
+      });
+      return;
+    }
+
+    // Two probe rounds, deliberately: this loop probes every configured
+    // machine individually (for the display table, including losers)
+    // while `resolveActive` below probes them again to apply the
+    // exactly-one-active rule (spec §8) — reusing its selection logic
+    // rather than re-deriving it here, at the cost of one extra round trip
+    // per machine for a command that exists purely to be a diagnostic.
+    const rows: WhichRow[] = await Promise.all(
+      mf.machines.map(async (m) => ({
+        name: m.name,
+        address: m.address,
+        outcome: await probeInstance(`http://${m.address}:${RESOLVER_API_PORT}`, token),
+      })),
+    );
+
+    let winner: string | undefined;
+    let errorDetail: string | undefined;
+    try {
+      winner = (await resolveActive({ machinesFile, token, cachePath: null })).machine;
+    } catch (e) {
+      if (!(e instanceof AtlasResolveError)) throw e;
+      errorDetail = e.detail;
+    }
+
+    out({ rows, winner, error: errorDetail }, () => {
+      for (const line of formatWhichRows(rows, winner)) console.log(line);
+      if (errorDetail) console.log(`\n${red(errorDetail)}`);
+    });
+    if (errorDetail) process.exitCode = 1;
+  });
+
+program
+  .command('open')
+  .description('resolve the active instance and open its UI (macOS: default browser; elsewhere: prints the URL)')
+  .action(async () => {
+    try {
+      const resolved = await resolveActive({ machinesFile: machinesFilePath(), token: readToken() });
+      if (process.platform === 'darwin') {
+        await execFile('open', [resolved.uiUrl]);
+      } else {
+        console.log(resolved.uiUrl);
+      }
+    } catch (e) {
+      if (!(e instanceof AtlasResolveError)) throw e;
+      console.error(red(e.detail));
       process.exitCode = 1;
     }
   });

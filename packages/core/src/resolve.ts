@@ -32,9 +32,13 @@ const DEFAULT_UI_PORT = 8712;
  * The `/api/instance` port. Not overridable via `resolveActive`'s opts
  * (unlike `mcpPort`/`uiPort`) — matches `config.ts`'s `apiPort` default and
  * `guard.ts`'s peer URLs (`http://<address>:8710/api/instance`), which are
- * likewise fixed at this value.
+ * likewise fixed at this value. Exported (as `RESOLVER_API_PORT`, distinct
+ * from `config.ts`'s overridable `apiPort` config field) so `atlas which`
+ * (Task 26) can build the same per-machine probe URLs this module uses
+ * internally, instead of a second hard-coded `8710` in the CLI.
  */
-const API_PORT = 8710;
+export const RESOLVER_API_PORT = 8710;
+const API_PORT = RESOLVER_API_PORT;
 const CACHE_TTL_MS = 5 * 60_000;
 const DEFAULT_CACHE_PATH = join(homedir(), '.atlas', 'active.json');
 

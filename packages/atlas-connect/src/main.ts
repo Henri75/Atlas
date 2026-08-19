@@ -1,14 +1,10 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { AtlasResolveError, resolveActive } from '@atlas/core';
+import { AtlasResolveError, machinesFilePath, readToken, resolveActive } from '@atlas/core';
 import { conflictCheckingFetch, errorResult, unavailableTool, withUpstream } from './bridge.js';
 
 /**
@@ -26,37 +22,6 @@ import { conflictCheckingFetch, errorResult, unavailableTool, withUpstream } fro
  * as the in-band `atlas_unavailable` tool / an `isError` tool result, never
  * a shim that fails to start.
  */
-
-/**
- * `config/machines.yaml`, resolved relative to THIS file's own location —
- * this package is npm-linked from the checkout (`bin` -> `dist/main.js`), so
- * `import.meta.url` always points inside it regardless of cwd. Same
- * convention as `packages/cli/src/main.ts`'s `machinesFilePath()`.
- * `ATLAS_MACHINES_FILE` overrides, matching the CLI and `resolveActive`'s
- * other callers.
- */
-function machinesFilePath(): string {
-  if (process.env.ATLAS_MACHINES_FILE) return process.env.ATLAS_MACHINES_FILE;
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-  return join(repoRoot, 'config', 'machines.yaml');
-}
-
-const CREDENTIALS_PATH = join(homedir(), '.atlas', 'credentials');
-
-/**
- * `~/.atlas/credentials` — JSON `{ token }`, written by `atlas connect
- * --token <t>` (Task 26). Absent file, unreadable JSON, or a missing/empty
- * `token` field all mean the same thing: no token configured (legacy/dev
- * mode) — never invented, never fatal.
- */
-function readToken(): string | undefined {
-  try {
-    const parsed = JSON.parse(readFileSync(CREDENTIALS_PATH, 'utf8')) as { token?: unknown };
-    return typeof parsed.token === 'string' && parsed.token.length > 0 ? parsed.token : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Resolves the active instance and opens a fresh `Client` connection to it.

@@ -4,6 +4,7 @@ export * from './auth.js';
 export * from './machines.js';
 export * from './instanceProof.js';
 export * from './resolve.js';
+export * from './atlasHome.js';
 export * from './parsers/kdbLog.js';
 export * from './backlog.js';
 export * from './backlogReview.js';
