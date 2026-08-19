@@ -128,6 +128,17 @@ const schema = z.object({
    * Empty/absent = legacy localhost-only mode: `authMiddleware` is a no-op.
    */
   atlasToken: z.string().optional(),
+  /**
+   * Emergency escape hatch for the boot-time single-active guard (spec §8,
+   * Task 23): a live peer normally refuses to let this instance start.
+   * Deliberately absent from `config/atlas.defaults.env` — this overrides a
+   * safety check meant to prevent two stacks writing the same index at
+   * once, so it belongs in a one-off shell/Doppler override for the boot
+   * that needs it, never in the committed fleet-wide defaults.
+   */
+  atlasForceActive: z
+    .union([z.boolean(), z.enum(['true', 'false']).transform((v) => v === 'true')])
+    .default(false),
 });
 
 export type AppConfig = z.infer<typeof schema>;
@@ -202,6 +213,7 @@ function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
     atlasSelf: opt(env.ATLAS_SELF),
     atlasBind: opt(env.ATLAS_BIND),
     atlasToken: opt(env.ATLAS_TOKEN),
+    atlasForceActive: opt(env.ATLAS_FORCE_ACTIVE),
   });
 }
 

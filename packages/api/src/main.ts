@@ -24,6 +24,8 @@ import {
 import type { StorageUsage } from '@atlas/core';
 import type { EmbeddingProvider } from '@atlas/core';
 import { buildApp } from './app.js';
+import { guardTick } from './guard.js';
+import { bootId, setConflicted } from './instance.js';
 
 /**
  * API entrypoint. Reads the active collection published by the indexer so
@@ -52,6 +54,54 @@ async function main() {
   // a committed SSoT that needs a restart to change anyway.
   const machinesFleet = loadMachinesFileIfPresent(cfg.machinesFile);
   const selfMachineName = machinesFleet ? selfMachine(machinesFleet, cfg.atlasSelf).name : 'local';
+
+  // Continuous single-active guard (spec §8/§10, Task 23). Peers = every
+  // OTHER machines.yaml entry, INCLUDING `enabled: false` — a disabled
+  // machine can still have its stack accidentally left running. Peers run
+  // the api on the same API_PORT convention we do; machines.yaml has no
+  // per-machine port field. Legacy mode (no machines file, or a file naming
+  // only this machine) yields zero peers, and the guard never runs at all —
+  // matching the resolver's own legacy fallback above.
+  const guardPeers = machinesFleet
+    ? machinesFleet.machines
+        .filter((m) => m.name !== selfMachineName)
+        .map((m) => ({ name: m.name, url: `http://${m.address}:${cfg.apiPort}/api/instance` }))
+    : [];
+  const guardWarn = (s: string) => console.warn(`[api] ${s}`);
+
+  if (guardPeers.length > 0) {
+    // One pass BEFORE the listener binds (spec §8: "at boot, probe peers — a
+    // live peer ⇒ refuse to start"). Deliberately run before the heavier
+    // boot work below (embedder resolution, Redis, BullMQ) so a doomed boot
+    // exits fast instead of standing all of that up first just to tear it
+    // down. `ATLAS_FORCE_ACTIVE=1` is the documented escape hatch — an
+    // emergency override, never something the committed defaults set.
+    let liveAtBoot: string[] = [];
+    await guardTick({
+      self: selfMachineName,
+      bootId,
+      peers: guardPeers,
+      token: cfg.atlasToken,
+      onConflict: (names) => {
+        liveAtBoot = names;
+      },
+      warn: guardWarn,
+    });
+
+    if (liveAtBoot.length > 0 && !cfg.atlasForceActive) {
+      console.error(
+        `[api] REFUSING TO START — live Atlas instance already running on: ${liveAtBoot.join(', ')}. ` +
+          'Run `make down` on one of them before starting this one ' +
+          '(or set ATLAS_FORCE_ACTIVE=1 to override — emergency use only).',
+      );
+      process.exit(1);
+    }
+    if (liveAtBoot.length > 0) {
+      console.warn(
+        `[api] ATLAS_FORCE_ACTIVE=1 — starting anyway despite live peer(s): ${liveAtBoot.join(', ')}`,
+      );
+    }
+  }
 
   // `installId` (spec §8): a settings-row identity, minted once and reused
   // across restarts — unlike `bootId` (instance.ts), which is per-process and
@@ -278,6 +328,29 @@ async function main() {
   serve({ fetch: app.fetch, port: cfg.apiPort, hostname: '0.0.0.0' }, (info) => {
     console.log(`[api] listening on :${info.port}`);
   });
+
+  // Continuous re-probe (spec §8): "closes the asleep-peer hole — a peer
+  // invisible at boot is caught within one tick of either side waking."
+  // `onConflict: setConflicted` flips this instance to `state: conflicted`
+  // (dashboard banner, resolver refusal) rather than exiting — no auto-kill,
+  // because an automated winner could stop the instance with the fresher
+  // index mid-write. A guard failure must never take a serving API down: any
+  // rejection from this tick is caught and logged, and the next tick retries.
+  if (guardPeers.length > 0) {
+    const timer = setInterval(() => {
+      guardTick({
+        self: selfMachineName,
+        bootId,
+        peers: guardPeers,
+        token: cfg.atlasToken,
+        onConflict: setConflicted,
+        warn: guardWarn,
+      }).catch((e) => {
+        console.error('[api] guard tick failed (will retry next interval):', e);
+      });
+    }, cfg.scanIntervalMin * 60_000);
+    timer.unref();
+  }
 }
 
 main().catch((e) => {
