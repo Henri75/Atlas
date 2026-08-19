@@ -1,6 +1,9 @@
 import { Queue } from 'bullmq';
 import type { Redis } from 'ioredis';
-import { Catalog, encodeClaudePath, matchClaudeDirToProject, claudeDirFallbackSlug } from '@atlas/core';
+import {
+  Catalog, encodeClaudePath, matchClaudeDirToProject, claudeDirFallbackSlug,
+  loadMachinesFileIfPresent, selfMachine,
+} from '@atlas/core';
 import type { AppConfig, DiscoveredProject } from '@atlas/core';
 import { readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -8,6 +11,16 @@ import { discoverProjects, hasGitRepo } from './scanners.js';
 import type { ScanJobData } from './pipeline.js';
 
 export const SCAN_QUEUE = 'kdbscope-scan';
+
+/**
+ * Which machine this container is. config/machines.yaml present → the entry
+ * ATLAS_SELF names; absent → 'local', the legacy single-machine label (also
+ * what a first multi-machine boot backfills pre-machine rows to).
+ */
+export function resolveSelfName(cfg: AppConfig): string {
+  const mf = loadMachinesFileIfPresent(cfg.machinesFile);
+  return mf ? selfMachine(mf, cfg.atlasSelf).name : 'local';
+}
 
 /**
  * Deterministic job id, so an identical pending job is never queued twice.
@@ -62,11 +75,20 @@ export async function scheduleScans(
     }
   }
 
+  const self = resolveSelfName(cfg);
+
   let enqueued = 0;
   const all = [...projects, ...standalone];
   for (const p of all) {
     if (opts.project && p.slug !== opts.project) continue;
-    await catalog.upsertProject({ slug: p.slug, name: p.name, rootPath: p.rootPath, hasKdb: p.hasKdb });
+    const projectId = await catalog.upsertProject({ slug: p.slug, name: p.name, rootPath: p.rootPath, hasKdb: p.hasKdb });
+    // Standalone/ghost entries carry rootPath '' — they have no location to
+    // record, only a Claude transcript dir with nothing on disk to match.
+    if (p.rootPath) {
+      await catalog.upsertProjectLocation({
+        projectId, machine: self, rootPath: p.rootPath, hostPath: p.hostPath ?? '', hasKdb: p.hasKdb,
+      });
+    }
 
     const base = {
       projectSlug: p.slug,
@@ -74,6 +96,8 @@ export async function scheduleScans(
       rootPath: p.rootPath,
       hasKdb: p.hasKdb,
       full: opts.full,
+      machine: self,
+      isSelf: true,
     };
     const jobs: { data: ScanJobData; key: string }[] = [];
     if (p.hasKdb) jobs.push({ data: { ...base, sourceType: 'kdb' }, key: 'kdb' });

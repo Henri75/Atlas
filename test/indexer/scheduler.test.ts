@@ -42,14 +42,27 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 mkdirSync(join(root, 'DeepCast/kdb'), { recursive: true });
 writeFileSync(join(root, 'DeepCast/kdb/changelog.log'), 'x');
 
+// A Claude project dir that matches no known project (no CODE_ROOT prefix in
+// its name), so it becomes a standalone/ghost project with rootPath ''.
+const claudeRoot = mkdtempSync(join(tmpdir(), 'kdbscope-sched-claude-'));
+afterAll(() => rmSync(claudeRoot, { recursive: true, force: true }));
+mkdirSync(join(claudeRoot, '-Users-ghost-Somewhere-Else'), { recursive: true });
+
+function makeCatalog() {
+  return {
+    refreshProjectAliases: async () => 0,
+    upsertProject: vi.fn(async () => 1),
+    upsertProjectLocation: vi.fn(async () => {}),
+  } as any;
+}
+
 describe('scheduleScans job options', () => {
   const run = async () => {
     const add = vi.fn(async () => {});
-    const catalog = { refreshProjectAliases: async () => 0,
-    upsertProject: vi.fn(async () => 1) } as any;
+    const catalog = makeCatalog();
     const cfg = parseConfig({ CODE_ROOT: root, CLAUDE_PROJECTS_DIR: join(root, 'nope') });
     await scheduleScans(cfg, catalog, { add } as any);
-    return add;
+    return { add, catalog };
   };
 
   /**
@@ -59,7 +72,7 @@ describe('scheduleScans job options', () => {
    * it was dropped — the index quietly stopped updating.
    */
   it('releases the deterministic job id as soon as the job completes', async () => {
-    const add = await run();
+    const { add } = await run();
     expect(add).toHaveBeenCalled();
     for (const call of add.mock.calls) {
       const opts = (call as any)[2];
@@ -69,7 +82,7 @@ describe('scheduleScans job options', () => {
   });
 
   it('still retries failures with backoff', async () => {
-    const add = await run();
+    const { add } = await run();
     const opts = (add.mock.calls[0] as any)[2];
     expect(opts.attempts).toBe(3);
     expect(opts.backoff).toMatchObject({ type: 'exponential' });
@@ -93,12 +106,51 @@ describe('scheduleScans job options', () => {
    * minutes away, and BullMQ has already spent its three attempts.
    */
   it('releases the job id when the job fails, not just when it completes', async () => {
-    const add = await run();
+    const { add } = await run();
     expect(add).toHaveBeenCalled();
     for (const call of add.mock.calls) {
       const opts = (call as any)[2];
       // Any retention count reserves the id; only true frees it.
       expect(opts.removeOnFail).toBe(true);
     }
+  });
+
+  /**
+   * Legacy mode: no config/machines.yaml at the configured path, so
+   * resolveSelfName falls back to 'local'. Every discovered project's
+   * location and every enqueued job must carry that name.
+   */
+  it('writes a project_locations row and tags every job with the self machine (legacy: no machines.yaml)', async () => {
+    const { add, catalog } = await run();
+    expect(catalog.upsertProjectLocation).toHaveBeenCalledTimes(1);
+    const loc = catalog.upsertProjectLocation.mock.calls[0]![0];
+    expect(loc).toMatchObject({
+      projectId: 1,
+      machine: 'local',
+      rootPath: join(root, 'DeepCast'),
+      hasKdb: true,
+    });
+
+    expect(add).toHaveBeenCalled();
+    for (const call of add.mock.calls) {
+      const data = (call as any)[1];
+      expect(data.machine).toBe('local');
+      expect(data.isSelf).toBe(true);
+    }
+  });
+
+  it('standalone/ghost projects (rootPath \'\') get no project_locations row', async () => {
+    const add = vi.fn(async () => {});
+    const catalog = makeCatalog();
+    const cfg = parseConfig({ CODE_ROOT: root, CLAUDE_PROJECTS_DIR: claudeRoot });
+    await scheduleScans(cfg, catalog, { add } as any);
+
+    // DeepCast (discovered) + the unmatched claude dir (standalone/ghost).
+    expect(catalog.upsertProject).toHaveBeenCalledTimes(2);
+    // Only the discovered project (non-empty rootPath) gets a location row.
+    expect(catalog.upsertProjectLocation).toHaveBeenCalledTimes(1);
+    expect(catalog.upsertProjectLocation.mock.calls[0]![0]).toMatchObject({
+      rootPath: join(root, 'DeepCast'),
+    });
   });
 });

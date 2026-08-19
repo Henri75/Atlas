@@ -353,17 +353,21 @@ export class Catalog {
     await this.pool.end();
   }
 
-  async upsertProject(p: {
-    slug: string;
-    name: string;
-    rootPath: string;
-    hasKdb: boolean;
-  }): Promise<number> {
+  async upsertProject(
+    p: { slug: string; name: string; rootPath: string; hasKdb: boolean },
+    opts: { isSelf?: boolean } = {},
+  ): Promise<number> {
+    const isSelf = opts.isSelf !== false;
     const r = await this.pool.query(
-      `INSERT INTO projects (slug, name, root_path, has_kdb) VALUES ($1,$2,$3,$4)
-       ON CONFLICT (slug) DO UPDATE SET root_path = EXCLUDED.root_path, has_kdb = EXCLUDED.has_kdb
-       RETURNING id`,
-      [p.slug, p.name, p.rootPath, p.hasKdb],
+      isSelf
+        ? `INSERT INTO projects (slug, name, root_path, has_kdb) VALUES ($1,$2,$3,$4)
+           ON CONFLICT (slug) DO UPDATE SET root_path = EXCLUDED.root_path, has_kdb = EXCLUDED.has_kdb
+           RETURNING id`
+        // Remote discovery must never clobber the self machine's paths (spec §5).
+        : `INSERT INTO projects (slug, name, root_path, has_kdb) VALUES ($1,$2,$3,$4)
+           ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+           RETURNING id`,
+      [p.slug, p.name, isSelf ? p.rootPath : '', p.hasKdb],
     );
     return r.rows[0].id;
   }
@@ -1338,13 +1342,14 @@ export class Catalog {
     return r.rows.map((row) => row.id);
   }
 
-  async upsertSession(projectId: number, meta: SessionMeta, sourcePath: string): Promise<void> {
+  async upsertSession(projectId: number, meta: SessionMeta, sourcePath: string, machine: string): Promise<void> {
     await this.pool.query(
-      `INSERT INTO sessions (id, project_id, title, cwd, started_at, ended_at, prompt_count, action_count, files_touched, source_path)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `INSERT INTO sessions (id, project_id, title, cwd, started_at, ended_at, prompt_count, action_count, files_touched, source_path, machine)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        ON CONFLICT (id) DO UPDATE SET title=COALESCE(EXCLUDED.title, sessions.title),
          ended_at=EXCLUDED.ended_at, prompt_count=EXCLUDED.prompt_count,
-         action_count=EXCLUDED.action_count, files_touched=EXCLUDED.files_touched`,
+         action_count=EXCLUDED.action_count, files_touched=EXCLUDED.files_touched,
+         machine = CASE WHEN sessions.machine = '' THEN EXCLUDED.machine ELSE sessions.machine END`,
       [
         meta.sessionId,
         projectId,
@@ -1356,6 +1361,7 @@ export class Catalog {
         meta.actionCount ?? 0,
         JSON.stringify(meta.filesTouched),
         sourcePath,
+        machine,
       ],
     );
   }

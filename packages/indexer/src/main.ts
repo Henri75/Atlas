@@ -28,7 +28,7 @@ import {
   type PipelineDeps,
   type ScanJobData,
 } from './pipeline.js';
-import { SCAN_QUEUE, scheduleScans, withSchedulerLock } from './scheduler.js';
+import { SCAN_QUEUE, resolveSelfName, scheduleScans, withSchedulerLock } from './scheduler.js';
 
 /**
  * Indexer entrypoint: migrate catalog, resolve the embedding provider,
@@ -96,6 +96,14 @@ async function main() {
     await catalog.resetDerivedData();
   }
   for (const m of MARKERS) await catalog.setSetting(m.key, m.want);
+
+  // First multi-machine boot: stamp every pre-machine entries/sessions row
+  // ('') with this machine's name so provenance is never blank. Idempotent —
+  // a healthy boot after the first finds nothing left to stamp.
+  const backfilled = await catalog.backfillMachine(resolveSelfName(cfg));
+  if (backfilled > 0) {
+    console.log(`[indexer] backfilled machine on ${backfilled} pre-machine row(s)`);
+  }
 
   const embedder = await createEmbedder(cfg.embeddings, cfg.g2pClientId);
   console.log(`[indexer] embedder: ${embedder.name}/${embedder.model} dim=${embedder.dim}`);

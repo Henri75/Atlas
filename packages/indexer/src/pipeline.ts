@@ -47,6 +47,11 @@ export interface ScanJobData {
   claudeDirs?: string[];
   /** Reset scan state and reprocess everything. */
   full?: boolean;
+  /** Which machine this job's data belongs to — the self machine, or a remote's. */
+  machine: string;
+  /** Whether `machine` is this container's own machine (spec §5: only a self
+   * job may write projects.root_path/has_kdb). */
+  isSelf: boolean;
 }
 
 const EMBED_BATCH = 32;
@@ -307,7 +312,7 @@ async function scanClaude(
           actionCount: (offset > 0 ? (prev?.action_count ?? 0) : 0) + meta.actionCount,
           filesTouched: [...new Set([...(prev?.files_touched ?? []), ...meta.filesTouched])].sort(),
         };
-        await deps.catalog.upsertSession(projectId, merged, path);
+        await deps.catalog.upsertSession(projectId, merged, path, job.machine);
         await deps.catalog.setScanState(projectId, 'claude_session', path, {
           mtimeMs: Math.trunc(stat.mtimeMs), size: stat.size, byteOffset: newOffset,
         });
@@ -801,12 +806,15 @@ export async function processScanJob(
   job: ScanJobData,
   progress?: ProgressFn,
 ): Promise<{ chunksIndexed: number }> {
-  const projectId = await deps.catalog.upsertProject({
-    slug: job.projectSlug,
-    name: job.projectName,
-    rootPath: job.rootPath,
-    hasKdb: job.hasKdb,
-  });
+  const projectId = await deps.catalog.upsertProject(
+    {
+      slug: job.projectSlug,
+      name: job.projectName,
+      rootPath: job.rootPath,
+      hasKdb: job.hasKdb,
+    },
+    { isSelf: job.isSelf },
+  );
   let chunksIndexed = 0;
   switch (job.sourceType) {
     case 'kdb': chunksIndexed = await scanKdb(deps, job, projectId, progress); break;

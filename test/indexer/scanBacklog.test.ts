@@ -94,6 +94,8 @@ const job = {
   rootPath: join(root, 'Proj'),
   hasKdb: true,
   sourceType: 'kdb' as const,
+  machine: 'local',
+  isSelf: true,
 };
 
 describe('scanKdb backlog resync', () => {

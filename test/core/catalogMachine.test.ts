@@ -3,7 +3,9 @@ import { Catalog } from '@atlas/core';
 
 function stubbed(): { cat: Catalog; q: ReturnType<typeof vi.fn> } {
   const cat = Object.create(Catalog.prototype) as Catalog;
-  const q = vi.fn().mockResolvedValue({ rows: [] });
+  // { id: 1 } so upsertProject's RETURNING id read doesn't throw on the
+  // default stub; nothing else in this file inspects the row shape.
+  const q = vi.fn().mockResolvedValue({ rows: [{ id: 1 }] });
   Object.defineProperty(cat, 'pool', { value: { query: q } });
   return { cat, q };
 }
@@ -39,6 +41,36 @@ describe('machine accessors', () => {
     const { cat, q } = stubbed();
     await cat.backfillMachine('nasta-mbp');
     for (const call of q.mock.calls) expect(call[0]).toMatch(/machine = ''/);
+  });
+
+  it('upsertProject with isSelf:false leaves root_path alone', async () => {
+    const { cat, q } = stubbed();
+    await cat.upsertProject({ slug: 'x', name: 'x', rootPath: '/data/remote/m4max/code1/x', hasKdb: true }, { isSelf: false });
+    expect(q.mock.calls[0]![0]).toMatch(/DO UPDATE SET name = EXCLUDED.name\s+RETURNING/);
+  });
+
+  it('upsertProject with isSelf:false inserts an empty root_path', async () => {
+    const { cat, q } = stubbed();
+    await cat.upsertProject({ slug: 'x', name: 'x', rootPath: '/data/remote/m4max/code1/x', hasKdb: true }, { isSelf: false });
+    expect(q.mock.calls[0]![1]).toEqual(['x', 'x', '', true]);
+  });
+
+  it('upsertProject defaults to isSelf:true and writes root_path/has_kdb on conflict', async () => {
+    const { cat, q } = stubbed();
+    await cat.upsertProject({ slug: 'x', name: 'x', rootPath: '/data/code/x', hasKdb: true });
+    expect(q.mock.calls[0]![0]).toMatch(/DO UPDATE SET root_path = EXCLUDED.root_path, has_kdb = EXCLUDED.has_kdb/);
+    expect(q.mock.calls[0]![1]).toEqual(['x', 'x', '/data/code/x', true]);
+  });
+
+  it('upsertSession inserts machine and keeps existing non-empty value on conflict', async () => {
+    const { cat, q } = stubbed();
+    await cat.upsertSession(1, {
+      sessionId: 's1', promptCount: 1, actionCount: 0, filesTouched: [],
+    } as any, '/path/s1.jsonl', 'm4max');
+    expect(q.mock.calls[0]![0]).toMatch(/machine = CASE WHEN sessions\.machine = '' THEN EXCLUDED\.machine ELSE sessions\.machine END/);
+    expect(q.mock.calls[0]![1]).toEqual([
+      's1', 1, null, null, null, null, 1, 0, JSON.stringify([]), '/path/s1.jsonl', 'm4max',
+    ]);
   });
 
   it('recordSyncStart uses ON CONFLICT and resets error on retry', async () => {
