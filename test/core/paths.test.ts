@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { editorUrl, lineFromSourceRef, mappingsFromConfig, toHostPath } from '@atlas/core';
+import {
+  editorUrl,
+  lineFromSourceRef,
+  mappingsFromConfig,
+  mirrorMappings,
+  remoteEditorUrl,
+  resolveLocation,
+  toHostPath,
+} from '@atlas/core';
 import { parseConfig } from '@atlas/core';
+import type { MachinesFile } from '@atlas/core';
 
 const MAPPINGS = [
   { containerRoot: '/data/claude/projects', hostRoot: '/Users/nasta/.claude/projects' },
@@ -60,6 +69,135 @@ describe('editorUrl', () => {
 
   it('appends a line number when known', () => {
     expect(editorUrl('/x/a.log', 42)).toBe('vscode://file/x/a.log:42');
+  });
+});
+
+/** Two enabled non-self machines plus one disabled — the filtering matrix. */
+const FLEET: MachinesFile = {
+  machines: [
+    {
+      name: 'nasta-mbp',
+      address: '192.168.1.20',
+      user: 'nasta',
+      codeRoots: ['/Users/nasta/__CODING NEW'],
+      claudeProjects: '/Users/nasta/.claude/projects',
+      enabled: true,
+      remoteRsyncPath: '/opt/homebrew/bin/rsync',
+      slugOverrides: {},
+    },
+    {
+      name: 'm4max',
+      address: '192.168.1.30',
+      user: 'serge',
+      codeRoots: ['/Users/serge/CODING', '/Users/serge/other'],
+      claudeProjects: '/Users/serge/.claude/projects',
+      enabled: true,
+      remoteRsyncPath: '/opt/homebrew/bin/rsync',
+      slugOverrides: {},
+    },
+    {
+      name: 'mac-mini',
+      address: '192.168.1.40',
+      user: 'nasta',
+      codeRoots: ['/Users/nasta/mini'],
+      claudeProjects: '/Users/nasta/mini/.claude/projects',
+      enabled: false,
+      remoteRsyncPath: '/opt/homebrew/bin/rsync',
+      slugOverrides: {},
+    },
+  ],
+  sync: { intervalMin: 10, excludes: [] },
+};
+
+describe('mirrorMappings', () => {
+  it('builds container→host mappings for every enabled non-self machine, 1-based code roots', () => {
+    const m = mirrorMappings(FLEET, 'nasta-mbp');
+    // self (nasta-mbp) and disabled (mac-mini) contribute nothing.
+    expect(m.every((x) => x.machine === 'm4max')).toBe(true);
+    expect(m).toHaveLength(3); // 2 code roots + 1 claude dir, for m4max only
+
+    expect(m).toContainEqual({
+      containerRoot: '/data/remote/m4max/code1',
+      hostRoot: '/Users/serge/CODING',
+      machine: 'm4max',
+      sshUser: 'serge',
+      sshAddress: '192.168.1.30',
+    });
+    expect(m).toContainEqual({
+      containerRoot: '/data/remote/m4max/code2',
+      hostRoot: '/Users/serge/other',
+      machine: 'm4max',
+      sshUser: 'serge',
+      sshAddress: '192.168.1.30',
+    });
+    expect(m).toContainEqual({
+      containerRoot: '/data/remote/m4max/claude',
+      hostRoot: '/Users/serge/.claude/projects',
+      machine: 'm4max',
+      sshUser: 'serge',
+      sshAddress: '192.168.1.30',
+    });
+  });
+
+  it('yields nothing when every other machine is disabled or self', () => {
+    expect(mirrorMappings(FLEET, 'm4max').some((x) => x.machine === 'mac-mini')).toBe(false);
+    expect(mirrorMappings(FLEET, 'm4max').every((x) => x.machine !== 'm4max')).toBe(true);
+  });
+});
+
+describe('resolveLocation', () => {
+  it('resolves a mirrored path to the remote host path plus machine/ssh fields', () => {
+    const mappings = mirrorMappings(FLEET, 'nasta-mbp');
+    expect(resolveLocation('/data/remote/m4max/code1/x/kdb/changelog.log', mappings)).toEqual({
+      hostPath: '/Users/serge/CODING/x/kdb/changelog.log',
+      machine: 'm4max',
+      sshUser: 'serge',
+      sshAddress: '192.168.1.30',
+    });
+  });
+
+  it('same longest-prefix specificity as toHostPath — a config mapping stays machine-less', () => {
+    expect(resolveLocation('/data/code/DeepCast/a.ts', MAPPINGS)).toEqual({
+      hostPath: '/Users/nasta/__CODING NEW/DeepCast/a.ts',
+    });
+  });
+
+  it('unmatched path passes through with no machine/ssh fields at all', () => {
+    const mappings = mirrorMappings(FLEET, 'nasta-mbp');
+    expect(resolveLocation('/etc/passwd', mappings)).toEqual({ hostPath: '/etc/passwd' });
+  });
+});
+
+describe('remoteEditorUrl', () => {
+  it('builds a vscode-remote deep link from sshUser/sshAddress/hostPath', () => {
+    expect(
+      remoteEditorUrl({
+        hostPath: '/Users/serge/CODING/x/kdb/changelog.log',
+        sshUser: 'serge',
+        sshAddress: '192.168.1.30',
+      }),
+    ).toBe('vscode://vscode-remote/ssh-remote+serge@192.168.1.30/Users/serge/CODING/x/kdb/changelog.log');
+  });
+
+  it('encodes spaces in the path', () => {
+    expect(
+      remoteEditorUrl({
+        hostPath: '/Users/serge/__CODING NEW/DeepCast/a.ts',
+        sshUser: 'serge',
+        sshAddress: '192.168.1.30',
+      }),
+    ).toBe(
+      'vscode://vscode-remote/ssh-remote+serge@192.168.1.30/Users/serge/__CODING%20NEW/DeepCast/a.ts',
+    );
+  });
+
+  it('never appends a :line suffix — the remote URI scheme ignores it', () => {
+    const url = remoteEditorUrl(
+      { hostPath: '/x/a.log', sshUser: 'serge', sshAddress: '192.168.1.30' },
+      42,
+    );
+    expect(url).toBe('vscode://vscode-remote/ssh-remote+serge@192.168.1.30/x/a.log');
+    expect(url).not.toContain(':42');
   });
 });
 

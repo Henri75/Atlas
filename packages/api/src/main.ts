@@ -14,6 +14,7 @@ import {
   getConfig,
   loadMachinesFileIfPresent,
   mappingsFromConfig,
+  mirrorMappings,
   ollamaAvailable,
   parseRedisMemory,
   qdrantCollectionSizes,
@@ -160,7 +161,15 @@ async function main() {
         return null; // Redis down: stats still render, just without queue depth.
       }
     },
-    pathMappings: mappingsFromConfig(cfg),
+    // Self mappings plus every other enabled machine's mirror (spec §9);
+    // mappingsFromConfig already sorts longest-first on its own, but merging
+    // in the mirror mappings means the COMBINED array needs its own explicit
+    // re-sort — two independently-sorted lists concatenated are not one
+    // sorted list.
+    pathMappings: [
+      ...mappingsFromConfig(cfg),
+      ...(machinesFleet ? mirrorMappings(machinesFleet, selfMachineName) : []),
+    ].sort((a, b) => b.containerRoot.length - a.containerRoot.length),
     // What was *asked for*. The dashboard compares it against what the indexer
     // recorded as actually serving, which is the only way to tell a deliberate
     // provider from `auto` having settled for one.

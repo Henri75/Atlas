@@ -755,6 +755,41 @@ describe('api routes', () => {
     // A commit sha is not a line number.
     expect(body.hits[0].editorUrl).not.toContain(':aaa111');
   });
+
+  /** A hit under a mirror mapping gets a remote-aware editor link (spec §9). */
+  it('GET /api/search gives a hit under a mirror mapping a vscode-remote link', async () => {
+    const hit = {
+      entryId: 2,
+      score: 1,
+      projectSlug: 'x',
+      sourceType: 'kdb_changelog',
+      title: 't',
+      snippet: 's',
+      sourcePath: '/data/remote/m4max/code1/x/kdb/changelog.log',
+      sourceRef: 'line:5',
+    };
+    const deps = makeDeps({
+      search: { search: async () => ({ hits: [hit], mode: 'hybrid', degraded: false, tookMs: 1 }) } as any,
+      pathMappings: [
+        { containerRoot: '/data/code', hostRoot: '/Users/nasta/__CODING NEW' },
+        {
+          containerRoot: '/data/remote/m4max/code1',
+          hostRoot: '/Users/serge/CODING',
+          machine: 'm4max',
+          sshUser: 'serge',
+          sshAddress: '192.168.1.30',
+        },
+      ],
+    });
+    const body = await (await buildApp(deps).request('/api/search?q=x')).json();
+    expect(body.hits[0].hostPath).toBe('/Users/serge/CODING/x/kdb/changelog.log');
+    expect(body.hits[0].editorUrl).toBe(
+      'vscode://vscode-remote/ssh-remote+serge@192.168.1.30/Users/serge/CODING/x/kdb/changelog.log',
+    );
+    // No self-scheme :line suffix, and no line at all (the remote scheme ignores it).
+    expect(body.hits[0].editorUrl).not.toContain(':5');
+    expect(body.hits[0].machine).toBe('m4max');
+  });
 });
 
 /**

@@ -11,6 +11,8 @@ import {
   lineFromSourceRef,
   loadBacklogView,
   proposeMarkerLine,
+  remoteEditorUrl,
+  resolveLocation,
   toHostPath,
 } from '@atlas/core';
 import type {
@@ -231,11 +233,26 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
    * Attach the host path and an editor link to anything carrying a source.
    * A row without a source path is returned untouched rather than failing the
    * whole request.
+   *
+   * When the source path resolves onto another machine's mirror (spec §9),
+   * the link is a vscode-remote deep link instead of a local `vscode://file`
+   * one. `item.machine` — an entry's own FIRST-INGESTED-FROM provenance,
+   * present when the row already carries it — always wins over the
+   * mapping's machine: the mapping only decides which URL scheme to use,
+   * never what the entry claims about its own origin.
    */
-  const withSource = <T extends { sourcePath?: string; sourceRef?: string }>(item: T) => {
+  const withSource = <T extends { sourcePath?: string; sourceRef?: string; machine?: string }>(
+    item: T,
+  ) => {
     if (!item.sourcePath) return item;
-    const hostPath = toHostPath(item.sourcePath, deps.pathMappings);
-    return { ...item, hostPath, editorUrl: editorUrl(hostPath, lineFromSourceRef(item.sourceRef)) };
+    const loc = resolveLocation(item.sourcePath, deps.pathMappings);
+    const line = lineFromSourceRef(item.sourceRef);
+    return {
+      ...item,
+      hostPath: loc.hostPath,
+      editorUrl: loc.machine ? remoteEditorUrl(loc, line) : editorUrl(loc.hostPath, line),
+      machine: item.machine ?? loc.machine,
+    };
   };
 
   app.get('/api/health', (c) => c.json({ ok: true, service: 'atlas-api' }));
