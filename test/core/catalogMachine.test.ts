@@ -43,10 +43,29 @@ describe('machine accessors', () => {
     for (const call of q.mock.calls) expect(call[0]).toMatch(/machine = ''/);
   });
 
-  it('upsertProject with isSelf:false leaves root_path alone', async () => {
+  it('upsertProject with isSelf:false does not rename an existing project on conflict', async () => {
     const { cat, q } = stubbed();
     await cat.upsertProject({ slug: 'x', name: 'x', rootPath: '/data/remote/m4max/code1/x', hasKdb: true }, { isSelf: false });
-    expect(q.mock.calls[0]![0]).toMatch(/DO UPDATE SET name = EXCLUDED.name\s+RETURNING/);
+    // A no-op `slug = EXCLUDED.slug` update, not `name = ...` — only that
+    // makes `ON CONFLICT ... RETURNING id` return a row without touching a
+    // real column, so a second, differently-named mirror discovery of the
+    // same slug can never clobber the name a self (or earlier) discovery set.
+    expect(q.mock.calls[0]![0]).toMatch(/DO UPDATE SET slug = EXCLUDED.slug\s+RETURNING/);
+    expect(q.mock.calls[0]![0]).not.toMatch(/name = EXCLUDED.name/);
+  });
+
+  it('upsertProject with isSelf:false and a different name still leaves the stored name untouched', async () => {
+    const { cat, q } = stubbed();
+    await cat.upsertProject({ slug: 'x', name: 'x (self)', rootPath: '/data/code/x', hasKdb: true });
+    await cat.upsertProject(
+      { slug: 'x', name: 'x (as seen by m4max)', rootPath: '/data/remote/m4max/code1/x', hasKdb: true },
+      { isSelf: false },
+    );
+    // Both calls hit the stubbed pool independently — what matters is that the
+    // SECOND (isSelf:false) call's SQL never assigns `name`, so replaying it
+    // against a real conflict can never overwrite the first call's name.
+    const secondCallSql = q.mock.calls[1]![0];
+    expect(secondCallSql).not.toMatch(/name = EXCLUDED.name/);
   });
 
   it('upsertProject with isSelf:false inserts an empty root_path', async () => {

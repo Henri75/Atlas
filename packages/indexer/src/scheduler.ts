@@ -48,17 +48,36 @@ function syncEnqueuedKey(machine: string): string {
   return `sync_enqueued:${machine}`;
 }
 
+/** Last-logged divergence warning for a project, so a standing divergence is
+ * logged once on the tick it first appears (or changes), not every tick. */
+function divergenceKey(projectId: number): string {
+  return `divergence:${projectId}`;
+}
+
 /**
  * Match a batch of Claude project dirs (all from one machine — self or one
- * mirror) against the projects known for that machine, with a fallback slug
- * for anything unmatched. Pure and shared by the self and mirror attribution
- * passes so the matching logic exists once.
+ * mirror) against `projects`, with a fallback slug for anything unmatched.
+ * Pure and shared by the self and mirror attribution passes so the matching
+ * logic exists once.
  *
- * Keyed on the MATCHED project's own `slug`+`machine` rather than the caller's
- * machine, because matching is by `hostPath` prefix and nothing stops a self
- * dir and a mirror project from sharing a slug — keying on the matched
- * project's identity is what keeps a self project's Claude dirs from bleeding
- * into a same-slug mirror project's job list (and vice versa).
+ * `projects` MUST already be filtered to that machine's own projects before
+ * calling. `matchClaudeDirToProject` picks the longest `hostPath`-encoded
+ * prefix match across whatever candidates it is given, keeping the FIRST
+ * candidate on a tie — and two machines with the same code-root layout (the
+ * common same-user case) produce IDENTICAL encoded hostPaths for a same-slug
+ * project. Matching against the combined self+mirror list let the self entry
+ * (always listed first) win that tie every time, silently attributing every
+ * mirror machine's Claude transcripts to the self project instead — and since
+ * the self round's own dir of the same name would already occupy that job's
+ * deterministic id, the stolen dir's job was a silent no-op: the remote
+ * machine's transcripts were never indexed. Filtering the candidate list per
+ * round, at the call site, is what spec §5 means by "matched against that
+ * machine's project locations".
+ *
+ * Keyed on the MATCHED project's own `slug`+`machine` (which — given a
+ * correctly pre-filtered `projects` — is always the calling round's own
+ * machine) rather than trusting the caller to pass it separately, so a bug in
+ * the filtering shows up as a wrong bucket instead of a silent merge.
  */
 export interface ClaudeAttribution {
   /** Dir paths grouped by `claudeAttribKey(matchedSlug, matchedMachine)`. */
@@ -111,18 +130,41 @@ async function defaultExecGit(args: string[], cwd: string): Promise<string | nul
   }
 }
 
-/**
- * A location's identity for the divergence check (spec §5): the origin URL,
- * falling back to the repo's root commit for an origin-less repo (a local-only
- * checkout still has a stable fingerprint two machines can be compared on).
- */
-async function originUrlFor(
-  cwd: string,
-  execGit: (args: string[], cwd: string) => Promise<string | null>,
-): Promise<string | null> {
-  const url = await execGit(['-c', 'safe.directory=*', 'remote', 'get-url', 'origin'], cwd);
-  if (url) return url;
+type ExecGit = (args: string[], cwd: string) => Promise<string | null>;
+
+async function gitOriginUrl(cwd: string, execGit: ExecGit): Promise<string | null> {
+  return execGit(['-c', 'safe.directory=*', 'remote', 'get-url', 'origin'], cwd);
+}
+
+async function gitRootCommit(cwd: string, execGit: ExecGit): Promise<string | null> {
   return execGit(['-c', 'safe.directory=*', 'rev-list', '--max-parents=0', 'HEAD', '-n', '1'], cwd);
+}
+
+/**
+ * A project's per-location identity for the divergence check (spec §5): each
+ * location's origin URL — or, ONLY when NONE of them has one configured,
+ * each location's root commit instead (a local-only checkout still has a
+ * stable fingerprint two machines can be compared on).
+ *
+ * Never mixes the two within one comparison. A URL and a commit sha never
+ * share a format, so a location with `origin` configured compared against a
+ * sibling that has none (and so fell back to its root commit) would read as
+ * "diverged" on every single tick — a false positive by construction, not a
+ * real signal, since not having pushed a remote yet says nothing about
+ * whether the two checkouts are the same project.
+ */
+async function originsForLocations(
+  locs: { machine: string; rootPath: string }[],
+  execGit: ExecGit,
+): Promise<{ machine: string; originUrl: string | null }[]> {
+  const existing = locs.filter((l) => existsSync(l.rootPath)); // not synced yet / not mounted
+  const urls: { machine: string; originUrl: string | null }[] = [];
+  for (const loc of existing) urls.push({ machine: loc.machine, originUrl: await gitOriginUrl(loc.rootPath, execGit) });
+  if (urls.some((l) => l.originUrl !== null)) return urls;
+
+  const shas: { machine: string; originUrl: string | null }[] = [];
+  for (const loc of existing) shas.push({ machine: loc.machine, originUrl: await gitRootCommit(loc.rootPath, execGit) });
+  return shas;
 }
 
 /**
@@ -154,20 +196,26 @@ export async function scheduleScans(
   const execGit = opts.execGit ?? defaultExecGit;
 
   // 1. Sync jobs: one per enabled non-self machine, cadence-gated so a
-  // 5-minute scan tick does not re-enqueue a sync every time it runs.
-  if (mf) {
+  // 5-minute scan tick does not re-enqueue a sync every time it runs. Skipped
+  // entirely for a manual single-project rescan (opts.project) — that is a
+  // per-project trigger, not a fleet-wide tick, and must not have the side
+  // effect of kicking off syncs for every other machine.
+  if (mf && !opts.project) {
     const now = Date.now();
     for (const m of mf.machines) {
       if (!m.enabled || m.name === self) continue;
       const key = syncEnqueuedKey(m.name);
       const last = Number(await catalog.getSetting(key).catch(() => null)) || 0;
       if (now - last < mf.sync.intervalMin * 60_000) continue;
-      await catalog.setSetting(key, String(now)).catch(() => {});
+      // Stamp only AFTER a successful enqueue: if queue.add throws (a Redis
+      // hiccup), the stamp must stay stale so the next tick retries rather
+      // than skipping this machine for a full interval over nothing.
       await queue.add(`sync/${m.name}`, { sync: m.name } as unknown as ScanJobData, {
         jobId: `sync--${m.name}`,
         removeOnComplete: true,
         removeOnFail: true,
       });
+      await catalog.setSetting(key, String(now)).catch(() => {});
     }
   }
 
@@ -178,12 +226,13 @@ export async function scheduleScans(
   const mirrorRoots = opts.mirrorRoots ?? (mf ? mirrorRootsFor(mf, self) : []);
   const projects = discoverProjects([...cfg.codeRoots, ...mirrorRoots]);
 
-  // 3. Claude attribution, per machine. Self dirs match against the FULL
-  // discovered list (self + mirror projects) exactly as before — matching is
-  // by hostPath, so mirror projects with remote hostPaths only ever match a
-  // mirror-originated Claude dir. Each mirror's dirs get their own pass
-  // against that machine's `encodedRoots` for the fallback-slug case.
+  // 3. Claude attribution, per machine. Each round matches ONLY against that
+  // machine's own projects (see attributeClaudeDirs's docstring for why: two
+  // machines with the same code-root layout produce identical encoded
+  // hostPaths for a same-slug project, and matching against the combined list
+  // let self silently steal every mirror's Claude transcripts).
   const codeRootEnc = cfg.codeRoots.map((r) => encodeClaudePath(r.host ?? r.container));
+  const selfProjects = projects.filter((p) => p.machine === undefined);
   let selfClaudeDirNames: string[] = [];
   try {
     selfClaudeDirNames = readdirSync(cfg.claudeProjectsDir).filter((n) => !n.startsWith('.'));
@@ -200,7 +249,7 @@ export async function scheduleScans(
     }
     standalone.push(...attrib.standalone);
   };
-  mergeAttribution(attributeClaudeDirs(selfClaudePaths, projects, codeRootEnc, undefined));
+  mergeAttribution(attributeClaudeDirs(selfClaudePaths, selfProjects, codeRootEnc, undefined));
 
   const mirrorClaude = opts.mirrorClaude ?? (mf ? mirrorClaudeDirsFor(mf, self) : []);
   for (const mc of mirrorClaude) {
@@ -211,7 +260,8 @@ export async function scheduleScans(
       names = [];
     }
     const paths = names.map((n) => join(mc.dir, n));
-    mergeAttribution(attributeClaudeDirs(paths, projects, mc.encodedRoots, mc.machine));
+    const mcProjects = projects.filter((p) => p.machine === mc.machine);
+    mergeAttribution(attributeClaudeDirs(paths, mcProjects, mc.encodedRoots, mc.machine));
   }
 
   let enqueued = 0;
@@ -297,15 +347,24 @@ export async function scheduleScans(
   // project — right for a genuinely shared checkout, silently wrong for two
   // unrelated repos that happen to share a dir basename. This is the warning,
   // not the fix: slugOverrides is the operator's fix.
+  //
+  // Logged only on CHANGE: index_errors has no pruning, and a standing
+  // divergence would otherwise write a fresh row every tick forever, pinning
+  // the health figure non-zero and burying real scan failures under it. The
+  // last-logged warning text is kept in settings per project; a resolved
+  // divergence clears it rather than leaving a stale flag behind.
   for (const [projectId, locs] of locationsByProjectId) {
     if (locs.length < 2) continue;
-    const withOrigins: { machine: string; originUrl: string | null }[] = [];
-    for (const loc of locs) {
-      if (!existsSync(loc.rootPath)) continue; // not synced yet / not mounted
-      withOrigins.push({ machine: loc.machine, originUrl: await originUrlFor(loc.rootPath, execGit) });
-    }
+    const withOrigins = await originsForLocations(locs, execGit);
     const warning = checkLocationDivergence(withOrigins);
-    if (warning) await catalog.logError(projectId, locs[0]!.rootPath, 'divergence', warning);
+    const settingKey = divergenceKey(projectId);
+    const stored = await catalog.getSetting(settingKey).catch(() => null);
+    if (warning && warning !== stored) {
+      await catalog.logError(projectId, locs[0]!.rootPath, 'divergence', warning);
+      await catalog.setSetting(settingKey, warning).catch(() => {});
+    } else if (!warning && stored) {
+      await catalog.setSetting(settingKey, '').catch(() => {});
+    }
   }
 
   // After every project is upserted, not before: a canonical project discovered

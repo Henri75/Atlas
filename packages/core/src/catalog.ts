@@ -363,9 +363,15 @@ export class Catalog {
         ? `INSERT INTO projects (slug, name, root_path, has_kdb) VALUES ($1,$2,$3,$4)
            ON CONFLICT (slug) DO UPDATE SET root_path = EXCLUDED.root_path, has_kdb = EXCLUDED.has_kdb
            RETURNING id`
-        // Remote discovery must never clobber the self machine's paths (spec §5).
+        // Remote discovery must never clobber the self machine's paths OR
+        // rename an existing project (spec §5) — a mirror-discovered project
+        // is never the source of truth for either. `slug = EXCLUDED.slug` is
+        // a value-less no-op update: PostgreSQL only returns a row from
+        // `ON CONFLICT ... RETURNING` when an UPDATE clause actually ran, so
+        // this is what makes `RETURNING id` work on conflict without
+        // touching a single real column.
         : `INSERT INTO projects (slug, name, root_path, has_kdb) VALUES ($1,$2,$3,$4)
-           ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+           ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug
            RETURNING id`,
       [p.slug, p.name, isSelf ? p.rootPath : '', p.hasKdb],
     );

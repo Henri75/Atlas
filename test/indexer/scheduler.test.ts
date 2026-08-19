@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { parseConfig, encodeClaudePath } from '@atlas/core';
-import { scanJobId, scheduleScans } from '../../packages/indexer/src/scheduler.js';
+import type { DiscoveredProject } from '@atlas/core';
+import { scanJobId, scheduleScans, attributeClaudeDirs, claudeAttribKey } from '../../packages/indexer/src/scheduler.js';
 import type { CodeRoot } from '../../packages/indexer/src/scanners.js';
 
 /**
@@ -57,11 +58,45 @@ function makeCatalog() {
   } as any;
 }
 
+// Legacy mode means "no machines.yaml at the configured path" — these tests
+// used to rely on the default `/config/machines.yaml` not existing on the
+// test host, which is true today but not a guarantee. Pinning ATLAS_MACHINES_FILE
+// to a path that provably never exists makes that hermetic.
+const NO_MACHINES_FILE = join(mkdtempSync(join(tmpdir(), 'kdbscope-sched-no-mf-')), 'machines.yaml');
+
+/**
+ * A stub catalog with real bookkeeping (settings map, slug->id assignment
+ * mirroring the real upsert-by-slug behaviour) rather than a bare vi.fn —
+ * needed by every multi-machine test, since the sync-cadence and divergence
+ * change-detection logic both round-trip through catalog.getSetting/setSetting.
+ */
+function makeMachineCatalog() {
+  const settings = new Map<string, string>();
+  const slugIds = new Map<string, number>();
+  let nextId = 1;
+  return {
+    refreshProjectAliases: async () => 0,
+    upsertProject: vi.fn(async (p: { slug: string }) => {
+      if (!slugIds.has(p.slug)) slugIds.set(p.slug, nextId++);
+      return slugIds.get(p.slug)!;
+    }),
+    upsertProjectLocation: vi.fn(async () => {}),
+    getSetting: vi.fn(async (k: string) => settings.get(k) ?? null),
+    setSetting: vi.fn(async (k: string, v: string) => {
+      settings.set(k, v);
+    }),
+    logError: vi.fn(async () => {}),
+    slugIds,
+  } as any;
+}
+
 describe('scheduleScans job options', () => {
   const run = async () => {
     const add = vi.fn(async () => {});
     const catalog = makeCatalog();
-    const cfg = parseConfig({ CODE_ROOT: root, CLAUDE_PROJECTS_DIR: join(root, 'nope') });
+    const cfg = parseConfig({
+      CODE_ROOT: root, CLAUDE_PROJECTS_DIR: join(root, 'nope'), ATLAS_MACHINES_FILE: NO_MACHINES_FILE,
+    });
     await scheduleScans(cfg, catalog, { add } as any);
     return { add, catalog };
   };
@@ -143,7 +178,9 @@ describe('scheduleScans job options', () => {
   it('standalone/ghost projects (rootPath \'\') get no project_locations row', async () => {
     const add = vi.fn(async () => {});
     const catalog = makeCatalog();
-    const cfg = parseConfig({ CODE_ROOT: root, CLAUDE_PROJECTS_DIR: claudeRoot });
+    const cfg = parseConfig({
+      CODE_ROOT: root, CLAUDE_PROJECTS_DIR: claudeRoot, ATLAS_MACHINES_FILE: NO_MACHINES_FILE,
+    });
     await scheduleScans(cfg, catalog, { add } as any);
 
     // DeepCast (discovered) + the unmatched claude dir (standalone/ghost).
@@ -229,30 +266,9 @@ sync:
     { machine: 'm4max', dir: mirrorClaudeRoot, encodedRoots: [encodeClaudePath('/Users/serge/CODING')] },
   ];
 
-  /** Assigns each distinct slug its own numeric id, like a real upsert. */
-  function makeCatalog() {
-    const settings = new Map<string, string>();
-    const slugIds = new Map<string, number>();
-    let nextId = 1;
-    return {
-      refreshProjectAliases: async () => 0,
-      upsertProject: vi.fn(async (p: { slug: string }) => {
-        if (!slugIds.has(p.slug)) slugIds.set(p.slug, nextId++);
-        return slugIds.get(p.slug)!;
-      }),
-      upsertProjectLocation: vi.fn(async () => {}),
-      getSetting: vi.fn(async (k: string) => settings.get(k) ?? null),
-      setSetting: vi.fn(async (k: string, v: string) => {
-        settings.set(k, v);
-      }),
-      logError: vi.fn(async () => {}),
-      slugIds,
-    } as any;
-  }
-
   function setup() {
     const add = vi.fn(async () => {});
-    const catalog = makeCatalog();
+    const catalog = makeMachineCatalog();
     const cfg = parseConfig({
       CODE_ROOT: mmRoot,
       CLAUDE_PROJECTS_DIR: mmClaudeRoot,
@@ -282,6 +298,20 @@ sync:
     add.mockClear();
     await scheduleScans(cfg, catalog, { add } as any, { mirrorRoots: [], mirrorClaude: [] });
     expect(add.mock.calls.some((c: any) => c[2]?.jobId === 'sync--m4max')).toBe(false);
+  });
+
+  /**
+   * A manual single-project rescan (opts.project) is a per-project trigger,
+   * not a fleet-wide tick — it must not have the side effect of kicking off
+   * syncs for every other machine, even though the cadence is due.
+   */
+  it('opts.project skips the sync block entirely, even when a sync is due', async () => {
+    const { add, catalog, cfg } = setup();
+    await scheduleScans(cfg, catalog, { add } as any, {
+      mirrorRoots: [], mirrorClaude: [], project: 'deepcast',
+    });
+    expect(add.mock.calls.some((c: any) => c[2]?.jobId?.startsWith('sync--'))).toBe(false);
+    expect(catalog.getSetting).not.toHaveBeenCalledWith('sync_enqueued:m4max');
   });
 
   it('mirror project jobs carry the mirror machine, isSelf:false, and a machine-suffixed key', async () => {
@@ -365,5 +395,207 @@ sync:
     const execGit = vi.fn(async () => 'git@x:same.git');
     await scheduleScans(cfg, catalog, { add } as any, { mirrorRoots, mirrorClaude: [], execGit });
     expect(catalog.logError).not.toHaveBeenCalled();
+  });
+
+  /**
+   * index_errors has no pruning, and the divergence check runs every tick —
+   * an unchanged divergence must be logged once, not every five minutes
+   * forever, or it pins the health figure non-zero and buries real failures.
+   */
+  describe('divergence change-detection', () => {
+    const divergent = vi.fn(async (_args: string[], cwd: string) => {
+      if (cwd === join(mmRoot, 'DeepCast')) return 'git@x:self-deepcast.git';
+      if (cwd === join(mirrorCodeRoot, 'DeepCast')) return 'git@x:mirror-deepcast.git';
+      return null;
+    });
+
+    it('the same divergence across two ticks logs once, not twice', async () => {
+      const { add, catalog, cfg } = setup();
+      await scheduleScans(cfg, catalog, { add } as any, { mirrorRoots, mirrorClaude: [], execGit: divergent });
+      await scheduleScans(cfg, catalog, { add } as any, { mirrorRoots, mirrorClaude: [], execGit: divergent });
+      expect(catalog.logError).toHaveBeenCalledTimes(1);
+    });
+
+    it('a changed divergence warning logs again, with the new text', async () => {
+      const { add, catalog, cfg } = setup();
+      await scheduleScans(cfg, catalog, { add } as any, { mirrorRoots, mirrorClaude: [], execGit: divergent });
+      const changed = vi.fn(async (_args: string[], cwd: string) => {
+        if (cwd === join(mmRoot, 'DeepCast')) return 'git@x:self-deepcast.git';
+        if (cwd === join(mirrorCodeRoot, 'DeepCast')) return 'git@x:renamed-mirror-deepcast.git';
+        return null;
+      });
+      await scheduleScans(cfg, catalog, { add } as any, { mirrorRoots, mirrorClaude: [], execGit: changed });
+
+      expect(catalog.logError).toHaveBeenCalledTimes(2);
+      const [, , , firstMessage] = catalog.logError.mock.calls[0]!;
+      const [, , , secondMessage] = catalog.logError.mock.calls[1]!;
+      expect(secondMessage).not.toBe(firstMessage);
+      expect(secondMessage).toContain('renamed-mirror-deepcast.git');
+    });
+
+    it('a resolved divergence logs nothing further and clears the stored flag', async () => {
+      const { add, catalog, cfg } = setup();
+      await scheduleScans(cfg, catalog, { add } as any, { mirrorRoots, mirrorClaude: [], execGit: divergent });
+      expect(catalog.logError).toHaveBeenCalledTimes(1);
+
+      const agreeing = vi.fn(async () => 'git@x:same.git');
+      await scheduleScans(cfg, catalog, { add } as any, { mirrorRoots, mirrorClaude: [], execGit: agreeing });
+
+      expect(catalog.logError).toHaveBeenCalledTimes(1); // still just the first
+      const deepcastId = catalog.slugIds.get('deepcast');
+      expect(catalog.setSetting).toHaveBeenCalledWith(`divergence:${deepcastId}`, '');
+    });
+  });
+});
+
+/**
+ * Regression coverage for the bug found in review: two machines with the
+ * SAME code-root layout (the common same-user case — a mirror config that
+ * simply repeats the operator's own paths) produce IDENTICAL encoded
+ * hostPaths for a same-slug project. Matching Claude dirs against the
+ * combined self+mirror project list let the self entry (always listed first
+ * in `discoverProjects`) win that tie every time, so a mirror machine's own
+ * Claude dir landed in the SELF bucket — and because it shared the self
+ * job's un-suffixed key, the mirror's job silently never ran: the remote
+ * machine's transcripts were never indexed, with nothing in the logs to show it.
+ */
+describe('scheduleScans — per-machine claude attribution (identical layouts)', () => {
+  const SHARED_HOST = '/Users/shared/CODING';
+  const ENC_DEEPCAST = encodeClaudePath(`${SHARED_HOST}/DeepCast`);
+  const ENC_LYCOS = encodeClaudePath(`${SHARED_HOST}/DeepCast/Lycos`);
+
+  const selfRoot = mkdtempSync(join(tmpdir(), 'kdbscope-sched-idlayout-self-'));
+  afterAll(() => rmSync(selfRoot, { recursive: true, force: true }));
+  mkdirSync(join(selfRoot, 'DeepCast/kdb'), { recursive: true });
+  mkdirSync(join(selfRoot, 'DeepCast/Lycos/kdb'), { recursive: true }); // nested/"deeper" self project
+
+  const selfClaudeDir = mkdtempSync(join(tmpdir(), 'kdbscope-sched-idlayout-self-claude-'));
+  afterAll(() => rmSync(selfClaudeDir, { recursive: true, force: true }));
+  mkdirSync(join(selfClaudeDir, ENC_DEEPCAST), { recursive: true });
+  mkdirSync(join(selfClaudeDir, ENC_LYCOS), { recursive: true });
+
+  // Mirror machine, configured with the SAME host layout — its own DeepCast
+  // project encodes to the exact same Claude path as self's.
+  const mirrorRoot = mkdtempSync(join(tmpdir(), 'kdbscope-sched-idlayout-mirror-'));
+  afterAll(() => rmSync(mirrorRoot, { recursive: true, force: true }));
+  mkdirSync(join(mirrorRoot, 'DeepCast/kdb'), { recursive: true });
+
+  const mirrorClaudeDir = mkdtempSync(join(tmpdir(), 'kdbscope-sched-idlayout-mirror-claude-'));
+  afterAll(() => rmSync(mirrorClaudeDir, { recursive: true, force: true }));
+  mkdirSync(join(mirrorClaudeDir, ENC_DEEPCAST), { recursive: true }); // mirror's OWN transcript dir
+
+  const mirrorRoots: CodeRoot[] = [
+    { container: mirrorRoot, host: SHARED_HOST, machine: 'm4max', slugOverrides: {} },
+  ];
+  const mirrorClaude = [
+    { machine: 'm4max', dir: mirrorClaudeDir, encodedRoots: [encodeClaudePath(SHARED_HOST)] },
+  ];
+
+  function setup() {
+    const add = vi.fn(async () => {});
+    const catalog = makeMachineCatalog();
+    const cfg = parseConfig({
+      CODE_ROOT: selfRoot,
+      CODE_ROOT_HOST: SHARED_HOST,
+      CLAUDE_PROJECTS_DIR: selfClaudeDir,
+      ATLAS_MACHINES_FILE: NO_MACHINES_FILE, // resolveSelfName -> 'local'; mirrors come from opts, not a real fleet
+    });
+    return { add, catalog, cfg };
+  }
+
+  it('(a) a mirror Claude dir matching an identically-laid-out project attributes to the MIRROR bucket, with a distinct jobId from the self job', async () => {
+    const { add, catalog, cfg } = setup();
+    await scheduleScans(cfg, catalog, { add } as any, { mirrorRoots, mirrorClaude });
+
+    const deepcastClaudeJobs = add.mock.calls.filter(
+      (c: any) => c[1]?.sourceType === 'claude_session' && c[1]?.projectSlug === 'deepcast',
+    );
+    expect(deepcastClaudeJobs).toHaveLength(2);
+
+    const selfJob = deepcastClaudeJobs.find((c: any) => c[1].isSelf === true)!;
+    const mirrorJob = deepcastClaudeJobs.find((c: any) => c[1].isSelf === false)!;
+    expect(selfJob).toBeDefined();
+    expect(mirrorJob).toBeDefined();
+
+    expect((selfJob as any)[1].machine).toBe('local');
+    expect((selfJob as any)[1].claudeDirs).toEqual([join(selfClaudeDir, ENC_DEEPCAST)]);
+
+    expect((mirrorJob as any)[1].machine).toBe('m4max');
+    expect((mirrorJob as any)[1].claudeDirs).toEqual([join(mirrorClaudeDir, ENC_DEEPCAST)]);
+
+    // The whole bug: before the fix these two shared one deterministic id.
+    expect((selfJob as any)[2].jobId).not.toBe((mirrorJob as any)[2].jobId);
+  });
+
+  it('(b) self attribution is unaffected by the mirror\'s presence, including for a deeper/nested self project', async () => {
+    const legacy = setup();
+    await scheduleScans(legacy.cfg, legacy.catalog, { add: legacy.add } as any, {
+      mirrorRoots: [], mirrorClaude: [],
+    });
+
+    const withMirror = setup();
+    await scheduleScans(withMirror.cfg, withMirror.catalog, { add: withMirror.add } as any, {
+      mirrorRoots, mirrorClaude,
+    });
+
+    const selfClaudeJobShape = (add: ReturnType<typeof vi.fn>) =>
+      add.mock.calls
+        .filter((c: any) => c[1]?.sourceType === 'claude_session' && c[1]?.isSelf === true)
+        .map((c: any) => ({ projectSlug: c[1].projectSlug, claudeDirs: c[1].claudeDirs, machine: c[1].machine }))
+        .sort((a: any, b: any) => a.projectSlug.localeCompare(b.projectSlug));
+
+    const legacyShape = selfClaudeJobShape(legacy.add);
+    const withMirrorShape = selfClaudeJobShape(withMirror.add);
+
+    // Both self dirs (top-level DeepCast AND the nested/deeper DeepCast/Lycos)
+    // must resolve identically whether or not a same-layout mirror is present.
+    expect(legacyShape).toEqual(withMirrorShape);
+    expect(legacyShape.map((j: any) => j.projectSlug)).toEqual(
+      expect.arrayContaining(['deepcast', 'deepcast-lycos']),
+    );
+    // The mirror's own DeepCast job must never appear tagged as a self job.
+    expect(withMirrorShape.every((j: any) => j.machine === 'local')).toBe(true);
+  });
+});
+
+describe('attributeClaudeDirs', () => {
+  function project(over: Partial<DiscoveredProject> = {}): DiscoveredProject {
+    return { slug: 'deepcast', name: 'DeepCast', rootPath: '/self/DeepCast', hasKdb: true, ...over };
+  }
+
+  it('groups a matched dir under claudeAttribKey(matchedSlug, matchedMachine)', () => {
+    const projects = [project({ hostPath: '/host/DeepCast' })];
+    const dirPath = '/claude/-host-DeepCast';
+    const { matchedByProjectSlug, standalone } = attributeClaudeDirs([dirPath], projects, []);
+    expect(standalone).toEqual([]);
+    expect(matchedByProjectSlug.get(claudeAttribKey('deepcast', undefined))).toEqual([dirPath]);
+  });
+
+  it('tags a self-machine match with machine:undefined and a mirror match with its machine', () => {
+    const mirrorProjects = [project({ hostPath: '/host/DeepCast', machine: 'm4max' })];
+    const dirPath = '/claude/-host-DeepCast';
+    const { matchedByProjectSlug } = attributeClaudeDirs([dirPath], mirrorProjects, []);
+    expect(matchedByProjectSlug.get(claudeAttribKey('deepcast', 'm4max'))).toEqual([dirPath]);
+    expect(matchedByProjectSlug.has(claudeAttribKey('deepcast', undefined))).toBe(false);
+  });
+
+  it('an unmatched dir falls back to claudeDirFallbackSlug and tags the ghost with fallbackMachine', () => {
+    const dirPath = '/claude/-Users-serge-CODING-mystery';
+    const { matchedByProjectSlug, standalone } = attributeClaudeDirs(
+      [dirPath], [], [encodeClaudePath('/Users/serge/CODING')], 'm4max',
+    );
+    expect(standalone).toEqual([{ slug: 'mystery', name: 'mystery', rootPath: '', hasKdb: false, machine: 'm4max' }]);
+    expect(matchedByProjectSlug.get(claudeAttribKey('mystery', 'm4max'))).toEqual([dirPath]);
+  });
+
+  it('documents WHY callers must pre-filter: an unfiltered tie between a self and a mirror candidate resolves to whichever is listed first', () => {
+    const selfP = project({ hostPath: '/shared/DeepCast' }); // machine: undefined
+    const mirrorP = project({ hostPath: '/shared/DeepCast', machine: 'm4max' });
+    const dirPath = '/claude/-shared-DeepCast';
+    const { matchedByProjectSlug } = attributeClaudeDirs([dirPath], [selfP, mirrorP], []);
+    // Self listed first -> wins the tie. This is exactly why scheduleScans
+    // filters `projects` to one machine's own entries before calling here.
+    expect(matchedByProjectSlug.get(claudeAttribKey('deepcast', undefined))).toEqual([dirPath]);
+    expect(matchedByProjectSlug.has(claudeAttribKey('deepcast', 'm4max'))).toBe(false);
   });
 });
