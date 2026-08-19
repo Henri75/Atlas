@@ -53,6 +53,13 @@ export interface Entry {
   /** Locator inside the source: commit sha, byte offset, heading anchor… */
   sourceRef?: string;
   meta?: Record<string, unknown>;
+  /**
+   * Machine-independent identity for dedup key v3 (spec §6): set by
+   * `applyIdentity`/`identityFromStored` in identity.ts. Absent means the
+   * pipeline never ran identity normalization — `Catalog.dedupKey` then falls
+   * back to the legacy v2-shaped key from `projectSlug`/`sourcePath`/`sourceRef`.
+   */
+  identity?: { scope: string; path: string; ref: string };
 }
 
 export interface StoredEntry extends Entry {

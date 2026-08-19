@@ -12,6 +12,7 @@ export * from './chunker.js';
 export * from './sparse.js';
 export * from './discovery.js';
 export * from './ids.js';
+export * from './identity.js';
 export * from './retry.js';
 export * from './paths.js';
 export * from './storage.js';

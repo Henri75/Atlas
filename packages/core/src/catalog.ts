@@ -1099,13 +1099,10 @@ export class Catalog {
   }
 
   static dedupKey(e: Entry): string {
-    return deterministicUuid(
-      e.projectSlug,
-      e.sourcePath,
-      e.sourceRef ?? '',
-      e.title,
-      contentHash(e.body),
-    );
+    // v3 (spec §6): machine-independent identity when the pipeline provided one;
+    // the legacy-shaped fallback IS the spec's conservative no-known-root rule.
+    const id = e.identity ?? { scope: e.projectSlug, path: e.sourcePath, ref: e.sourceRef ?? '' };
+    return deterministicUuid(id.scope, id.path, id.ref, e.title, contentHash(e.body));
   }
 
   /**
