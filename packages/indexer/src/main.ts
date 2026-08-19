@@ -5,6 +5,8 @@ import {
   ADOPTION_REPORT_KEY,
   ADOPTION_SESSIONS_KEPT,
   Catalog,
+  DEDUP_SCHEME,
+  DEDUP_SCHEME_KEY,
   EXTRACTION_SCHEME,
   ID_SCHEME,
   PROJECT_GROUPING,
@@ -14,6 +16,9 @@ import {
   collectionNameFor,
   createEmbedder,
   getConfig,
+  loadMachinesFileIfPresent,
+  mirrorClaudeDir,
+  runDedupMigration,
   type CachedAdoption,
 } from '@atlas/core';
 import {
@@ -103,6 +108,53 @@ async function main() {
   const backfilled = await catalog.backfillMachine(resolveSelfName(cfg));
   if (backfilled > 0) {
     console.log(`[indexer] backfilled machine on ${backfilled} pre-machine row(s)`);
+  }
+
+  /**
+   * Dedup key v3 (spec §6): recompute every key in place from
+   * machine-independent identity, so git-synced content stops being indexed
+   * once per machine.
+   *
+   * Its own marker and its own advisory lock, and it runs to completion here —
+   * before the embedder, the worker and the cron tick — because every one of
+   * those either writes entries or reads keys, and a half-migrated catalog
+   * would let a scan insert a duplicate of a row it could no longer match.
+   * Nothing is re-embedded: point ids hash the STORED source_path under the
+   * frozen v2 namespace, so no vector moves.
+   */
+  if ((await catalog.getSetting(DEDUP_SCHEME_KEY)) !== DEDUP_SCHEME) {
+    if (!hadEntries || schemeChanged) {
+      // Nothing to rekey — an empty catalog, or one this boot just truncated.
+      // Every row inserted from here on is written with a v3 key already.
+      await catalog.setSetting(DEDUP_SCHEME_KEY, DEDUP_SCHEME);
+    } else {
+      /**
+       * A collision loser must lose its Qdrant points BEFORE its Postgres row
+       * (spec §6.4), and those points live in the collection search is served
+       * from — `active_collection` — not in whatever this boot's embedder
+       * resolves to. Unset means nothing was ever published, so nothing was
+       * ever embedded: there are no points to delete and the Postgres-only
+       * path is complete rather than a shortcut.
+       */
+      const activeCollection = await catalog.getSetting('active_collection').catch(() => null);
+      const migrationVectors = activeCollection
+        ? new VectorStore(cfg.qdrantUrl, activeCollection)
+        : null;
+      // Stored claude paths may sit under this machine's mount or any mirror's;
+      // a dir that does not exist costs nothing (identityFromStored falls back
+      // to the same <dir>/<file> shape).
+      const machinesFile = loadMachinesFileIfPresent(cfg.machinesFile);
+      const claudeDirs = [
+        cfg.claudeProjectsDir,
+        ...(machinesFile?.machines ?? []).map((m) => mirrorClaudeDir(m.name)),
+      ];
+      console.log('[indexer] dedup key migration v3 starting (in place; no re-embed)');
+      const t0 = Date.now();
+      const s = await runDedupMigration(catalog, migrationVectors, { claudeDirs });
+      console.log(
+        `[indexer] dedup v3 done in ${Math.round((Date.now() - t0) / 1000)}s: ${JSON.stringify(s)}`,
+      );
+    }
   }
 
   const embedder = await createEmbedder(cfg.embeddings, cfg.g2pClientId);

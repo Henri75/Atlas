@@ -253,7 +253,8 @@ const PAYLOAD_INDEXES: [string, 'keyword' | 'integer' | 'datetime'][] = [
   ['component', 'keyword'],
   ['kind', 'keyword'],
   ['doc_status', 'keyword'],
-  // Integer index so setDocStatus can address points by entry id.
+  // Integer index so setDocStatus and deleteByEntryIds can address points by
+  // entry id.
   ['entry_id', 'integer'],
   // Range filtering on occurred_at works without this — Qdrant falls back to
   // a full scan — but at a measured 3.11s vs 0.087s (36x) it was far too slow
@@ -638,6 +639,30 @@ export class VectorStore {
             })
           : this.client.deletePayload(this.collection, { keys: ['doc_status'], filter, wait: false }),
       );
+    }
+  }
+
+  /**
+   * Delete every point belonging to these entries.
+   *
+   * By payload filter rather than by point id: an entry becomes an unknown
+   * number of chunk points, and reconstructing their ids means knowing how
+   * many chunks it produced — which is exactly the knowledge a caller
+   * discarding the entry no longer has. `entry_id` is a payload-indexed field
+   * (PAYLOAD_INDEXES), so the filter is cheap.
+   *
+   * `wait: true`, unlike the ingest paths. The only caller is the v3 dedup
+   * migration, which deletes a collision loser's points BEFORE its Postgres
+   * row (spec §6.4) — the whole safety argument rests on the points being gone
+   * by the time this returns, so it must not return on mere acceptance. The
+   * path is rare (collisions are essentially none), so the synchronous flush
+   * costs nothing measurable.
+   */
+  async deleteByEntryIds(entryIds: number[]): Promise<void> {
+    if (!entryIds.length) return;
+    for (let i = 0; i < entryIds.length; i += 500) {
+      const filter = { must: [{ key: 'entry_id', match: { any: entryIds.slice(i, i + 500) } }] };
+      await withRetry(() => this.client.delete(this.collection, { filter, wait: true }));
     }
   }
 
