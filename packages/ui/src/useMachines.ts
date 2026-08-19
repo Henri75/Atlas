@@ -20,6 +20,8 @@ export interface UseMachines {
   multiMachine: boolean;
   loading: boolean;
   error: string;
+  /** Absent in legacy mode; callers fall back to their own default. */
+  syncIntervalMin: number | undefined;
 }
 
 export function useMachines(pollMs = 0): UseMachines {
@@ -55,5 +57,6 @@ export function useMachines(pollMs = 0): UseMachines {
     multiMachine: machines.length >= 2,
     loading: data === null && !error,
     error,
+    syncIntervalMin: data?.syncIntervalMin,
   };
 }

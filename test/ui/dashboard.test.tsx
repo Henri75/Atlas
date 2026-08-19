@@ -168,4 +168,67 @@ describe('DashboardView', () => {
     render(<DashboardView onGoTo={() => {}} />);
     await waitFor(() => expect(screen.getByText('unreachable')).toBeTruthy());
   });
+
+  /**
+   * The staleness boundary is 2x the FLEET-CONFIGURED interval
+   * (`/api/machines`'s `syncIntervalMin`), not a UI-side constant — a
+   * machine 25 minutes stale must read differently depending on what the
+   * server says the interval is. Same fixture age (25 min) used both ways
+   * below: a passing test that used a fixed age against a fixed constant
+   * could not tell "reads the server value" from "reads a hardcode that
+   * happens to be right".
+   */
+  const fleetWithLastSuccess = (lastSuccessAt: string, syncIntervalMin: number | undefined) => ({
+    '/api/dashboard': base,
+    '/api/machines': {
+      self: 'nasta-mbp',
+      ...(syncIntervalMin === undefined ? {} : { syncIntervalMin }),
+      machines: [
+        {
+          name: 'nasta-mbp', address: '127.0.0.1', user: 'nasta',
+          codeRoots: ['/x'], claudeProjects: '/y', enabled: true, sync: null,
+        },
+        {
+          name: 'mac-mini', address: '10.0.0.5', user: 'nasta',
+          codeRoots: ['/x'], claudeProjects: '/y', enabled: true,
+          sync: {
+            lastAttemptAt: lastSuccessAt, lastSuccessAt, status: 'ok',
+            bytes: 1024, durationMs: 500, error: null,
+          },
+        },
+      ],
+    },
+  });
+
+  it('stays normal at 25 minutes stale when the fleet interval is 15 (2x = 30)', async () => {
+    const iso = new Date(Date.now() - 25 * 60_000).toISOString();
+    stubByUrl(fleetWithLastSuccess(iso, 15));
+    render(<DashboardView onGoTo={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Fleet')).toBeTruthy());
+    expect(screen.getByTitle(iso).style.color).not.toBe('var(--color-kdb)');
+  });
+
+  it('goes amber past 2x the fleet interval (35 min stale, interval 15, 2x = 30)', async () => {
+    const iso = new Date(Date.now() - 35 * 60_000).toISOString();
+    stubByUrl(fleetWithLastSuccess(iso, 15));
+    render(<DashboardView onGoTo={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Fleet')).toBeTruthy());
+    expect(screen.getByTitle(iso).style.color).toBe('var(--color-kdb)');
+  });
+
+  /**
+   * Same 25-minute age as the first test above, which stayed normal under
+   * an explicit interval of 15 (2x = 30 min). With `syncIntervalMin`
+   * entirely absent from the response, the UI must fall back to its own
+   * DEFAULT_SYNC_INTERVAL_MIN (10, 2x = 20 min) — 25 >= 20, so this one
+   * goes amber. Proves the fallback is the absent-field case only, not a
+   * value that silently overrides a server-sent interval.
+   */
+  it('falls back to the UI default only when the server omits syncIntervalMin', async () => {
+    const iso = new Date(Date.now() - 25 * 60_000).toISOString();
+    stubByUrl(fleetWithLastSuccess(iso, undefined));
+    render(<DashboardView onGoTo={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Fleet')).toBeTruthy());
+    expect(screen.getByTitle(iso).style.color).toBe('var(--color-kdb)');
+  });
 });

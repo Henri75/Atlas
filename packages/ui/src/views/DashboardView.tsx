@@ -20,7 +20,7 @@ export function DashboardView({ onGoTo }: { onGoTo: (view: 'search') => void }) 
   const [error, setError] = useState('');
   // Polled at the same cadence as the dashboard itself — sync health is as
   // live as everything else on this page.
-  const { self, machines, multiMachine } = useMachines(15_000);
+  const { self, machines, multiMachine, syncIntervalMin } = useMachines(15_000);
 
   useEffect(() => {
     const load = () =>
@@ -73,7 +73,7 @@ export function DashboardView({ onGoTo }: { onGoTo: (view: 'search') => void }) 
       {multiMachine && (
         <section className="mt-8">
           <Eyebrow>Fleet</Eyebrow>
-          <MachineCards machines={machines} self={self} />
+          <MachineCards machines={machines} self={self} syncIntervalMin={syncIntervalMin} />
         </section>
       )}
 
@@ -463,30 +463,40 @@ function ActivityChart({ activity }: { activity: ActivityPoint[] }) {
 }
 
 /**
- * config/machines.yaml's own default (`sync.intervalMin: 10`) — the closest
- * available proxy for "should have synced by now". The documented
- * /api/machines wire shape (spec Task 5) does not carry the configured
- * interval, so a fleet running a non-default interval will stage-shift
- * amber a bit early or late; the alternative (no staleness signal at all)
- * is worse.
+ * config/machines.yaml's own schema default (`sync.intervalMin: 10`) —
+ * used ONLY when `/api/machines` omits `syncIntervalMin`, i.e. legacy mode
+ * with no loaded fleet file to read a value from. Whenever the server sends
+ * a real number (config-set or its own schema default resolved server-side)
+ * that value wins; this is a fallback for absence, not a second source of
+ * truth for a fleet that IS configured.
  */
 const DEFAULT_SYNC_INTERVAL_MIN = 10;
 
 /** Amber once a healthy machine's last success is older than 2x the interval. */
-function isStale(sync: MachineRow['sync']): boolean {
+function isStale(sync: MachineRow['sync'], intervalMin: number): boolean {
   if (!sync?.lastSuccessAt) return true;
   const ageMs = Date.now() - new Date(sync.lastSuccessAt).getTime();
-  return ageMs >= DEFAULT_SYNC_INTERVAL_MIN * 2 * 60_000;
+  return ageMs >= intervalMin * 2 * 60_000;
 }
 
 /** One card per fleet machine: name (self marked), status, last success. */
-function MachineCards({ machines, self }: { machines: MachineRow[]; self: string }) {
+function MachineCards({
+  machines,
+  self,
+  syncIntervalMin,
+}: {
+  machines: MachineRow[];
+  self: string;
+  /** From GET /api/machines; absent only in legacy mode (see the constant above). */
+  syncIntervalMin: number | undefined;
+}) {
+  const intervalMin = syncIntervalMin ?? DEFAULT_SYNC_INTERVAL_MIN;
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
       {machines.map((m) => {
         const state = syncStateOf(m.sync);
         const bad = state === 'unreachable' || state === 'error';
-        const stale = state === 'ok' && isStale(m.sync);
+        const stale = state === 'ok' && isStale(m.sync, intervalMin);
         const dotColor = bad
           ? 'var(--color-report)'
           : stale

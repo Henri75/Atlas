@@ -712,10 +712,28 @@ describe('api routes', () => {
       expect(body.machines[0].sync).toBeNull();
     });
 
+    /**
+     * The dashboard's staleness coloring needs this to avoid hardcoding a
+     * second copy of the config default — read straight from the loaded
+     * MachinesFile, not the route's own literal. `fleetOf()`'s default
+     * (10) is indistinguishable from a hardcode, so this pins a non-default
+     * value (15) to prove it is actually read through.
+     */
+    it('carries the fleet-configured sync interval', async () => {
+      const withInterval = fleetOf();
+      withInterval.fleet.sync = { intervalMin: 15, excludes: [] };
+      const app = buildApp(makeDeps({ machines: () => withInterval }));
+      const body = await (await app.request('/api/machines')).json();
+      expect(body.syncIntervalMin).toBe(15);
+    });
+
     /** No config/machines.yaml on disk = legacy single-machine mode. */
     it('legacy mode returns self: local and an empty machine list', async () => {
       const app = buildApp(makeDeps({ machines: () => ({ fleet: null, self: 'local' }) }));
       const body = await (await app.request('/api/machines')).json();
+      // No loaded MachinesFile to read an interval from, and the feature
+      // itself is off — omitted rather than inventing a value, which also
+      // keeps this exact-equality assertion meaningful.
       expect(body).toEqual({ self: 'local', machines: [] });
     });
   });

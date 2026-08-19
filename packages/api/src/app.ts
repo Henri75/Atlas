@@ -592,6 +592,10 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
    */
   app.get('/api/machines', async (c) => {
     const { fleet, self } = deps.machines();
+    // Legacy mode has no loaded MachinesFile to read an interval from, and
+    // the feature itself is off — omitted rather than inventing a value.
+    // (The dashboard's staleness math falls back to the same schema default
+    // itself when this field is absent — see DEFAULT_SYNC_INTERVAL_MIN.)
     if (!fleet) return c.json({ self, machines: [] });
     const sync = await deps.listMachineSync();
     // Picked explicitly: the row also carries `machine`, which is redundant
@@ -612,6 +616,10 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     );
     return c.json({
       self,
+      // Read from the loaded fleet, not a second literal here: zod already
+      // resolved this to config/machines.yaml's value or its own schema
+      // default (DEFAULT_SYNC_INTERVAL_MIN) when the file omits `sync`.
+      syncIntervalMin: fleet.sync.intervalMin,
       machines: fleet.machines.map((m) => ({
         name: m.name,
         address: m.address,

@@ -128,6 +128,14 @@ export interface MachineRow {
 export interface MachinesResponse {
   self: string;
   machines: MachineRow[];
+  /**
+   * Minutes between sync ticks, read from config/machines.yaml (or its
+   * schema default) — absent only in legacy mode, where there is no loaded
+   * fleet file to read one from and the feature itself is off. Consumers
+   * fall back to their own copy of the same default rather than treating
+   * absence as zero.
+   */
+  syncIntervalMin?: number;
 }
 
 export interface TimelineItem {

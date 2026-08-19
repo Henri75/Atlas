@@ -11,6 +11,15 @@ import { z } from 'zod';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
+/**
+ * Minutes between sync ticks when config/machines.yaml omits `sync.intervalMin`
+ * — the schema default below, and also what the API falls back to in legacy
+ * mode (no fleet file at all, so there is no MachinesFile to read a value
+ * from). Exported so both call `10` by name instead of by two independently
+ * maintained literals.
+ */
+export const DEFAULT_SYNC_INTERVAL_MIN = 10;
+
 const machineSchema = z.object({
   name: z.string().regex(NAME_RE, 'name must match [a-z0-9][a-z0-9-]*'),
   address: z.string().min(1).refine((a) => !a.endsWith('.local'), {
@@ -32,10 +41,10 @@ export const machinesFileSchema = z.object({
     { message: 'duplicate machine name' },
   ),
   sync: z.object({
-    intervalMin: z.number().int().min(1).default(10),
+    intervalMin: z.number().int().min(1).default(DEFAULT_SYNC_INTERVAL_MIN),
     /** ADDITIONS to the built-in list derived from the scanners' IGNORED_DIRS. */
     excludes: z.array(z.string()).default([]),
-  }).default({ intervalMin: 10, excludes: [] }),
+  }).default({ intervalMin: DEFAULT_SYNC_INTERVAL_MIN, excludes: [] }),
 });
 
 export type MachineConfig = z.infer<typeof machineSchema>;
