@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { mergeToolResponse, SERVER_INSTRUCTIONS, SOURCE_TYPES, TOOLS } from '../../packages/mcp/src/tools.js';
+import {
+  bearerHeader,
+  mergeToolResponse,
+  SERVER_INSTRUCTIONS,
+  SOURCE_TYPES,
+  TOOLS,
+} from '../../packages/mcp/src/tools.js';
 
 describe('MCP tool registry', () => {
   it('exposes the expected tools', () => {
@@ -345,4 +351,20 @@ it('atlas_ask description points agents at it before code-reading', () => {
   expect(ask.description).toMatch(/before reading code to infer/i);
   // scopeFallback results are not from the requested project; agents must say so.
   expect(ask.description).toMatch(/NOT from the project you asked for/);
+});
+
+/**
+ * spec §7: requests from this server arrive at the API over the Docker
+ * bridge network, never loopback, so once ATLAS_TOKEN is configured every
+ * tool call needs a bearer header or the API 401s it — a legacy no-token
+ * install must keep sending no such header at all.
+ */
+describe('bearerHeader()', () => {
+  it('adds the Authorization header when a token is configured', () => {
+    expect(bearerHeader('sekret')).toEqual({ authorization: 'Bearer sekret' });
+  });
+
+  it('adds nothing when no token is configured', () => {
+    expect(bearerHeader(undefined)).toEqual({});
+  });
 });

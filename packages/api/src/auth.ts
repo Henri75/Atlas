@@ -23,16 +23,18 @@ import { authorize, type AuthorizeOpts } from '@atlas/core';
  */
 export function authMiddleware(opts: AuthorizeOpts): MiddlewareHandler {
   return async (c: Context, next: Next) => {
+    // Legacy no-token mode does zero per-request work — not even the socket lookup.
+    if (!opts.token) return next();
     let peer: string | undefined;
     try {
       peer = getConnInfo(c).remote.address;
     } catch {
       peer = undefined;
     }
-    const verdict = authorize(
-      { path: new URL(c.req.url).pathname, peer, header: c.req.header('authorization') },
-      opts,
-    );
+    // `c.req.path` (not `new URL(c.req.url).pathname`): the path the router
+    // actually matched, so the exempt list and the route table can never
+    // silently disagree about what a "path" is.
+    const verdict = authorize({ path: c.req.path, peer, header: c.req.header('authorization') }, opts);
     if (verdict === 401) return c.json({ error: 'unauthorized' }, 401);
     await next();
   };

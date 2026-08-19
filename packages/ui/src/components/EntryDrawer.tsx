@@ -1,22 +1,8 @@
 import { useEffect, useState } from 'react';
-import type { SourceType } from '../types';
+import { api } from '../api';
+import type { FullEntry } from '../types';
 import { Markdown } from './Markdown';
 import { Badge, Spinner, Stamp } from './ui';
-
-interface FullEntry {
-  id: number;
-  title: string;
-  body: string;
-  slug: string;
-  source_type: SourceType;
-  component?: string;
-  session_id?: string;
-  occurred_at?: string;
-  hostPath: string;
-  editorUrl: string;
-  /** First-ingested-from provenance (spec §6); absent pre-fleet or unbackfilled. */
-  machine?: string;
-}
 
 /**
  * Search shows a 280-char snippet. This drawer shows the whole record, plus a
@@ -43,8 +29,8 @@ export function EntryDrawer({
     setError('');
     setCopied(false);
     if (entryId == null) return;
-    fetch(`/api/entries/${entryId}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+    api
+      .entry(entryId)
       .then(setEntry)
       .catch((e: Error) => setError(e.message));
   }, [entryId]);

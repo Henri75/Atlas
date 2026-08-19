@@ -4,6 +4,7 @@ import type {
   CachedAdoption,
   ComponentRow,
   Dashboard,
+  FullEntry,
   MachinesResponse,
   ProjectRow,
   SearchResult,
@@ -147,6 +148,13 @@ export const api = {
     get<{ entries: any[] }>(`/api/projects/${slug}/components/${encodeURIComponent(name)}`),
   sessions: (slug: string) => get<{ sessions: SessionRow[] }>(`/api/projects/${slug}/sessions`),
   session: (id: string) => get<{ session: SessionRow; entries: any[] }>(`/api/sessions/${id}`),
+  /**
+   * The full record behind a search snippet. EntryDrawer used to fetch this
+   * itself with a bare `fetch` — no auth header, no `atlas:unauthorized` on a
+   * 401 — which meant a LAN-gated instance showed a raw "401" in the drawer
+   * instead of ever raising TokenGate.
+   */
+  entry: (id: number) => get<FullEntry>(`/api/entries/${id}`),
   stats: () => get<Stats>('/api/stats'),
   dashboard: () => get<Dashboard>('/api/dashboard'),
   /**

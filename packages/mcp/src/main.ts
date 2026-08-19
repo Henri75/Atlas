@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { authorize, getConfig } from '@atlas/core';
-import { mergeToolResponse, SERVER_INSTRUCTIONS, TOOLS } from './tools.js';
+import { bearerHeader, mergeToolResponse, SERVER_INSTRUCTIONS, TOOLS } from './tools.js';
 
 /**
  * Stateless streamable-HTTP MCP server. Each request gets a fresh
@@ -38,9 +38,18 @@ function buildMcpServer(): McpServer {
         const { path, init } = tool.request(args ?? {});
         // Identify agent traffic so the API's usage telemetry can tell which
         // tool was called; unlabeled requests (the UI) are not recorded.
+        // Bearer header (spec §7): this request arrives at the API over the
+        // Docker bridge network, never loopback, so once ATLAS_TOKEN is set
+        // this is required regardless of ATLAS_BIND — omitted entirely
+        // (rather than sent empty) when no token is configured.
         const res = await fetch(`${cfg.apiUrl}${path}`, {
           ...init,
-          headers: { ...init?.headers, 'x-atlas-client': 'mcp', 'x-atlas-tool': tool.name },
+          headers: {
+            ...init?.headers,
+            'x-atlas-client': 'mcp',
+            'x-atlas-tool': tool.name,
+            ...bearerHeader(cfg.atlasToken),
+          },
         });
         let text = await res.text();
         if (!res.ok) {
@@ -58,7 +67,12 @@ function buildMcpServer(): McpServer {
           try {
             const mergeRes = await fetch(`${cfg.apiUrl}${mergePath}`, {
               ...mergeInit,
-              headers: { ...mergeInit?.headers, 'x-atlas-client': 'mcp', 'x-atlas-tool': tool.name },
+              headers: {
+                ...mergeInit?.headers,
+                'x-atlas-client': 'mcp',
+                'x-atlas-tool': tool.name,
+                ...bearerHeader(cfg.atlasToken),
+              },
             });
             secondary = { ok: mergeRes.ok, text: await mergeRes.text() };
           } catch {

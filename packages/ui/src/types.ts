@@ -167,6 +167,22 @@ export interface SessionRow {
   files_touched: string[];
 }
 
+/** The full record behind a search snippet — GET /api/entries/:id. */
+export interface FullEntry {
+  id: number;
+  title: string;
+  body: string;
+  slug: string;
+  source_type: SourceType;
+  component?: string;
+  session_id?: string;
+  occurred_at?: string;
+  hostPath: string;
+  editorUrl: string;
+  /** First-ingested-from provenance (spec §6); absent pre-fleet or unbackfilled. */
+  machine?: string;
+}
+
 /** How a captured session message was classified at parse time. */
 export type EntryKind =
   | 'prompt'

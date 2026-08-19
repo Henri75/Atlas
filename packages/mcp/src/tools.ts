@@ -69,6 +69,19 @@ const jsonPost = (body: unknown): RequestInit => ({
 });
 
 /**
+ * `Authorization: Bearer <token>` header for the API calls main.ts makes on
+ * an agent's behalf (spec §7) — empty when no token is configured (legacy
+ * mode). Every call this server makes arrives at the API over the Docker
+ * bridge network, never the loopback interface, so once `ATLAS_TOKEN` is
+ * set, every tool call needs this or the API 401s it regardless of
+ * `ATLAS_BIND`. Kept here (not inline in main.ts) so it's testable without
+ * triggering main.ts's import-time `getConfig()`/fail-closed check/`listen`.
+ */
+export function bearerHeader(token?: string): Record<string, string> {
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
+/**
  * Kinds of indexed *content*, not names of this tool. The `kdb_` prefix marks
  * entries parsed out of a project's append-only KDB logs; renaming them to
  * `atlas_*` would be wrong (and would silently match nothing, since the API
