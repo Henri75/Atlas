@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { proofFor } from '@atlas/core';
-import { computeBaseUrl } from '../../packages/cli/src/api.js';
+import { computeBaseUrl, doFetch } from '../../packages/cli/src/api.js';
 
 /**
  * `computeBaseUrl` is `baseUrl()`'s pure decision logic (api.ts) — the
@@ -252,5 +252,56 @@ describe('computeBaseUrl — fallthrough to the resolver', () => {
         timeoutMs: 50,
       }),
     ).rejects.toMatchObject({ name: 'AtlasResolveError', kind: 'token-mismatch' });
+  });
+});
+
+/**
+ * Spec §8's third re-probe trigger. A conflicted RESPONSE already
+ * invalidated the cache (`invalidateOnConflictHeader`), but a thrown fetch —
+ * connection refused, DNS failure, a machine that went to sleep — produces
+ * no response and no headers, so nothing cleared the cache and every
+ * subsequent command re-dialled the same dead host until the 5-minute TTL
+ * expired. `resolveBase`/`fetchImpl`/`cachePath` are injected so this never
+ * touches the real `~/.atlas/active.json` or a live server.
+ */
+describe('doFetch — connection failure invalidates the resolver cache', () => {
+  const cached = () => JSON.stringify({ baseUrl: 'http://192.168.1.20:8710', machine: 'nasta-mbp', at: Date.now() });
+
+  it('a thrown fetch deletes the cache file and rethrows unchanged', async () => {
+    const cachePath = join(mkdtempSync(join(tmpdir(), 'cli-api-cache-')), 'active.json');
+    writeFileSync(cachePath, cached());
+
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+
+    await expect(
+      doFetch('/api/health', {}, {
+        fetchImpl,
+        cachePath,
+        resolveBase: async () => 'http://192.168.1.20:8710',
+      }),
+    ).rejects.toThrow('ECONNREFUSED');
+
+    expect(existsSync(cachePath)).toBe(false);
+  });
+
+  it('leaves the cache alone when the request succeeds', async () => {
+    const cachePath = join(mkdtempSync(join(tmpdir(), 'cli-api-cache-')), 'active.json');
+    writeFileSync(cachePath, cached());
+
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      headers: { get: () => null },
+    })) as unknown as typeof fetch;
+
+    const res = await doFetch('/api/health', {}, {
+      fetchImpl,
+      cachePath,
+      resolveBase: async () => 'http://192.168.1.20:8710',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(existsSync(cachePath)).toBe(true);
   });
 });

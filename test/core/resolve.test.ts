@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AtlasResolveError, invalidateOnConflictHeader, proofFor, resolveActive } from '@atlas/core';
+import { AtlasResolveError, invalidateCache, invalidateOnConflictHeader, proofFor, resolveActive } from '@atlas/core';
 
 /**
  * Resolver matrix (spec §8, Task 24). The proof-verification math itself
@@ -370,5 +370,53 @@ describe('invalidateOnConflictHeader', () => {
 
     expect(() => invalidateOnConflictHeader(headers, missingCachePath)).not.toThrow();
     expect(invalidateOnConflictHeader(headers, missingCachePath)).toBe(true);
+  });
+});
+
+/**
+ * Spec §8 lists three re-probe triggers: TTL expiry, the conflicted header,
+ * and a CONNECTION FAILURE. Only the first two had an implementation — a
+ * thrown fetch has no response and therefore no header to read, so nothing
+ * cleared the cache and every caller kept dialling the dead host for the
+ * rest of its 5-minute TTL. This is the missing third one, used by the
+ * CLI's `doFetch` catch, the shim's retry path, and `atlas which`.
+ */
+describe('invalidateCache', () => {
+  it('deletes the cache file and reports that it did', () => {
+    const cachePath = tempCachePath();
+    writeFileSync(cachePath, JSON.stringify({ baseUrl: 'http://x:8710', machine: 'x', at: 0 }));
+
+    expect(invalidateCache(cachePath)).toBe(true);
+    expect(existsSync(cachePath)).toBe(false);
+  });
+
+  it('is a no-op returning false when nothing is cached', () => {
+    const missing = join(mkdtempSync(join(tmpdir(), 'resolve-cache-')), 'missing.json');
+    expect(() => invalidateCache(missing)).not.toThrow();
+    expect(invalidateCache(missing)).toBe(false);
+  });
+
+  it('a resolve after invalidation re-probes instead of answering from cache', async () => {
+    const cachePath = tempCachePath();
+    const machinesFile = writeMachinesFile();
+    // A cache entry well inside its TTL, naming a host that has since moved:
+    // without invalidation the next resolve returns it verbatim with zero
+    // network calls (fromCache: true), which is exactly the stale-after-
+    // connection-failure behavior this exists to end.
+    writeFileSync(
+      cachePath,
+      JSON.stringify({ baseUrl: 'http://192.168.1.20:8710', machine: 'nasta-mbp', at: Date.now() }),
+    );
+
+    expect(invalidateCache(cachePath)).toBe(true);
+
+    const fetchImpl = fakeFetch({
+      '192.168.1.20': 'unreachable',
+      '192.168.1.30': (nonce) => signedBody(nonce, { machine: 'm4max' }),
+    });
+    const resolved = await resolveActive({ machinesFile, token: TOKEN, cachePath, fetchImpl, timeoutMs: 50 });
+
+    expect(resolved.fromCache).toBe(false);
+    expect(resolved.machine).toBe('m4max');
   });
 });

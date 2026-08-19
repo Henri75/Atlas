@@ -107,7 +107,7 @@ async function main() {
   // First multi-machine boot: stamp every pre-machine entries/sessions row
   // ('') with this machine's name so provenance is never blank. Idempotent —
   // a healthy boot after the first finds nothing left to stamp.
-  const backfilled = await catalog.backfillMachine(resolveSelfName(cfg));
+  const backfilled = await catalog.backfillMachine(resolveSelfName(cfg), (s) => console.log(s));
   if (backfilled > 0) {
     console.log(`[indexer] backfilled machine on ${backfilled} pre-machine row(s)`);
   }

@@ -176,6 +176,7 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     // Legacy single-machine defaults: harmless unless a test opts into the fleet.
     machines: () => ({ fleet: null, self: 'local' }),
     listMachineSync: async () => [],
+    listDivergenceWarnings: async () => [],
     listProjectLocations: async () => new Map(),
     instance: async () => ({ machine: 'local', installId: 'test-install-id', entries: 10 }),
     ...overrides,
@@ -745,6 +746,28 @@ describe('api routes', () => {
       expect(body.syncIntervalMin).toBe(15);
     });
 
+    /**
+     * The scheduler has written `divergence:<projectId>` settings rows since
+     * Task 12 and nothing ever read them back — a standing cross-machine
+     * identity divergence (spec §5) was visible only to whoever happened to
+     * tail the indexer log. They surface here, fleet-wide rather than
+     * per-machine: a divergence is a disagreement BETWEEN machines.
+     */
+    it('surfaces stored divergence warnings', async () => {
+      const app = buildApp(makeDeps({
+        machines: () => fleetOf(),
+        listDivergenceWarnings: async () => ['DeepCast: origin differs across nasta-mbp, m4max'],
+      }));
+      const body = await (await app.request('/api/machines')).json();
+      expect(body.divergences).toEqual(['DeepCast: origin differs across nasta-mbp, m4max']);
+    });
+
+    it('reports an empty divergences array when there are none', async () => {
+      const app = buildApp(makeDeps({ machines: () => fleetOf() }));
+      const body = await (await app.request('/api/machines')).json();
+      expect(body.divergences).toEqual([]);
+    });
+
     /** No config/machines.yaml on disk = legacy single-machine mode. */
     it('legacy mode returns self: local and an empty machine list', async () => {
       const app = buildApp(makeDeps({ machines: () => ({ fleet: null, self: 'local' }) }));
@@ -795,6 +818,27 @@ describe('api routes', () => {
         headers: { 'content-type': 'application/json' },
       });
       expect(res.status).toBe(400);
+      expect(deps.triggerSync).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Self is a fleet entry like any other, so it sails through the
+     * unknown-machine lookup and (being enabled) through the disabled check
+     * — and then enqueues a job to rsync this machine from itself. There is
+     * nothing to pull: self's code and transcripts are bind-mounted, and the
+     * scheduler's own cadence skips self for exactly this reason.
+     */
+    it('400s on the self machine — there is nothing to sync from itself', async () => {
+      const deps = makeDeps({
+        machines: () => fleetWith([{ name: 'nasta-mbp', enabled: true }]),
+      });
+      const res = await buildApp(deps).request('/api/admin/sync', {
+        method: 'POST',
+        body: JSON.stringify({ machine: 'nasta-mbp' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/this machine/);
       expect(deps.triggerSync).not.toHaveBeenCalled();
     });
 

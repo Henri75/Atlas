@@ -240,6 +240,7 @@ async function main() {
     atlasToken: cfg.atlasToken,
     machines: () => ({ fleet: machinesFleet, self: selfMachineName }),
     listMachineSync: () => catalog.listMachineSync(),
+    listDivergenceWarnings: () => catalog.listDivergenceWarnings(),
     listProjectLocations: () => catalog.listProjectLocations(),
     // `entries` reuses the same `catalog.stats()` call `/api/dashboard`
     // already makes — no dedicated COUNT query for `/api/instance`.

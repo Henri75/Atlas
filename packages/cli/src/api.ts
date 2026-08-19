@@ -7,7 +7,14 @@
  * machines.yaml`, probed and cached). See `computeBaseUrl`.
  */
 
-import { AtlasResolveError, invalidateOnConflictHeader, machinesFilePath, readToken, resolveActive } from '@atlas/core';
+import {
+  AtlasResolveError,
+  invalidateCache,
+  invalidateOnConflictHeader,
+  machinesFilePath,
+  readToken,
+  resolveActive,
+} from '@atlas/core';
 
 const LOCALHOST_BASE = 'http://127.0.0.1:8710';
 const LOCALHOST_PROBE_TIMEOUT_MS = 300;
@@ -122,20 +129,47 @@ function authHeader(): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {};
 }
 
+/** Injection seams for `doFetch` — production passes none of them. */
+export interface DoFetchDeps {
+  fetchImpl?: typeof fetch;
+  /** Defaults to the memoized `resolvedBaseUrl()`. */
+  resolveBase?: () => Promise<string>;
+  /** Defaults to `~/.atlas/active.json` (both invalidation paths below). */
+  cachePath?: string;
+}
+
 /**
  * Every response — success or failure alike — passes through
  * `invalidateOnConflictHeader` (Task 24), so a conflicted instance is
  * abandoned after one request, not left cached for up to the rest of its
  * 5-minute TTL.
+ *
+ * A THROWN fetch is the other half of that bargain (spec §8's third
+ * re-probe trigger): connection refused, DNS failure, a machine that went
+ * to sleep — none of those produce a response with headers to read, so the
+ * header path can never fire for them, and without `invalidateCache` the
+ * cached-but-dead host stays cached for the rest of its TTL and every
+ * subsequent command fails the same way. The error still propagates
+ * unchanged; invalidation is a side effect, not a recovery.
  */
-async function doFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const base = await resolvedBaseUrl();
-  const res = await fetch(`${base}${path}`, {
-    ...init,
-    headers: { ...CLIENT_HEADERS, ...authHeader(), ...(init.headers as Record<string, string> | undefined) },
-  });
-  invalidateOnConflictHeader(res.headers);
-  return res;
+export async function doFetch(
+  path: string,
+  init: RequestInit = {},
+  deps: DoFetchDeps = {},
+): Promise<Response> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const base = await (deps.resolveBase ?? resolvedBaseUrl)();
+  try {
+    const res = await fetchImpl(`${base}${path}`, {
+      ...init,
+      headers: { ...CLIENT_HEADERS, ...authHeader(), ...(init.headers as Record<string, string> | undefined) },
+    });
+    invalidateOnConflictHeader(res.headers, deps.cachePath);
+    return res;
+  } catch (e) {
+    invalidateCache(deps.cachePath);
+    throw e;
+  }
 }
 
 export async function get(path: string): Promise<any> {

@@ -304,6 +304,15 @@ export function ftsQuery(q: string): string {
   return terms.join(' | ');
 }
 
+/**
+ * Rows per `backfillMachine` batch, and how often it reports progress.
+ * 5000 keeps each transaction's WAL burst and lock hold small enough to be
+ * invisible next to the boot it runs inside, while still costing only ~100
+ * statements for a 475k-row catalog.
+ */
+const BACKFILL_BATCH = 5000;
+const BACKFILL_LOG_EVERY = 50_000;
+
 /** Shared by every query that rebuilds an Entry from the catalog. */
 const ENTRY_COLUMNS = `e.id, e.source_type, e.component, e.session_id, e.title, e.body,
               e.occurred_at, e.source_path, e.source_ref, e.meta, e.machine, p.slug`;
@@ -410,11 +419,69 @@ export class Catalog {
     return map;
   }
 
-  /** First multi-machine boot: stamp pre-machine rows with the self machine. */
-  async backfillMachine(selfName: string): Promise<number> {
-    const a = await this.pool.query(`UPDATE entries SET machine = $1 WHERE machine = ''`, [selfName]);
-    const b = await this.pool.query(`UPDATE sessions SET machine = $1 WHERE machine = ''`, [selfName]);
-    return (a.rowCount ?? 0) + (b.rowCount ?? 0);
+  /**
+   * First multi-machine boot: stamp pre-machine rows with the self machine.
+   *
+   * Keyset-paged rather than one statement per table. This runs against a
+   * catalog that is already ~475k rows on this machine, and a single
+   * `UPDATE entries SET machine = $1 WHERE machine = ''` rewrites every one
+   * of them in ONE transaction — one long lock, one enormous WAL burst, and
+   * the whole thing rolls back on any interruption, so a boot that dies
+   * halfway through has to redo all of it. Batching bounds each
+   * transaction, lets an interrupted boot resume from wherever it got to
+   * (already-stamped rows no longer match `machine = ''`), and gives the
+   * operator progress instead of a silent multi-minute boot.
+   *
+   * `log` is optional so tests and library callers stay quiet; the indexer
+   * passes `console.log` and gets a line roughly every 50k rows.
+   */
+  async backfillMachine(selfName: string, log?: (msg: string) => void): Promise<number> {
+    let total = 0;
+    let lastLogged = 0;
+    for (const table of ['entries', 'sessions'] as const) {
+      let cursor = 0;
+      for (;;) {
+        // `id IN (SELECT ... ORDER BY id LIMIT n)` picks one bounded batch;
+        // RETURNING hands back exactly the ids updated, which is where the
+        // next cursor comes from — no second SELECT, and no dependence on
+        // rows that are no longer `''` after the UPDATE lands.
+        const r = await this.pool.query(
+          `UPDATE ${table} SET machine = $1
+             WHERE id IN (
+               SELECT id FROM ${table} WHERE machine = '' AND id > $2 ORDER BY id LIMIT ${BACKFILL_BATCH}
+             )
+           RETURNING id`,
+          [selfName, cursor],
+        );
+        const ids: number[] = r.rows.map((row: { id: number }) => row.id);
+        if (ids.length === 0) break;
+        total += ids.length;
+        cursor = Math.max(...ids);
+        if (total - lastLogged >= BACKFILL_LOG_EVERY) {
+          lastLogged = total;
+          log?.(`[indexer] backfilling machine: ${total} row(s) stamped (${table} id ${cursor})`);
+        }
+        // A short batch means the source is exhausted — nothing with
+        // `machine = ''` is left above the cursor, and everything below it
+        // has already been stamped by an earlier batch.
+        if (ids.length < BACKFILL_BATCH) break;
+      }
+    }
+    return total;
+  }
+
+  /**
+   * The scheduler's standing cross-machine divergence warnings (spec §5) —
+   * one `divergence:<projectId>` settings row per project whose locations
+   * disagree on git origin, cleared to `''` (not deleted) once they agree
+   * again. Empty values are filtered out here so callers get only live
+   * warnings, never a list padded with cleared rows.
+   */
+  async listDivergenceWarnings(): Promise<string[]> {
+    const r = await this.pool.query(
+      `SELECT value FROM settings WHERE key LIKE 'divergence:%' AND value <> '' ORDER BY key`,
+    );
+    return r.rows.map((row: { value: string }) => row.value);
   }
 
   async recordSyncStart(machine: string): Promise<void> {

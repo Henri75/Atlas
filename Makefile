@@ -108,6 +108,7 @@ restart: ## bounce app services only — does NOT pick up code or .env (see rest
 # between them — see that target for why. `up --build` does the same two things
 # back to back with nowhere to stand.
 restart-build: ## rebuild + recreate app services — the one that applies config AND code
+	@bash scripts/preflight.sh
 	$(DOPPLER) $(COMPOSE) build indexer api ui
 	@$(MAKE) --no-print-directory embedder-warm
 	$(DOPPLER) $(COMPOSE) up -d --force-recreate --no-deps indexer api ui
@@ -238,9 +239,13 @@ clean: ## remove build artifacts
 
 # --- dedup-v3 migration rehearsal (spec §6.6) --------------------------------
 
+# The dump is written to .part and renamed only on success: a redirect straight
+# to the final name leaves a truncated .dump behind if pg_dump dies mid-stream,
+# and the rollback path would happily restore it.
 db-dump: ## Dump the catalog to backups/ (custom format). Run BEFORE the dedup-v3 migration.
 	@mkdir -p backups
-	$(COMPOSE) exec -T postgres pg_dump -U kdbscope -Fc kdbscope > backups/kdbscope-$$(date -u +%Y%m%d-%H%M%S).dump
+	f=backups/kdbscope-$$(date -u +%Y%m%d-%H%M%S).dump; \
+	  $(COMPOSE) exec -T postgres pg_dump -U kdbscope -Fc kdbscope > $$f.part && mv $$f.part $$f
 	@ls -lh backups/ | tail -1
 
 dedup-rehearsal: ## Rehearse the dedup-v3 migration against a COPY of the live DB. Never touches the real catalog; prints the verification report.

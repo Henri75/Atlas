@@ -112,6 +112,14 @@ export interface ApiDeps {
   machines: () => { fleet: MachinesFile | null; self: string };
   /** Per-machine sync health, joined onto `machines().fleet` by name. */
   listMachineSync: Catalog['listMachineSync'];
+  /**
+   * Standing cross-machine divergence warnings (spec §5). The scheduler
+   * writes them to `divergence:<projectId>` settings rows and nothing read
+   * them back — so a divergence was visible only to whoever tailed the
+   * indexer log. `/api/machines` is where the fleet's health already lives,
+   * so it is where they surface.
+   */
+  listDivergenceWarnings: Catalog['listDivergenceWarnings'];
   /** Every machine a project has been seen on, keyed by project id. */
   listProjectLocations: Catalog['listProjectLocations'];
   /**
@@ -669,7 +677,10 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     // (The dashboard's staleness math falls back to the same schema default
     // itself when this field is absent — see DEFAULT_SYNC_INTERVAL_MIN.)
     if (!fleet) return c.json({ self, machines: [] });
-    const sync = await deps.listMachineSync();
+    const [sync, divergences] = await Promise.all([
+      deps.listMachineSync(),
+      deps.listDivergenceWarnings(),
+    ]);
     // Picked explicitly: the row also carries `machine`, which is redundant
     // with the map key and not part of the documented wire shape — passing
     // the row through whole would leak it onto every machine's `sync`.
@@ -692,6 +703,10 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
       // resolved this to config/machines.yaml's value or its own schema
       // default (DEFAULT_SYNC_INTERVAL_MIN) when the file omits `sync`.
       syncIntervalMin: fleet.sync.intervalMin,
+      // Fleet-wide, not per-machine: a divergence is a disagreement BETWEEN
+      // machines about one project's identity, so it belongs to no single
+      // row in the list below.
+      divergences,
       machines: fleet.machines.map((m) => ({
         name: m.name,
         address: m.address,
@@ -1011,9 +1026,16 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
   app.post('/api/admin/sync', async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const machine = typeof body.machine === 'string' ? body.machine : '';
-    const { fleet } = deps.machines();
+    const { fleet, self } = deps.machines();
     const m = fleet?.machines.find((x) => x.name === machine);
     if (!m) return c.json({ error: `unknown machine "${machine}"` }, 404);
+    // Self is a fleet entry like any other, so it passes the lookup above —
+    // but there is nothing to sync: this machine's code and transcripts are
+    // bind-mounted, not mirrored, and the scheduler skips self on its own
+    // cadence. Enqueuing it would run an rsync of a machine against itself.
+    if (m.name === self) {
+      return c.json({ error: `machine "${machine}" is this machine — nothing to sync from itself` }, 400);
+    }
     if (!m.enabled) return c.json({ error: `machine "${machine}" is disabled` }, 400);
     await deps.triggerSync(machine);
     return c.json({ enqueued: true }, 202);

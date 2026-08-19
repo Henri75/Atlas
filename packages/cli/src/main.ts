@@ -6,6 +6,7 @@ import { Command } from 'commander';
 import {
   AtlasResolveError,
   DEFAULT_REMOTE_RSYNC_PATH,
+  invalidateCache,
   loadMachinesFileIfPresent,
   machinesFilePath,
   probeInstance,
@@ -190,12 +191,15 @@ machinesCmd
             `${dim('last success')} ${date(m.sync?.lastSuccessAt) || dim('never')}  ${bytes(m.sync?.bytes)}`,
         );
         if (m.sync?.error) console.log(`   ${red(m.sync.error)}`);
-        // Not part of the documented /api/machines wire shape as of this
-        // writing — rendered defensively so a future divergence-warning
-        // field (spec §5) shows up here without another CLI change.
-        if (Array.isArray(m.divergenceWarnings) && m.divergenceWarnings.length) {
-          console.log(`   ${yellow(`⚠ ${m.divergenceWarnings.join('; ')}`)}`);
-        }
+      }
+      // Fleet-wide, matching the wire shape: a divergence is a disagreement
+      // BETWEEN machines about one project's identity (spec §5), so it hangs
+      // off the response, not off a single machine row. This used to read a
+      // per-machine field the API never sent — dead code that rendered
+      // nothing no matter how many divergences the scheduler had recorded.
+      if (Array.isArray(r.divergences) && r.divergences.length) {
+        console.log('');
+        for (const w of r.divergences) console.log(yellow(`⚠ ${w}`));
       }
     });
   });
@@ -364,6 +368,13 @@ program
     const machinesFile = machinesFilePath();
     const token = readToken();
     const mf = loadMachinesFileIfPresent(machinesFile);
+
+    // "Ignores the resolver cache" has to mean it, for the caller too: this
+    // command exists to be believed after something moved, so drop any
+    // cached entry before probing rather than leaving the NEXT command
+    // (which does read the cache) trusting a host this probe may have just
+    // shown to be gone.
+    invalidateCache();
 
     if (!mf || mf.machines.length === 0) {
       out({ rows: [], winner: undefined }, () => {

@@ -70,6 +70,42 @@ export function writeCredentials(token: string, path: string = defaultCredential
  */
 export function machinesFilePath(): string {
   if (process.env.ATLAS_MACHINES_FILE) return process.env.ATLAS_MACHINES_FILE;
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-  return join(repoRoot, 'config', 'machines.yaml');
+  return join(repoRootDir(), 'config', 'machines.yaml');
+}
+
+/** See `machinesFilePath` for why three hops from this module lands at the repo root. */
+function repoRootDir(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+}
+
+/**
+ * `config/known_hosts` — the committed, pinned SSH host keys the sync engine
+ * hands rsync as `UserKnownHostsFile` (`/config/known_hosts` inside the
+ * indexer container; this is the same file as the host sees it). Resolved
+ * off the repo root rather than off `machinesFilePath()`, which
+ * `ATLAS_MACHINES_FILE` can point at an arbitrary file elsewhere — the host
+ * keys always live in this checkout.
+ *
+ * Used by the CLI's add-machine preflight (`rsyncPreflight.ts`) so its probe
+ * runs with the credentials the SYNC will use, not the operator's ambient
+ * ssh config.
+ */
+export function knownHostsPath(): string {
+  return join(repoRootDir(), 'config', 'known_hosts');
+}
+
+/**
+ * Host directory holding the dedicated `atlas_sync` keypair —
+ * `ATLAS_KEYS_DIR` when set (the same variable compose reads for the
+ * indexer's `/keys` mount), `~/.atlas/keys` otherwise. One implementation,
+ * so the preflight cannot check a different key than the one that gets
+ * mounted.
+ */
+export function syncKeysDir(): string {
+  return process.env.ATLAS_KEYS_DIR || join(atlasHomeDir(), 'keys');
+}
+
+/** The private half of the dedicated sync keypair (`<keys dir>/atlas_sync`). */
+export function syncKeyPath(): string {
+  return join(syncKeysDir(), 'atlas_sync');
 }

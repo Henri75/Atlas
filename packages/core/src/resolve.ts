@@ -170,12 +170,31 @@ function writeCache(cachePath: string, data: CacheFile): void {
   writeFileSync(cachePath, JSON.stringify(data));
 }
 
-function deleteCacheFile(cachePath: string): void {
+function deleteCacheFile(cachePath: string): boolean {
   try {
     unlinkSync(cachePath);
+    return true;
   } catch {
     // Already gone — nothing to invalidate.
+    return false;
   }
+}
+
+/**
+ * Drop the resolver cache outright, so the next `resolveActive` re-probes
+ * instead of trusting a host that just failed us (spec §8's third re-probe
+ * trigger: "a connection failure"). The cached instance can be gone for
+ * reasons no header ever reports — the stack moved, the machine slept, the
+ * container died mid-request — and without this, every caller keeps
+ * hammering the dead host for the rest of the 5-minute TTL.
+ *
+ * Called from the CLI's `doFetch` catch (`packages/cli/src/api.ts`), the
+ * shim's retry path (`packages/atlas-connect/src/bridge.ts`), and `atlas
+ * which` before it probes. Returns whether a cache file was actually
+ * deleted — false when there was nothing cached, which is not a failure.
+ */
+export function invalidateCache(cachePath: string = DEFAULT_CACHE_PATH): boolean {
+  return deleteCacheFile(cachePath);
 }
 
 function hostnameOf(url: string): string {

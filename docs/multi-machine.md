@@ -1,8 +1,12 @@
-2026-08-19 21:59 UTC
+2026-08-19 22:50 UTC
 
 # Multi-Machine Operations
 
 ## Revision History
+- 2026-08-19 22:50 UTC — Final-review fixes: rollout step 0 (`ATLAS_SELF` before
+  `restart-build`, now preflight-enforced), first-boot duration expectations, the
+  add-machine preflight's sync-credential probe, and the never-clear-`dedup_scheme`
+  rule in wedge recovery.
 - 2026-08-19 21:59 UTC — Initial version (Task 27, multi-machine feature closure).
 
 Atlas runs as **one active instance** that holds THE index and pulls every
@@ -54,11 +58,22 @@ host unless stated otherwise.
    this check itself, automatically, before writing the entry — refusing to
    enroll a machine that is unreachable, running openrsync, or returns
    unparseable `--version` output — so this is no longer a step you have to
-   remember to do by hand. The same command is still useful to run yourself
-   first (or to debug a refusal), since it's exactly what the CLI runs:
+   remember to do by hand. It probes with the **sync's own credentials**, not
+   your ambient ssh config: the dedicated `atlas_sync` key from step 1 and
+   the pinned host keys from step 3, which is what the indexer will have
+   (`/keys/atlas_sync`, `/config/known_hosts`) and all it will have. So a
+   pass here genuinely proves the first sync job will connect — a key never
+   installed (step 2 skipped) or a host key never pinned (step 3 skipped)
+   fails now, at enroll time, instead of at the first sync tick. The same
+   command is still useful to run yourself first (or to debug a refusal),
+   since it's exactly what the CLI runs:
    ```bash
-   ssh -o BatchMode=yes -o ConnectTimeout=5 <user>@<addr> /opt/homebrew/bin/rsync --version
+   ssh -i ~/.atlas/keys/atlas_sync -o UserKnownHostsFile=config/known_hosts \
+     -o BatchMode=yes -o ConnectTimeout=5 <user>@<addr> /opt/homebrew/bin/rsync --version
    ```
+   (`ATLAS_KEYS_DIR` overrides the key's directory; `config/known_hosts` is
+   this checkout's, so run it from the repo root. Steps 2 and 3 must already
+   be done — that is the point.)
    A refusal because the real thing isn't there: `brew install rsync` on the
    remote, then retry `atlas machines add`. (`remoteRsyncPath` in
    machines.yaml is configurable per machine after enrollment if Homebrew
@@ -154,7 +169,27 @@ The one-time in-place identity migration (spec §6) runs at indexer boot,
 under its own advisory lock, recomputing every entry's dedup key from
 machine-independent normalized paths instead of absolute container paths —
 required before any second machine's mirror can dedup correctly against
-this one's content. **Rehearsal is mandatory before the real run:**
+this one's content.
+
+**Step 0 — name this machine, before anything else.** `config/machines.yaml`
+is COMMITTED, so it arrives on every checkout the moment this branch lands;
+`ATLAS_SELF` is per-machine and lives in the gitignored `.env`, so it does
+NOT. A machine that pulls the fleet file without setting `ATLAS_SELF` boots
+`api` into a throw before `serve()` and the indexer into a crash loop
+(`selfMachine()`, `packages/core/src/machines.ts`) — the first
+`make restart-build` takes the stack down rather than upgrading it. On this
+machine:
+
+```bash
+echo 'ATLAS_SELF=nasta-mbp' >> .env   # must name an entry in config/machines.yaml
+```
+
+`make up` and `make restart-build` both run `scripts/preflight.sh` first,
+which refuses to start compose at all if this is missing or names an unknown
+machine — so the failure is a one-line message before anything is rebuilt,
+not a half-dead stack.
+
+**Rehearsal is mandatory before the real run:**
 
 ```bash
 make db-dump          # dumps the live catalog to backups/ — read-only, non-disruptive
@@ -178,6 +213,13 @@ Only after a clean rehearsal:
 ```bash
 make restart-build     # the real migration runs against the live catalog at indexer boot
 ```
+
+**Expect the first boot to take minutes, not seconds:** the indexer stamps
+every pre-machine row with `ATLAS_SELF` (a keyset-paged backfill, ~475k rows
+here) and then runs the dedup-v3 migration before it serves anything, and it
+logs progress for both as it goes (`backfilling machine: N row(s) stamped`,
+then the migration's own cursor lines) — `make logs` is the place to watch,
+and a quiet minute is normal, not a wedge.
 
 ### Wedge recovery
 
@@ -222,6 +264,13 @@ This is checked *before* the cursor on every future boot, so stamping it
 prematurely permanently strands whatever was still unmigrated on old-style
 keys — silently breaking cross-machine dedup for exactly that content, for
 good. When in doubt, leave the indexer wedged and go fix the actual cause.
+
+**Never clear `dedup_scheme` to force a re-run once mirrors exist.** The
+migration walks the root list it derives at boot, which predates
+`project_locations` — re-running it after another machine's mirror has been
+indexed re-keys those mirror rows divergently from the originals they are
+supposed to collapse onto, which is the exact duplication v3 exists to
+prevent, and it is not reversible by running it again.
 
 ## LAN access setup
 

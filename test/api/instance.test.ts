@@ -49,6 +49,7 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     usagePageSize: 50,
     machines: () => ({ fleet: null, self: 'test-machine' }),
     listMachineSync: async () => [],
+    listDivergenceWarnings: async () => [],
     listProjectLocations: async () => new Map(),
     instance: async () => ({ machine: 'test-machine', installId: 'install-abc', entries: 42 }),
     ...overrides,

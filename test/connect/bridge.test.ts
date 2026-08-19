@@ -87,6 +87,39 @@ describe('withUpstream', () => {
     expect(connect).toHaveBeenCalledTimes(2);
   });
 
+  /**
+   * "Re-resolves and retries once" (spec §8) is only true if the resolver
+   * cache is dropped too: `connect()` re-runs, but `resolveActive` inside it
+   * would answer from the cache — the same dead baseUrl — for up to the rest
+   * of its 5-minute TTL, so the retry reconnected to exactly the host that
+   * just failed. The injected `invalidate` stands in for the real
+   * `invalidateCache` so this asserts the call without a cache file on disk.
+   */
+  it('invalidates the resolver cache once on the retry path', async () => {
+    const invalidate = vi.fn();
+    const connect = vi.fn().mockResolvedValue({ id: 'client-a' });
+    const deps = { connect, invalidate };
+
+    let calls = 0;
+    const result = await withUpstream(deps, async (c: { id: string }) => {
+      calls += 1;
+      if (calls === 1) throw new Error('mid-session connection failure');
+      return `ok:${c.id}`;
+    });
+
+    expect(result).toBe('ok:client-a');
+    expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not invalidate when the first attempt succeeds', async () => {
+    const invalidate = vi.fn();
+    const deps = { connect: vi.fn().mockResolvedValue({ id: 'client-a' }), invalidate };
+
+    await withUpstream(deps, async (c: { id: string }) => c.id);
+
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
   it('does not share memo state across two independent deps objects', async () => {
     const connectA = vi.fn().mockResolvedValue({ id: 'a' });
     const connectB = vi.fn().mockResolvedValue({ id: 'b' });

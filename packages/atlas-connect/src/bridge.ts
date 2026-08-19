@@ -1,5 +1,5 @@
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
-import { invalidateOnConflictHeader } from '@atlas/core';
+import { invalidateCache, invalidateOnConflictHeader } from '@atlas/core';
 
 /**
  * Pure retry/memo/shaping logic for the atlas-connect stdio shim (spec §8).
@@ -19,17 +19,24 @@ import { invalidateOnConflictHeader } from '@atlas/core';
  *
  * Retry contract (spec §8 — "re-resolves and retries once on mid-session
  * connection failure"): up to two attempts. On ANY failure — `connect()`
- * itself throwing, or `fn(upstream)` throwing — the memo is dropped so the
- * next attempt reconnects from scratch (picking up a moved instance rather
- * than retrying against the same dead client). The first failure is
+ * itself throwing, or `fn(upstream)` throwing — the memo is dropped AND the
+ * resolver cache is invalidated, so the next attempt genuinely re-resolves
+ * instead of reconnecting to the same dead host the cache still names.
+ * Dropping only the memo made `connect()` run again but hand back the same
+ * cached baseUrl for up to the rest of its 5-minute TTL, which is the one
+ * thing "re-resolves" was supposed to prevent. The first failure is
  * swallowed and retried; the second is rethrown to the caller.
+ *
+ * `deps.invalidate` is injectable so a test can count the calls without a
+ * real cache file; the default is the real `invalidateCache` (`@atlas/core`).
  */
 const memoByDeps = new WeakMap<object, unknown>();
 
 export async function withUpstream<T, C>(
-  deps: { connect: () => Promise<C> },
+  deps: { connect: () => Promise<C>; invalidate?: () => void },
   fn: (upstream: C) => Promise<T>,
 ): Promise<T> {
+  const invalidate = deps.invalidate ?? (() => { invalidateCache(); });
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -41,6 +48,7 @@ export async function withUpstream<T, C>(
       return await fn(upstream);
     } catch (e) {
       memoByDeps.delete(deps);
+      invalidate();
       lastError = e;
     }
   }

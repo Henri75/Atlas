@@ -43,6 +43,88 @@ describe('machine accessors', () => {
     for (const call of q.mock.calls) expect(call[0]).toMatch(/machine = ''/);
   });
 
+  /**
+   * One `UPDATE entries SET machine = $1 WHERE machine = ''` rewrites the
+   * whole ~475k-row catalog in a single transaction: one long lock, one
+   * enormous WAL burst, and a full rollback if the boot is interrupted.
+   * These pin the paged shape instead — a bounded keyset batch whose cursor
+   * comes from the ids the UPDATE itself returns.
+   */
+  it('backfillMachine pages by keyset with a bounded batch, per table', async () => {
+    const { cat, q } = stubbed();
+    q.mockResolvedValue({ rows: [{ id: 7 }] });
+
+    const total = await cat.backfillMachine('nasta-mbp');
+
+    // One short batch per table ends that table's loop: entries, sessions.
+    expect(q).toHaveBeenCalledTimes(2);
+    expect(total).toBe(2);
+    for (const call of q.mock.calls) {
+      expect(call[0]).toMatch(/ORDER BY id LIMIT \d+/);
+      expect(call[0]).toMatch(/id > \$2/);
+      expect(call[0]).toMatch(/RETURNING id/);
+      // The cursor starts at 0 and is carried in a parameter, never inlined.
+      expect(call[1]).toEqual(['nasta-mbp', 0]);
+    }
+    expect(q.mock.calls[0]![0]).toMatch(/UPDATE entries/);
+    expect(q.mock.calls[1]![0]).toMatch(/UPDATE sessions/);
+  });
+
+  it('backfillMachine advances the cursor past the last id of a full batch', async () => {
+    const { cat, q } = stubbed();
+    // A full 5000-row batch (ids 1..5000) must NOT end the loop; the next
+    // query has to resume above the highest id just stamped.
+    const full = { rows: Array.from({ length: 5000 }, (_, i) => ({ id: i + 1 })) };
+    q.mockResolvedValueOnce(full)            // entries, batch 1
+      .mockResolvedValueOnce({ rows: [{ id: 5001 }] })  // entries, batch 2 (short → done)
+      .mockResolvedValueOnce({ rows: [] });  // sessions: nothing to stamp
+
+    const total = await cat.backfillMachine('nasta-mbp');
+
+    expect(total).toBe(5001);
+    expect(q.mock.calls[0]![1]).toEqual(['nasta-mbp', 0]);
+    expect(q.mock.calls[1]![1]).toEqual(['nasta-mbp', 5000]);
+    expect(q).toHaveBeenCalledTimes(3);
+  });
+
+  it('backfillMachine reports progress through the optional log callback', async () => {
+    const { cat, q } = stubbed();
+    const batch = (start: number) => ({ rows: Array.from({ length: 5000 }, (_, i) => ({ id: start + i })) });
+    // 10 full batches = 50k rows, the logging threshold, then a short one.
+    for (let i = 0; i < 10; i++) q.mockResolvedValueOnce(batch(1 + i * 5000));
+    q.mockResolvedValueOnce({ rows: [{ id: 50_001 }] }).mockResolvedValueOnce({ rows: [] });
+
+    const log = vi.fn();
+    const total = await cat.backfillMachine('nasta-mbp', log);
+
+    expect(total).toBe(50_001);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0]![0]).toMatch(/50000 row\(s\) stamped/);
+  });
+
+  it('backfillMachine stays silent with no log callback and nothing to stamp', async () => {
+    const { cat, q } = stubbed();
+    q.mockResolvedValue({ rows: [] });
+    expect(await cat.backfillMachine('nasta-mbp')).toBe(0);
+  });
+
+  /**
+   * The scheduler has written `divergence:<projectId>` rows since Task 12 and
+   * nothing read them back. Cleared warnings are stored as `''` rather than
+   * deleted (scheduler.ts), so the SQL — not the caller — has to filter them
+   * out, or every project that ever diverged once would report forever.
+   */
+  it('listDivergenceWarnings reads non-empty divergence:* settings values', async () => {
+    const { cat, q } = stubbed();
+    q.mockResolvedValueOnce({ rows: [{ value: 'DeepCast: origin differs' }, { value: 'Lycos: origin differs' }] });
+
+    const result = await cat.listDivergenceWarnings();
+
+    expect(result).toEqual(['DeepCast: origin differs', 'Lycos: origin differs']);
+    expect(q.mock.calls[0]![0]).toMatch(/key LIKE 'divergence:%'/);
+    expect(q.mock.calls[0]![0]).toMatch(/value <> ''/);
+  });
+
   it('upsertProject with isSelf:false does not rename an existing project on conflict', async () => {
     const { cat, q } = stubbed();
     await cat.upsertProject({ slug: 'x', name: 'x', rootPath: '/data/remote/m4max/code1/x', hasKdb: true }, { isSelf: false });
