@@ -1,4 +1,5 @@
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { invalidateOnConflictHeader } from '@atlas/core';
 
 /**
  * Pure retry/memo/shaping logic for the atlas-connect stdio shim (spec §8).
@@ -64,4 +65,44 @@ export function unavailableTool(detail: string): Tool {
 /** `tools/call`'s in-band failure shape (spec §8) when both attempts fail. */
 export function errorResult(detail: string): CallToolResult {
   return { content: [{ type: 'text', text: `Atlas unreachable: ${detail}` }], isError: true };
+}
+
+/** Minimal shape `invalidateOnConflictHeader` needs — matches `Response.headers`. */
+export interface HeaderLike {
+  get(name: string): string | null;
+}
+
+/**
+ * Wraps a `fetch` implementation (e.g. the global one, or the SDK transport's
+ * own `fetch` option) so every response's headers are checked for
+ * `X-Atlas-State: conflicted` (spec §8) THE INSTANT that response is in
+ * hand — never stashed in a variable for some later, out-of-band check.
+ *
+ * That "stash it, check it later" shape is exactly what broke under
+ * concurrency: the MCP SDK's `Client` can have multiple round trips in
+ * flight against the same memoized connection (pipelined `tools/list`/
+ * `tools/call` requests), so a shared "last response's headers" variable
+ * plus a separate post-hoc check races — whichever response wrote last
+ * wins, regardless of which response the caller actually cared about, and a
+ * genuine `conflicted` header can get silently overwritten by an unrelated
+ * clean response before anything looks at it (or the reverse: an unrelated
+ * clean response gets blamed for a conflict it never signaled). Checking
+ * inline, inside the same closure that holds `res`, is race-free by
+ * construction — there is no shared mutable state left to race over, so it
+ * doesn't matter how many calls are in flight or in what order they settle.
+ *
+ * `invalidate` defaults to the real `invalidateOnConflictHeader` — injectable
+ * so tests can assert exactly which response each call fired for without a
+ * real cache file.
+ */
+export function conflictCheckingFetch(
+  fetchImpl: (url: string | URL, init?: RequestInit) => Promise<Response>,
+  cachePath?: string,
+  invalidate: (headers: HeaderLike, cachePath?: string) => boolean = invalidateOnConflictHeader,
+): (url: string | URL, init?: RequestInit) => Promise<Response> {
+  return async (url, init) => {
+    const res = await fetchImpl(url, init);
+    invalidate(res.headers, cachePath);
+    return res;
+  };
 }

@@ -8,8 +8,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { AtlasResolveError, invalidateOnConflictHeader, resolveActive } from '@atlas/core';
-import { errorResult, unavailableTool, withUpstream } from './bridge.js';
+import { AtlasResolveError, resolveActive } from '@atlas/core';
+import { conflictCheckingFetch, errorResult, unavailableTool, withUpstream } from './bridge.js';
 
 /**
  * `atlas-connect` — the stdio MCP shim (spec §8). Registered exactly once
@@ -59,38 +59,11 @@ function readToken(): string | undefined {
 }
 
 /**
- * The most recent upstream HTTP response's headers, captured as a side
- * channel (see the long comment on `checkConflict` below for why this is
- * the only way to get at them without reaching into SDK internals). Reset
- * implicitly on every request the transport makes.
- */
-let lastResponseHeaders: Headers | undefined;
-
-async function headerCapturingFetch(url: string | URL, init?: RequestInit): Promise<Response> {
-  const res = await fetch(url, init);
-  lastResponseHeaders = res.headers;
-  return res;
-}
-
-/**
  * Resolves the active instance and opens a fresh `Client` connection to it.
  * This is `deps.connect` for `withUpstream` (bridge.ts) — called once per
  * successful connection, and again on the one retry after a failure, never
  * directly.
- */
-async function connect(): Promise<Client> {
-  const token = readToken();
-  const resolved = await resolveActive({ machinesFile: machinesFilePath(), token });
-  const client = new Client({ name: 'atlas-connect', version: '0.1.0' });
-  const transport = new StreamableHTTPClientTransport(new URL(resolved.mcpUrl), {
-    requestInit: token ? { headers: { authorization: `Bearer ${token}` } } : undefined,
-    fetch: headerCapturingFetch,
-  });
-  await client.connect(transport);
-  return client;
-}
-
-/**
+ *
  * Every upstream response's headers SHOULD pass through
  * `invalidateOnConflictHeader` (spec §8: bounds a stale-conflicted window to
  * one request instead of one 5-minute cache TTL) — but the MCP SDK's
@@ -108,22 +81,32 @@ async function connect(): Promise<Client> {
  * The one LEGITIMATE extension point the SDK exposes for this is
  * `StreamableHTTPClientTransportOptions.fetch` — a documented, public
  * constructor option: "Custom fetch implementation used for all network
- * requests." `headerCapturingFetch` above uses it to record the most recent
- * response's headers as a side channel, and this function feeds that into
- * `invalidateOnConflictHeader` after every `tools/list`/`tools/call` round
- * trip. Two honest limitations of this approach, worth flagging rather than
- * hiding: (1) it only sees the LAST response of a given call — fine today,
- * since each tool request is exactly one POST, but would need revisiting if
- * the SDK starts splitting a call across multiple requests; (2) if a future
- * SDK version opens a background SSE stream for server-initiated messages,
- * that stream's headers wouldn't flow through this path (`fetch` is only
- * used for direct request/response calls, not the long-lived GET stream).
- * Resolve-time conflict detection — the cache TTL, and `withUpstream`
- * re-resolving on ANY connect/call failure — is the fallback net that
- * already exists independently of whether this header capture ever fires.
+ * requests." `conflictCheckingFetch` (bridge.ts) uses it to check EACH
+ * response's headers inline, the instant that response is in hand — not
+ * stashed in shared state for a later out-of-band check, which raced under
+ * concurrent tool calls (the SDK can have multiple round trips in flight
+ * against one memoized `Client`) and could silently miss a genuine conflict
+ * or misattribute one to the wrong response. See `conflictCheckingFetch`'s
+ * doc comment for the full story. Two honest limitations worth flagging
+ * rather than hiding: (1) this only ever sees a request/response the
+ * transport makes through `fetch` — fine today, since every tool call is
+ * exactly one POST, but wouldn't cover a future SDK version that opens a
+ * background SSE stream for server-initiated messages, whose headers never
+ * flow through `fetch` at all; (2) resolve-time conflict detection — the
+ * cache TTL, and `withUpstream` re-resolving on ANY connect/call failure —
+ * is the fallback net that already exists independently of whether this
+ * header check ever fires.
  */
-function checkConflict(): void {
-  if (lastResponseHeaders) invalidateOnConflictHeader(lastResponseHeaders);
+async function connect(): Promise<Client> {
+  const token = readToken();
+  const resolved = await resolveActive({ machinesFile: machinesFilePath(), token });
+  const client = new Client({ name: 'atlas-connect', version: '0.1.0' });
+  const transport = new StreamableHTTPClientTransport(new URL(resolved.mcpUrl), {
+    requestInit: token ? { headers: { authorization: `Bearer ${token}` } } : undefined,
+    fetch: conflictCheckingFetch(fetch),
+  });
+  await client.connect(transport);
+  return client;
 }
 
 /** `AtlasResolveError.detail` is already the human-ready "hosts checked + remedy" text (spec §8: "no active Atlas instance; checked nasta-mbp, m4max"); any other failure (connect refused, non-Atlas responder, transport error) falls back to its own message. */
@@ -147,9 +130,10 @@ function buildServer(): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
     try {
-      const result = await withUpstream(upstreamDeps, (c) => c.listTools(request.params));
-      checkConflict();
-      return result;
+      // Conflict-header checking happens inline inside `connect()`'s
+      // `conflictCheckingFetch` wrapper, per response — no post-hoc check
+      // needed (or safe to do, under concurrent requests) here.
+      return await withUpstream(upstreamDeps, (c) => c.listTools(request.params));
     } catch (e) {
       // Visible in-band at session start (spec §8) — an MCP-level error here
       // gives Claude Code nothing useful to show the user.
@@ -159,9 +143,7 @@ function buildServer(): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
-      const result = await withUpstream(upstreamDeps, (c) => c.callTool(request.params));
-      checkConflict();
-      return result;
+      return await withUpstream(upstreamDeps, (c) => c.callTool(request.params));
     } catch (e) {
       return errorResult(detailOf(e));
     }
