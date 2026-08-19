@@ -62,8 +62,9 @@ const CONSUMED_BY_COMPOSE = new Set([
  * Read by `config.ts` but deliberately not listed with a value.
  *
  * `CODE_ROOT_2..5` are optional extra mounts; listing them empty would activate
- * nothing but suggests they are configured. The rest are documented in the file
- * as commented-out or intentionally-blank lines and are picked up by
+ * nothing but suggests they are configured. `ATLAS_SELF` is per-machine `.env`
+ * material (not fleet-wide). The rest are documented in the file as
+ * commented-out or intentionally-blank lines and are picked up by
  * `keysInFile`, so nothing lands here that a reader would miss.
  */
 const INTENTIONALLY_ABSENT = new Set([
@@ -71,6 +72,7 @@ const INTENTIONALLY_ABSENT = new Set([
   'CODE_ROOT_3',
   'CODE_ROOT_4',
   'CODE_ROOT_5',
+  'ATLAS_SELF',
 ]);
 
 describe('config/atlas.defaults.env', () => {

@@ -46,6 +46,8 @@ x-node-common: &node-common
     # which is the state Atlas runs in today (Ollama and the G2P proxy need no key).
     EMBEDDINGS_API_KEY: ${EMBEDDINGS_API_KEY:-}
     LLM_API_KEY: ${LLM_API_KEY:-}
+    # Multi-machine: which machines.yaml entry is this host
+    ATLAS_SELF: ${ATLAS_SELF:-}
   extra_hosts:
     - 'host.docker.internal:host-gateway'
 
@@ -66,6 +68,7 @@ services:
       - '${CODE_ROOT_HOST_4:-${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}}:/data/code4:ro'
       - '${CODE_ROOT_HOST_5:-${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}}:/data/code5:ro'
       - '${CLAUDE_PROJECTS_HOST:-/Users/nasta/.claude/projects}:/data/claude/projects:ro'
+      - ./config:/config:ro
       - hf_cache:/app/.cache
     depends_on:
       postgres: { condition: service_healthy }
@@ -81,6 +84,7 @@ services:
     ports:
       - '127.0.0.1:${API_PORT:-8710}:8710'
     volumes:
+      - ./config:/config:ro
       - hf_cache:/app/.cache
       # Read-only so the dashboard can report Qdrant's real disk usage. Qdrant
       # has no API for it (its telemetry `disk_usage_bytes` reports 0), and

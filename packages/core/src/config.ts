@@ -112,6 +112,10 @@ const schema = z.object({
   apiPort: z.coerce.number().int().default(8710),
   mcpPort: z.coerce.number().int().default(8711),
   apiUrl: z.string().default('http://api:8710'),
+  /** Committed machine-fleet SSoT; absent file = legacy single-machine mode. */
+  machinesFile: z.string().default('/config/machines.yaml'),
+  /** Which machines.yaml entry is THIS host. Required once the file exists. */
+  atlasSelf: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof schema>;
@@ -182,6 +186,8 @@ function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
     apiPort: opt(env.API_PORT),
     mcpPort: opt(env.MCP_PORT),
     apiUrl: opt(env.KDBSCOPE_API_URL),
+    machinesFile: opt(env.ATLAS_MACHINES_FILE),
+    atlasSelf: opt(env.ATLAS_SELF),
   });
 }
 

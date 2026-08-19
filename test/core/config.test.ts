@@ -105,3 +105,13 @@ describe('G2P client id config', () => {
     expect(parseConfig({ KDB_G2P_CLIENT_ID: '' }).g2pClientId).toBe('');
   });
 });
+
+describe('multi-machine config', () => {
+  it('exposes machinesFile and atlasSelf', () => {
+    const cfg = parseConfig({ ATLAS_SELF: 'nasta-mbp', ATLAS_MACHINES_FILE: '/tmp/m.yaml' });
+    expect(cfg.machinesFile).toBe('/tmp/m.yaml');
+    expect(cfg.atlasSelf).toBe('nasta-mbp');
+    expect(parseConfig({}).machinesFile).toBe('/config/machines.yaml');
+    expect(parseConfig({}).atlasSelf).toBeUndefined();
+  });
+});
