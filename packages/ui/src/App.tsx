@@ -12,6 +12,7 @@ import { TimelineView } from './views/TimelineView';
 import { ComponentsView } from './views/ComponentsView';
 import { SessionsView } from './views/SessionsView';
 import { MonitorView } from './views/MonitorView';
+import { MachinesView } from './views/MachinesView';
 
 /**
  * Shell. Two axes, deliberately kept apart:
@@ -21,7 +22,7 @@ import { MonitorView } from './views/MonitorView';
  *
  * They used to share one column, which is what made the panel hard to read.
  *
- * Keyboard: '/' focuses search, 1–6 switch views, Esc backs out of a session.
+ * Keyboard: '/' focuses search, 1–7 switch views, Esc backs out of a session.
  */
 
 /**
@@ -93,11 +94,11 @@ export default function App() {
         e.preventDefault();
         setView('search');
         setTimeout(() => searchRef.current?.focus(), 0);
-      } else if (!typing && ['1', '2', '3', '4', '5', '6'].includes(e.key)) {
+      } else if (!typing && ['1', '2', '3', '4', '5', '6', '7'].includes(e.key)) {
         setView(
-          (['search', 'dashboard', 'timeline', 'components', 'sessions', 'monitor'] as View[])[
-            Number(e.key) - 1
-          ]!,
+          (
+            ['search', 'dashboard', 'timeline', 'components', 'sessions', 'monitor', 'machines'] as View[]
+          )[Number(e.key) - 1]!,
         );
       } else if (e.key === 'Escape' && openSessionId) {
         setOpenSessionId('');
@@ -129,8 +130,9 @@ export default function App() {
 
   // The dashboard is global by definition; a scope bar over it would imply a
   // filter it does not apply. Monitor is the same: its subject is Atlas's own
-  // traffic, which has no project dimension at all.
-  const showScope = view !== 'dashboard' && view !== 'monitor';
+  // traffic, which has no project dimension at all. Machines is the fleet, not
+  // a project — the same argument applies.
+  const showScope = view !== 'dashboard' && view !== 'monitor' && view !== 'machines';
 
   return (
     <div className="flex min-h-screen">
@@ -188,6 +190,7 @@ export default function App() {
             />
           )}
           {view === 'monitor' && <MonitorView />}
+          {view === 'machines' && <MachinesView />}
           {view === 'sessions' && (
             <SessionsView
               project={scope.project}

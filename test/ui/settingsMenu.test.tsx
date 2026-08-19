@@ -26,7 +26,7 @@ describe('SettingsMenu', () => {
     open();
     const options = screen.getAllByRole('radio');
     expect(options.map((o) => o.textContent?.replace(/^[●○] /, ''))).toEqual([
-      'Search & Ask', 'Overview', 'Timeline', 'Components', 'Sessions', 'Monitor',
+      'Search & Ask', 'Overview', 'Timeline', 'Components', 'Sessions', 'Monitor', 'Machines',
     ]);
     expect(screen.getByRole('radio', { checked: true }).textContent).toContain('Search & Ask');
   });

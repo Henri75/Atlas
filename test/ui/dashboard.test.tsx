@@ -24,6 +24,17 @@ const base = {
 const stub = (data: unknown) =>
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => data, text: async () => '' })));
 
+/** Routes /api/dashboard and /api/machines to different fixtures by URL. */
+const stubByUrl = (fixtures: Record<string, unknown>) =>
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => fixtures[String(url).split('?')[0]!] ?? {},
+      text: async () => '',
+    })),
+  );
+
 describe('DashboardView', () => {
   it('shows compact headline counts with exact values on hover', async () => {
     stub(base);
@@ -87,5 +98,74 @@ describe('DashboardView', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('Failed to fetch'); }));
     render(<DashboardView onGoTo={() => {}} />);
     await waitFor(() => expect(screen.getByText('Cannot reach the API.')).toBeTruthy());
+  });
+
+  /**
+   * A single-machine install has nothing to disambiguate — /api/machines
+   * answers `{ self: 'local', machines: [] }` in legacy mode — so the Fleet
+   * section must be entirely absent, not an empty grid. This is the same
+   * "must look exactly as today" contract the badge and dropdown carry.
+   */
+  it('shows no Fleet section for a single-machine install', async () => {
+    stubByUrl({ '/api/dashboard': base, '/api/machines': { self: 'local', machines: [] } });
+    render(<DashboardView onGoTo={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Services')).toBeTruthy());
+    expect(screen.queryByText('Fleet')).toBeNull();
+  });
+
+  it('renders a card per fleet machine, self marked, with a status pill', async () => {
+    stubByUrl({
+      '/api/dashboard': base,
+      '/api/machines': {
+        self: 'nasta-mbp',
+        machines: [
+          {
+            name: 'nasta-mbp', address: '127.0.0.1', user: 'nasta',
+            codeRoots: ['/x'], claudeProjects: '/y', enabled: true, sync: null,
+          },
+          {
+            name: 'mac-mini', address: '10.0.0.5', user: 'nasta',
+            codeRoots: ['/x'], claudeProjects: '/y', enabled: true,
+            sync: {
+              lastAttemptAt: new Date().toISOString(),
+              lastSuccessAt: new Date().toISOString(),
+              status: 'ok', bytes: 1024, durationMs: 500, error: null,
+            },
+          },
+        ],
+      },
+    });
+    render(<DashboardView onGoTo={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Fleet')).toBeTruthy());
+    expect(screen.getByText('nasta-mbp')).toBeTruthy();
+    expect(screen.getByText('mac-mini')).toBeTruthy();
+    expect(screen.getByText('(self)')).toBeTruthy();
+    expect(screen.getByText('ok')).toBeTruthy();
+  });
+
+  /** unreachable/error read as a problem regardless of how stale they are. */
+  it('colors an unreachable machine as a problem, not just stale', async () => {
+    stubByUrl({
+      '/api/dashboard': base,
+      '/api/machines': {
+        self: 'nasta-mbp',
+        machines: [
+          {
+            name: 'nasta-mbp', address: '127.0.0.1', user: 'nasta',
+            codeRoots: ['/x'], claudeProjects: '/y', enabled: true, sync: null,
+          },
+          {
+            name: 'mac-mini', address: '10.0.0.5', user: 'nasta',
+            codeRoots: ['/x'], claudeProjects: '/y', enabled: true,
+            sync: {
+              lastAttemptAt: new Date().toISOString(), lastSuccessAt: null,
+              status: 'unreachable', bytes: null, durationMs: null, error: 'timed out',
+            },
+          },
+        ],
+      },
+    });
+    render(<DashboardView onGoTo={() => {}} />);
+    await waitFor(() => expect(screen.getByText('unreachable')).toBeTruthy());
   });
 });

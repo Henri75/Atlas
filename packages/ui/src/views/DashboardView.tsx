@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import type { ActivityPoint, Dashboard, RunRow, SourceDetailRow, SourceType } from '../types';
+import type { ActivityPoint, Dashboard, MachineRow, RunRow, SourceDetailRow, SourceType } from '../types';
 import { SOURCE_META } from '../types';
 import { Empty, Eyebrow, Spinner } from '../components/ui';
 import { bytes, compact, duration, exact, plural, relativeTime } from '../format';
+import { useMachines } from '../useMachines';
+import { SyncPill, syncStateOf } from './MachinesView';
 
 /**
  * The landing page: what is indexed, whether it is working, and what it costs.
@@ -16,6 +18,9 @@ import { bytes, compact, duration, exact, plural, relativeTime } from '../format
 export function DashboardView({ onGoTo }: { onGoTo: (view: 'search') => void }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState('');
+  // Polled at the same cadence as the dashboard itself — sync health is as
+  // live as everything else on this page.
+  const { self, machines, multiMachine } = useMachines(15_000);
 
   useEffect(() => {
     const load = () =>
@@ -61,6 +66,16 @@ export function DashboardView({ onGoTo }: { onGoTo: (view: 'search') => void }) 
         <Stat label="Chunks" value={data.chunks} hint="searchable pieces" />
         <Stat label="Sessions" value={data.sessions} hint="Claude Code transcripts" />
       </div>
+
+      {/* A single-machine install has nothing to show here — self is the only
+          row, and it never has a sync record of its own — so the whole
+          section stays absent rather than render one lonely "never" card. */}
+      {multiMachine && (
+        <section className="mt-8">
+          <Eyebrow>Fleet</Eyebrow>
+          <MachineCards machines={machines} self={self} />
+        </section>
+      )}
 
       <div className="mt-8 grid md:grid-cols-2 gap-8">
         <section>
@@ -443,6 +458,68 @@ function ActivityChart({ activity }: { activity: ActivityPoint[] }) {
           </span>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * config/machines.yaml's own default (`sync.intervalMin: 10`) — the closest
+ * available proxy for "should have synced by now". The documented
+ * /api/machines wire shape (spec Task 5) does not carry the configured
+ * interval, so a fleet running a non-default interval will stage-shift
+ * amber a bit early or late; the alternative (no staleness signal at all)
+ * is worse.
+ */
+const DEFAULT_SYNC_INTERVAL_MIN = 10;
+
+/** Amber once a healthy machine's last success is older than 2x the interval. */
+function isStale(sync: MachineRow['sync']): boolean {
+  if (!sync?.lastSuccessAt) return true;
+  const ageMs = Date.now() - new Date(sync.lastSuccessAt).getTime();
+  return ageMs >= DEFAULT_SYNC_INTERVAL_MIN * 2 * 60_000;
+}
+
+/** One card per fleet machine: name (self marked), status, last success. */
+function MachineCards({ machines, self }: { machines: MachineRow[]; self: string }) {
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+      {machines.map((m) => {
+        const state = syncStateOf(m.sync);
+        const bad = state === 'unreachable' || state === 'error';
+        const stale = state === 'ok' && isStale(m.sync);
+        const dotColor = bad
+          ? 'var(--color-report)'
+          : stale
+            ? 'var(--color-kdb)'
+            : state === 'ok'
+              ? 'var(--color-git)'
+              : 'var(--color-faint)';
+        return (
+          <div key={m.name} className="bg-panel border border-line rounded-md px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <span
+                className="size-2 rounded-full shrink-0"
+                style={{ background: dotColor }}
+                aria-hidden
+              />
+              <span className="flex-1 text-[13px] font-medium truncate">
+                {m.name}
+                {m.name === self && (
+                  <span className="ml-1.5 font-mono text-[10px] text-faint">(self)</span>
+                )}
+              </span>
+              <SyncPill sync={m.sync} />
+            </div>
+            <div
+              className="mt-1.5 font-mono text-[11px]"
+              style={{ color: stale ? 'var(--color-kdb)' : 'var(--color-faint)' }}
+              title={m.sync?.lastSuccessAt ?? undefined}
+            >
+              last success {relativeTime(m.sync?.lastSuccessAt ?? undefined)}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

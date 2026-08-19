@@ -424,6 +424,31 @@ describe('api routes', () => {
     );
   });
 
+  /**
+   * Task 19 fixed POST /api/ask; POST /api/ask/stream built its own filters
+   * object independently and had the same gap. The UI's Ask box calls the
+   * stream endpoint exclusively, so this is the one that actually matters to
+   * a user typing into the machine dropdown.
+   */
+  it('POST /api/ask/stream forwards machine to the search filter', async () => {
+    async function* fakeStream() {
+      yield { type: 'done', model: 'm', degraded: false };
+    }
+    const askStream = vi.fn((_q: string, _f: Record<string, unknown>) => fakeStream());
+    const app = buildApp(makeDeps({ ask: { askStream } as any }));
+    await app.request('/api/ask/stream', {
+      method: 'POST',
+      body: JSON.stringify({ question: 'q', machine: 'nasta-mbp' }),
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(askStream).toHaveBeenCalledWith(
+      'q',
+      expect.objectContaining({ machine: 'nasta-mbp' }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it('POST /api/ask requires question', async () => {
     const res = await buildApp(makeDeps()).request('/api/ask', {
       method: 'POST',

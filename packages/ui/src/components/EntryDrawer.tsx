@@ -14,6 +14,8 @@ interface FullEntry {
   occurred_at?: string;
   hostPath: string;
   editorUrl: string;
+  /** First-ingested-from provenance (spec §6); absent pre-fleet or unbackfilled. */
+  machine?: string;
 }
 
 /**
@@ -21,7 +23,17 @@ interface FullEntry {
  * way back to the file it came from. It overlays rather than navigates so the
  * result list stays on screen as context.
  */
-export function EntryDrawer({ entryId, onClose }: { entryId: number | null; onClose: () => void }) {
+export function EntryDrawer({
+  entryId,
+  onClose,
+  /** Gates the machine line — same fleet-size rule as the hit-row badge, so a
+   *  single-machine install shows nothing new here either. */
+  multiMachine = false,
+}: {
+  entryId: number | null;
+  onClose: () => void;
+  multiMachine?: boolean;
+}) {
   const [entry, setEntry] = useState<FullEntry | null>(null);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
@@ -109,6 +121,11 @@ export function EntryDrawer({ entryId, onClose }: { entryId: number | null; onCl
                   </button>
                 </div>
                 <p className="mt-1 font-mono text-[10px] text-faint break-all">{entry.hostPath}</p>
+                {multiMachine && entry.machine && (
+                  <p className="mt-0.5 font-mono text-[10px] text-faint">
+                    first ingested from <span className="text-muted">{entry.machine}</span>
+                  </p>
+                )}
 
                 {/* The record as it was written: kdb entries, commit bodies and
                     docs are all markdown at the source, so they render as

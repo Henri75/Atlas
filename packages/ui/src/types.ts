@@ -25,6 +25,12 @@ export interface SearchHit {
   /** 'archived' (downranked) or 'aging' (label only); absent = active. */
   docStatus?: 'aging' | 'archived';
   ageMonths?: number;
+  /**
+   * Which machine this entry was FIRST INGESTED FROM (spec §6) — provenance,
+   * not presence. Absent for a legacy pre-machine-model entry that has not
+   * been backfilled, or in single-machine mode.
+   */
+  machine?: string;
 }
 
 export interface SearchResult {
@@ -89,6 +95,39 @@ export interface ProjectRow {
   rootPath: string;
   hasKdb: boolean;
   entryCount: number;
+  /** Every machine this project has been seen on (spec §5); absent pre-fleet. */
+  locations?: { machine: string; hostPath: string; hasKdb: boolean }[];
+}
+
+/* ---------------------------------------------------------------------------
+ * Machines — mirrors GET /api/machines (packages/api/src/app.ts). Legacy
+ * single-machine installs answer `{ self: 'local', machines: [] }` rather
+ * than 404ing, so an empty array means "no fleet configured", not "loading".
+ * ------------------------------------------------------------------------- */
+
+/** machine_sync row, joined onto its machine by name; null = never attempted. */
+export interface MachineSync {
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  status: 'running' | 'ok' | 'unreachable' | 'error' | string;
+  bytes: number | null;
+  durationMs: number | null;
+  error: string | null;
+}
+
+export interface MachineRow {
+  name: string;
+  address: string;
+  user: string;
+  codeRoots: string[];
+  claudeProjects: string;
+  enabled: boolean;
+  sync: MachineSync | null;
+}
+
+export interface MachinesResponse {
+  self: string;
+  machines: MachineRow[];
 }
 
 export interface TimelineItem {

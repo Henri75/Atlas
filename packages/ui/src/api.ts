@@ -4,6 +4,7 @@ import type {
   CachedAdoption,
   ComponentRow,
   Dashboard,
+  MachinesResponse,
   ProjectRow,
   SearchResult,
   SessionRow,
@@ -124,6 +125,12 @@ export const api = {
   session: (id: string) => get<{ session: SessionRow; entries: any[] }>(`/api/sessions/${id}`),
   stats: () => get<Stats>('/api/stats'),
   dashboard: () => get<Dashboard>('/api/dashboard'),
+  /**
+   * The committed machine fleet joined with live sync health. Legacy mode
+   * (no config/machines.yaml) answers `{ self: 'local', machines: [] }`
+   * rather than 404ing — callers branch on the array length, not on a status.
+   */
+  machines: () => get<MachinesResponse>('/api/machines'),
   reindex: (body: Record<string, unknown> = {}) =>
     post<{ enqueued: number }>('/api/admin/reindex', body),
 
