@@ -36,7 +36,7 @@ COMPOSE := docker compose --env-file config/atlas.defaults.env $(if $(DOTENV),--
 # probe — otherwise every `make ps` would make a Doppler API round-trip.
 DOPPLER = $(shell doppler run --command 'true' >/dev/null 2>&1 && echo 'doppler run --')
 
-.PHONY: help install build test lint up down restart restart-build embedder-warm logs ps reindex reindex-full smoke config-check print-compose cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals
+.PHONY: help install build test lint start stop restart restart-build embedder-warm logs ps reindex reindex-full smoke config-check print-compose cli-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals
 
 # The harness runs on the host, not in a container: a variant has to be a config
 # object rather than an image rebuild for an A/B to be possible at all. Ports come
@@ -62,13 +62,13 @@ test: ## unit test suite
 lint: ## typecheck all packages
 	npm run lint
 
-up: ## build images and start the full stack
+start: ## build images and start the full stack
 	$(DOPPLER) $(COMPOSE) up -d --build
 	@echo "UI    → http://127.0.0.1:$${UI_PORT:-8712}"
 	@echo "API   → http://127.0.0.1:$${API_PORT:-8710}/api/health"
 	@echo "MCP   → http://127.0.0.1:$${MCP_PORT:-8711}/mcp"
 
-down: ## stop the stack (data volumes are kept)
+stop: ## stop the stack (data volumes are kept)
 	$(COMPOSE) down
 
 # `mcp` is deliberately NOT here. Restarting it drops the atlas_* tools from
