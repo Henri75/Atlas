@@ -1672,3 +1672,30 @@ Reference: docs/adr/20260819-multi-machine-one-active-instance.md; docs/superpow
 
 **Status:**
 - Completed
+---
+### [2026-08-24] - Merge feature/multi-machine into main, reconciled with host portability
+
+**Objective:**
+- Bring the multi-machine branch (42 commits, 121 files, +12k lines: machines.yaml fleet model, SSH-pull mirror sync, dedup v3 identity, LAN auth, instance guard, atlas-connect shim, machines UI) into main so main is the only branch, working on this host.
+
+**Summary of Work:**
+- Reviewed the branch against the new rules. It was built for the old host: committed `/Users/nasta/...` roots (compose fallbacks, defaults env, `config/machines.yaml`), `make up/down` (main had already renamed to `start/stop`), and a transcript identity of `<encodedDir>/<file>` — the exact shape the 2026-08-24 migration renamed. Its dedup v3 framework (project-relative paths, content-occurrence ordinals, in-place migration under lock 732016, rehearsal harness) is sound and subsumes the interim transcript re-key shipped earlier today.
+- Plain `git merge` (never rebase). Conflicts: Makefile (kept `start/stop` + derived-root export, added preflight/sync-now/connect-link/db-dump/dedup-rehearsal/help-audit), docker-compose.yml (fail-loud roots + the branch's config/mirror/keys mounts), docs/configuration.md (both revision lines), the four append-only KDB logs (both sides were pure tail appends — union, line counts verified), and catalog.ts/qdrant.ts/main.ts (branch versions; my primitives dropped).
+- Reconciliation in the same merge commit: `transcriptIdentityPath` moved into identity.ts and used by both `applyIdentity` (pipeline passes `claudeRoot: dirname(dir)`) and `identityFromStored`; rekeyTranscripts.ts + its test deleted; `config/machines.yaml` -> gitignored, `config/machines.example.yaml` committed as a neutral template (the guard test now sweeps every committed file under config/); wording in defaults env, preflight and runbook updated; `make up/down` -> `start/stop` in docs, resolver/guard messages and their tests; `yaml` dependency installed.
+- Verification: 1325/1325 (4 tests that pinned `<dir>/<file>` and the committed inventory were updated), lint clean, `make help-audit` and `make config-check` green. Rehearsal (`make db-dump` + `make dedup-rehearsal`, scratch Postgres): 485,639 rows before/after, 127,101 rekeyed, 0 collisions, 24 ordinal groups, 0 points to delete. Real run at indexer boot: machine backfilled on 490,683 rows, dedup v3 485,683 scanned / 127,121 rekeyed / 0 collisions in 288s; transcript duplicate groups 0; `/api/machines` = single-machine mode; atlas + assessor MCP still Connected.
+
+**Key Decisions & Rationale:**
+- Transcript identity = path inside the encoded directory, scope `claude`: the directory name is a host path and a rename is the common migration move; the session UUID alone is globally unique. The spec's `<dir>/<file>` was written for Migration-Assistant copies and would have re-embedded the corpus on this very migration.
+- `machines.yaml` per deployment, not committed: a fleet inventory names real hosts, logins and absolute paths — the user's rule is that nothing committed depends on a host. Absent file = single-machine mode, so a fresh checkout works with zero config; the template documents the shape. Trade-off: the inventory must be distributed out of band (like .env / Doppler).
+- One merge commit carrying the reconciliation rather than merge + fix-up: the merge point itself is deployable and no commit on main ever encodes the `<dir>/<file>` rule.
+- Kept `start/stop` (the user's rename on main) and updated the branch's docs and error messages rather than adding aliases.
+
+**Code/Files Modified:**
+- Merge of feature/multi-machine (121 files) plus: packages/core/src/identity.ts, packages/core/src/ids.ts, packages/indexer/src/pipeline.ts, Makefile, docker-compose.yml, config/atlas.defaults.env, config/machines.example.yaml (new), .gitignore, scripts/preflight.sh, docs/{configuration,multi-machine,operations,getting-started}.md, README.md, packages/core/src/resolve.ts, packages/api/src/guard.ts, packages/mcp/src/tools.ts, packages/atlas-connect/{README.md,src/main.ts}, test/core/{identity,dedupMigration,machines,configDefaults,dedupKey,resolve}.test.ts, test/api/guard.test.ts, test/connect/bridge.test.ts; deleted packages/indexer/src/rekeyTranscripts.ts + test.
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** the rehearsal harness predicted the real run exactly (0 collisions both); union-merging append-only logs is safe when both sides only appended — verify with a deletion count before trusting it.
+- **What Failed:** first test run after the merge failed 20+ files on `Cannot find module 'yaml'` — a merged package.json needs `npm install` before anything else is diagnosed. zsh does not word-split `$VAR` in `git add $FILES`; use an array.
+
+**Status:**
+- Completed

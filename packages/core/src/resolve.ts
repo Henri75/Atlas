@@ -282,7 +282,7 @@ async function resolveViaProbe(
   const conflicted = rows.filter((r) => r.outcome.ok && r.outcome.state === 'conflicted');
   if (conflicted.length > 0) {
     const names = conflicted.map((r) => r.name).join(', ');
-    throw new AtlasResolveError('conflicted', detailBlock(rows, `run \`make down\` on: ${names}`));
+    throw new AtlasResolveError('conflicted', detailBlock(rows, `run \`make stop\` on: ${names}`));
   }
 
   const mismatched = rows.filter(
@@ -300,14 +300,14 @@ async function resolveViaProbe(
   if (active.length === 0) {
     throw new AtlasResolveError(
       'none-reachable',
-      detailBlock(rows, 'make sure at least one Atlas instance is running (`make up`)'),
+      detailBlock(rows, 'make sure at least one Atlas instance is running (`make start`)'),
     );
   }
   if (active.length > 1) {
     const names = active.map((r) => r.name).join(', ');
     throw new AtlasResolveError(
       'multiple-active',
-      detailBlock(rows, `run \`make down\` on all but one of: ${names}`),
+      detailBlock(rows, `run \`make stop\` on all but one of: ${names}`),
     );
   }
 

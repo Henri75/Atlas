@@ -175,7 +175,7 @@ claude mcp list                            # see what is registered + connection
 ```
 
 Inside a running session, `/mcp` shows the server and lets you toggle it without
-touching the config. If the Atlas stack is simply stopped (`make down`), the
+touching the config. If the Atlas stack is simply stopped (`make stop`), the
 tools fail fast and Claude carries on without them — deregistering is optional.
 
 Watch what agents actually do with it: `atlas usage` (or
@@ -292,7 +292,7 @@ Atlas cannot modify them.
 ## 7. Everyday commands
 
 ```bash
-make up / make down          # start / stop (data volumes survive)
+make start / make stop          # start / stop (data volumes survive)
 make ps / make logs          # status / follow logs
 make smoke                   # is it healthy?
 make test / make lint        # 171 unit tests, typecheck
@@ -302,7 +302,7 @@ atlas status                  # index counts, freshness, recent errors
 Reset the index completely (sources are untouched, everything re-parses):
 
 ```bash
-docker compose down -v && make up
+docker compose down -v && make start
 ```
 
 ---

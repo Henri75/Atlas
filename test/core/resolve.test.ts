@@ -156,7 +156,7 @@ describe('resolveActive — probe-all outcomes', () => {
     );
     expect(err.kind).toBe('conflicted');
     expect(err.detail).toContain('nasta-mbp');
-    expect(err.detail).toContain('make down');
+    expect(err.detail).toContain('make stop');
   });
 
   it('a conflicted state takes priority over a second active responder', async () => {

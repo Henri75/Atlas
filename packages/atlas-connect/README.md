@@ -4,7 +4,7 @@
 it bridges those calls to whichever machine is currently running the active
 Atlas instance (resolved lazily via `resolveActive()` from `@atlas/core`,
 spec §8). Register it once per machine and never touch the registration
-again — moving the stack (`make down` here, `make up` there) needs no config
+again — moving the stack (`make stop` here, `make start` there) needs no config
 change on the Claude Code side.
 
 ```

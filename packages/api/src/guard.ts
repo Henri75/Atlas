@@ -209,7 +209,7 @@ export async function runBootGuard(deps: BootGuardDeps): Promise<void> {
   if (!deps.forceActive) {
     error(
       `[api] REFUSING TO START — live Atlas instance already running on: ${live.join(', ')}. ` +
-        'Run `make down` on one of them before starting this one ' +
+        'Run `make stop` on one of them before starting this one ' +
         '(or set ATLAS_FORCE_ACTIVE=true to override — emergency use only).',
     );
     exit(1);

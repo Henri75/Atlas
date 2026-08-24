@@ -103,16 +103,16 @@ describe('planRekey', () => {
     expect(plan.get(6)!.newKey).toBe(legacyKey(odd, 'kdb'));
   });
 
-  it('normalizes claude transcripts to <dir>/<file> under the literal claude scope', () => {
+  it('normalizes claude transcripts to the path inside the encoded dir, under the literal claude scope', () => {
     const self = row(8, '/data/claude/projects/-Users-x-kdb/abc.jsonl', null, 't', 'b', {
       project_id: 2,
       source_type: 'claude_session',
     });
     const mirrored = { ...self, id: 9, source_path: '/data/remote/m4max/claude/-Users-x-kdb/abc.jsonl' };
     const plan = planRekey([self, mirrored], PROJECTS, CLAUDE_DIRS);
-    expect(plan.get(8)).toMatchObject({ scope: 'claude', path: '-Users-x-kdb/abc.jsonl' });
-    // A Migration-Assistant copy of the same transcript dedups instead of
-    // re-embedding: identical key, so the higher id is the collision loser.
+    expect(plan.get(8)).toMatchObject({ scope: 'claude', path: 'abc.jsonl' });
+    // A mirrored (or renamed-directory) copy of the same transcript dedups
+    // instead of re-embedding: identical key, so the higher id is the loser.
     expect(plan.get(9)!.newKey).toBe(plan.get(8)!.newKey);
     expect(plan.get(9)!.duplicateOf).toBe(8);
   });

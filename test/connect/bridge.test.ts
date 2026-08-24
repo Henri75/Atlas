@@ -134,7 +134,7 @@ describe('withUpstream', () => {
 
 describe('unavailableTool', () => {
   it('carries the resolver detail text in-band as the single tool description', () => {
-    const detail = 'checked nasta-mbp, m4max\nremedy: make up';
+    const detail = 'checked nasta-mbp, m4max\nremedy: make start';
     const tool = unavailableTool(detail);
 
     expect(tool.name).toBe('atlas_unavailable');

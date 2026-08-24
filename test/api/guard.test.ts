@@ -371,7 +371,7 @@ describe('runBootGuard', () => {
 
     expect(error).toHaveBeenCalledTimes(1);
     expect(error.mock.calls[0]![0]).toContain('mac-mini');
-    expect(error.mock.calls[0]![0]).toContain('make down');
+    expect(error.mock.calls[0]![0]).toContain('make stop');
     expect(error.mock.calls[0]![0]).toContain('ATLAS_FORCE_ACTIVE=true');
     expect(exit).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(1);

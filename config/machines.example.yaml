@@ -1,13 +1,24 @@
-# Atlas machine fleet — committed SSoT (spec: docs/superpowers/specs/2026-08-19-multi-machine-design.md).
-# Names are FROZEN once indexed. Addresses must resolve from inside containers (no *.local).
-# Each running machine sets ATLAS_SELF=<name> in its gitignored .env.
+# Atlas machine fleet — TEMPLATE. Copy to config/machines.yaml (gitignored:
+# a fleet inventory names real hosts and paths, which never belong in git —
+# distribute it out of band, the way .env travels) and fill in your machines.
+# Absent file = single-machine mode; nothing else to configure.
+# Spec: docs/superpowers/specs/2026-08-19-multi-machine-design.md
+#
+# Names are FROZEN once indexed. Addresses must resolve from inside containers
+# (no *.local). Each running machine sets ATLAS_SELF=<name> in its gitignored .env.
 machines:
-  - name: nasta-mbp
-    address: 127.0.0.1        # replace with this Mac's LAN IP when a second machine joins
-    user: nasta
+  - name: mac-one              # this machine
+    address: 127.0.0.1         # its LAN IP once a second machine joins
+    user: login                # ssh login on mac-one
     codeRoots:
-      - "/Users/nasta/__CODING NEW"
-    claudeProjects: /Users/nasta/.claude/projects
+      - /path/to/projects        # the tree Atlas indexes on mac-one
+    claudeProjects: /path/to/claude-projects
+  # - name: mac-two
+  #   address: 192.168.1.20
+  #   user: login
+  #   codeRoots:
+  #     - /path/to/projects
+  #   claudeProjects: /path/to/claude-projects
 sync:
   intervalMin: 10
   excludes: []

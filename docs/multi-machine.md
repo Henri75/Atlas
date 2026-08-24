@@ -30,7 +30,7 @@ host unless stated otherwise.
    ```bash
    ssh-keygen -t ed25519 -f ~/.atlas/keys/atlas_sync -N ''
    ```
-   `~/.atlas/keys` is the default (`ATLAS_KEYS_DIR` overrides it); `make up`'s
+   `~/.atlas/keys` is the default (`ATLAS_KEYS_DIR` overrides it); `make start`'s
    preflight (`scripts/preflight.sh`) creates the directory automatically and
    warns if this key is missing while a remote is enabled.
 
@@ -140,8 +140,8 @@ intentionally stay behind (the index is a rebuildable cache), so the default
 is a clean re-pull and re-index on the new host.
 
 ```bash
-make down     # on the old host — data volumes are kept, not wiped
-make up       # on the new host — cold start
+make stop     # on the old host — data volumes are kept, not wiped
+make start       # on the new host — cold start
 ```
 
 Clients (CLI, `atlas-connect`, the browser) re-resolve automatically on the
@@ -181,10 +181,10 @@ NOT. A machine that pulls the fleet file without setting `ATLAS_SELF` boots
 machine:
 
 ```bash
-echo 'ATLAS_SELF=nasta-mbp' >> .env   # must name an entry in config/machines.yaml
+echo 'ATLAS_SELF=<name>' >> .env   # must name an entry in config/machines.yaml
 ```
 
-`make up` and `make restart-build` both run `scripts/preflight.sh` first,
+`make start` and `make restart-build` both run `scripts/preflight.sh` first,
 which refuses to start compose at all if this is missing or names an unknown
 machine — so the failure is a one-line message before anything is rebuilt,
 not a half-dead stack.

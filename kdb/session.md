@@ -322,3 +322,14 @@
 
 **Notable:** the migration renamed the transcript directories rather than copying them, so the old names exist only in the database; their rows keep stale source_paths on purpose (rewriting would move Qdrant point ids). Four backlog items logged, including that the multi-machine spec's transcript key still includes the directory name this incident proved unstable.
 ---
+---
+### [2026-08-24 15:59 UTC]
+
+**User Prompt Summary:**
+> (1) Confirm there will be no duplicates in Atlas after the transcript fix. (2) Review feature/multi-machine, fix/improve it, merge it into main, and make sure no other parallel branch remains — everything committed on main and working.
+
+**AI Response Summary:**
+> (1) Verified: 0 transcript groups sharing session+title+body; the remaining same-text groups are distinct sessions/commit shas, plus 24 pre-existing line-shift groups that the merged dedup v3 now keys by content-occurrence ordinal. (2) Surveyed the branch (42 commits, shipped per its own KDB), repaired its dangling worktree (only regenerated views were dirty), ran its suite (1317 green), did a no-touch merge simulation, then the sanctioned plain merge with scripted conflict resolution. Reconciled it with today's portability rules: transcript identity inside the encoded dir on both scan and migration sides, machines.yaml gitignored with a neutral template, derived roots and fail-loud compose kept, start/stop naming, interim re-key removed. Rehearsed the v3 migration on a dump (0 collisions), deployed, watched the real run (485,683 rows, 127,121 rekeyed, 0 collisions, 288s), verified duplicates 0, API single-machine mode, MCP connected. Merged, pushed, deleted both side branches and the worktree.
+
+**Notable:** `ask-quality-and-filters` was already fully merged (0 ahead, 72 behind) — deleted as a stale branch. The git warning "refs/notes/commits is invalid" comes from a notes ref that does not exist on this machine; harmless, not touched.
+---

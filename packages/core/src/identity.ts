@@ -1,4 +1,4 @@
-import { basename } from 'node:path';
+import { dirname } from 'node:path';
 import type { Entry, EntryIdentity } from './types.js';
 import { contentHash } from './ids.js';
 
@@ -38,14 +38,44 @@ function relativeTo(p: string, root: string): string | null {
   return p.startsWith(`${r}/`) ? p.slice(r.length + 1) : null;
 }
 
-/** Spec §6 table. Mutates entries in place (they are fresh from a parser). */
-export function applyIdentity(entries: Entry[], ctx: { rootPath?: string; claudeDirName?: string }): void {
+/**
+ * A transcript's directory name IS a host path: `~/.claude/projects/<encoded
+ * cwd>/<session>.jsonl`, where the encoded cwd is `-Users-jane---CODING-NEW-
+ * DeepCast`. Move the tree, rename the user, migrate to another Mac, and every
+ * directory is renamed — on 2026-08-24 a key that included the directory saw
+ * 347k existing rows as brand-new content, each re-embedded, each a duplicate
+ * in search. A transcript's identity is therefore the path *inside* its
+ * encoded directory: the session UUID in the file name is globally unique, so
+ * the directory adds nothing but the machine. Not `<dir>/<file>`, which the
+ * spec proposed for Migration-Assistant copies (same dir names) — a rename is
+ * the more common move and it defeats that shape.
+ *
+ * `claudeRoot` is the transcripts root the file sits under (self mount or a
+ * mirror's). A path outside it is returned whole — conservative: no false
+ * collision, no dedup benefit (spec §6.3).
+ */
+export function transcriptIdentityPath(sourcePath: string, claudeRoot: string): string {
+  const root = claudeRoot.replace(/\/+$/, '') + '/';
+  if (!sourcePath.startsWith(root)) return sourcePath;
+  const rest = sourcePath.slice(root.length);
+  const slash = rest.indexOf('/');
+  return slash === -1 ? rest : rest.slice(slash + 1);
+}
+
+/**
+ * Spec §6 table. Mutates entries in place (they are fresh from a parser).
+ * `claudeRoot` is required for transcripts in practice (the scanner knows it);
+ * absent, the file's own directory is taken as the encoded dir, which is right
+ * for the flat layout Claude Code writes.
+ */
+export function applyIdentity(entries: Entry[], ctx: { rootPath?: string; claudeRoot?: string }): void {
   for (const e of entries) {
     if (e.sourceType === 'claude_session') {
-      // File identity is global (session UUIDs); slug deliberately absent so
-      // Migration-Assistant copies dedup instead of re-embedding (spec §6).
-      const dir = ctx.claudeDirName ?? basename(e.sourcePath.replace(/\/[^/]+$/, ''));
-      e.identity = { scope: 'claude', path: `${dir}/${basename(e.sourcePath)}`, ref: e.sourceRef ?? '' };
+      // File identity is global (session UUIDs); slug deliberately absent —
+      // attribution is derived from the directory name and differs per
+      // machine for byte-identical files (spec §6).
+      const root = ctx.claudeRoot ?? dirname(dirname(e.sourcePath));
+      e.identity = { scope: 'claude', path: transcriptIdentityPath(e.sourcePath, root), ref: e.sourceRef ?? '' };
       continue;
     }
     const rel = relativeTo(e.sourcePath, ctx.rootPath ?? '');
@@ -83,27 +113,19 @@ export function assignOccurrenceOrdinals(entries: Entry[]): void {
   }
 }
 
-/** The last two `/`-segments of `path` — always the `<dir>/<file>` shape. */
-function lastTwoSegments(path: string): string {
-  const parts = path.split('/').filter(Boolean);
-  return parts.slice(-2).join('/');
-}
-
 /**
- * Recover a stored claude transcript's `<dirName>/<fileName>` identity path.
- * Strips whichever of `claudeDirs` prefixes the stored path (each is a full
- * claude-projects-root path, self or remote), then reduces to the last two
- * segments of what's left — so a match always emits exactly `<dir>/<file>`,
- * same shape as its `applyIdentity` twin, even if the matched prefix left
- * more than two segments behind. When no prefix matches (an unknown or moved
- * mount) the same last-two-segments reduction applies to the full path.
+ * Recover a stored transcript's identity path: the part inside the encoded
+ * directory under whichever of `claudeDirs` (self root or a mirror's) prefixes
+ * the stored path — the migration-side twin of `applyIdentity`. No prefix
+ * matching means an unknown or moved mount: the full stored path is kept, so
+ * no false collision is possible (spec §6.3).
  */
 function claudeRelativePath(sourcePath: string, claudeDirs: string[]): string {
   for (const dir of claudeDirs) {
     const prefix = dir.endsWith('/') ? dir : `${dir}/`;
-    if (sourcePath.startsWith(prefix)) return lastTwoSegments(sourcePath.slice(prefix.length));
+    if (sourcePath.startsWith(prefix)) return transcriptIdentityPath(sourcePath, dir);
   }
-  return lastTwoSegments(sourcePath);
+  return sourcePath;
 }
 
 /**

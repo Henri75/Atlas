@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -147,6 +147,18 @@ describe('committed config carries no machine path', () => {
 
   it('docker-compose.yml has no machine path, not even as a fallback', () => {
     const offenders = composeFile.split('\n').filter((l) => !l.trim().startsWith('#') && machinePath.test(l));
+    expect(offenders).toEqual([]);
+  });
+
+  it('no committed file under config/ carries a machine path (fleet inventory included)', () => {
+    // config/machines.yaml itself is gitignored — per-deployment, like .env;
+    // only the example ships, and it must stay a template.
+    const offenders: string[] = [];
+    for (const name of readdirSync(resolve(root, 'config'))) {
+      if (name === 'machines.yaml') continue;
+      const text = readFileSync(resolve(root, 'config', name), 'utf8');
+      for (const l of text.split('\n')) if (!l.trim().startsWith('#') && machinePath.test(l)) offenders.push(`${name}: ${l.trim()}`);
+    }
     expect(offenders).toEqual([]);
   });
 });

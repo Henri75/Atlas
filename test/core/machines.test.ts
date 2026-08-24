@@ -73,20 +73,22 @@ describe('machines.yaml', () => {
    * docs and preflight tell operators to use, and still fails ACTIONABLY —
    * naming ATLAS_SELF and the known machines — when it is missing.
    */
-  it('the committed config/machines.yaml parses, and self-resolution fails actionably without ATLAS_SELF', () => {
-    // test/core/machines.test.ts -> test/core -> test -> repo root.
+  it('the committed template config/machines.example.yaml parses, and self-resolution fails actionably without ATLAS_SELF', () => {
+    // test/core/machines.test.ts -> test/core -> test -> repo root. The real
+    // config/machines.yaml is gitignored (a fleet inventory names real hosts
+    // and paths); the template is what a new deployment copies.
     const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-    const committed = join(repoRoot, 'config', 'machines.yaml');
-    expect(existsSync(committed)).toBe(true);
+    const template = join(repoRoot, 'config', 'machines.example.yaml');
+    expect(existsSync(template)).toBe(true);
 
-    const mf = loadMachinesFileIfPresent(committed);
+    const mf = loadMachinesFileIfPresent(template);
     expect(mf).not.toBeNull();
 
     expect(() => selfMachine(mf!, undefined)).toThrow(/ATLAS_SELF is not set/);
     // The message must name the machines an operator can choose from —
     // "ATLAS_SELF is not set" alone leaves them guessing at the spelling.
-    expect(() => selfMachine(mf!, undefined)).toThrow(/nasta-mbp/);
-    expect(selfMachine(mf!, 'nasta-mbp').name).toBe('nasta-mbp');
+    expect(() => selfMachine(mf!, undefined)).toThrow(/mac-one/);
+    expect(selfMachine(mf!, 'mac-one').name).toBe('mac-one');
   });
 
   it('mirror path helpers are fixed-shape', () => {

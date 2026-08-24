@@ -12,7 +12,7 @@ import { conflictCheckingFetch, errorResult, unavailableTool, withUpstream } fro
  * per machine (`claude mcp add atlas -- atlas-connect`, see README.md) and
  * never touched again: everything about WHERE Atlas actually runs is
  * resolved lazily, at first tool call, via `resolveActive()` (`@atlas/core`,
- * Task 24) — moving the stack (`make down` here, `make up` there) needs zero
+ * Task 24) — moving the stack (`make stop` here, `make start` there) needs zero
  * Claude Code config changes.
  *
  * Hard requirement (self-review checklist, not just a nicety): this process

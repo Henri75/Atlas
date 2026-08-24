@@ -14,7 +14,7 @@
 ## Day-to-day
 
 ```bash
-make up / make down / make ps / make logs
+make start / make stop / make ps / make logs
 make restart-build    # apply local changes — code AND configuration (see below)
 make config-check     # assert compose resolves configuration as designed
 make reindex          # incremental, now
@@ -55,7 +55,7 @@ make restart-mcp      # only when packages/mcp changed (drops atlas_* from live 
 ```
 
 It leaves `postgres`/`redis`/`qdrant` alone (`--no-deps`), so they must already
-be running — `make up` is the cold start. `mcp` is excluded on purpose: it is a
+be running — `make start` is the cold start. `mcp` is excluded on purpose: it is a
 thin stateless proxy to `api`, so a change to core/api reaches it without a
 restart, and restarting it drops the `atlas_*` tools from every live Claude Code
 session.
@@ -163,5 +163,5 @@ because the write path is idempotent and jobs are keyed per `(project, source)`.
 
 ```bash
 docker compose down -v   # wipes qdrant/postgres/redis volumes (the source files
-make up                  # are untouched — everything reindexes from scratch)
+make start                  # are untouched — everything reindexes from scratch)
 ```

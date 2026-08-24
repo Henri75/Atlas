@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  Catalog,
-  applyIdentity,
-  assignOccurrenceOrdinals,
-  identityFromStored,
-  distillClaudeJsonl,
-  parseGitLog,
-  parseMarkdownDoc,
-} from '@atlas/core';
+import { Catalog, applyIdentity, assignOccurrenceOrdinals, identityFromStored, distillClaudeJsonl, parseGitLog, parseMarkdownDoc, transcriptIdentityPath } from '@atlas/core';
 import { parseChangelog } from '@atlas/core'; // exported via parsers barrel; check index.ts
 import type { Entry } from '@atlas/core';
 
@@ -39,9 +31,9 @@ describe('v3 identity', () => {
     const e = { projectSlug: 'ghost-users-nasta-kdb', sourceType: 'claude_session' as const, title: 't', body: 'b',
       sourcePath: '/data/remote/m4max/claude/-Users-nasta---CODING-NEW-kdb/abc.jsonl' };
     const f = { ...e, projectSlug: 'kdb', sourcePath: '/data/claude/projects/-Users-nasta---CODING-NEW-kdb/abc.jsonl' };
-    applyIdentity([e], { claudeDirName: '-Users-nasta---CODING-NEW-kdb' });
-    applyIdentity([f], { claudeDirName: '-Users-nasta---CODING-NEW-kdb' });
-    expect(Catalog.dedupKey(e)).toBe(Catalog.dedupKey(f));   // Migration-Assistant copy dedups
+    applyIdentity([e], { claudeRoot: '/data/remote/m4max/claude' });
+    applyIdentity([f], { claudeRoot: '/data/claude/projects' });
+    expect(Catalog.dedupKey(e)).toBe(Catalog.dedupKey(f));   // mirrored copy dedups
   });
 
   it('git: scope keeps the slug — same sha in two projects stays distinct', () => {
@@ -146,7 +138,7 @@ describe('v3 identity', () => {
     const claudeEntry = claudeEntries[0]!;
     expect(claudeEntry.identity).toEqual({
       scope: 'claude',
-      path: '-Users-nasta---CODING-NEW-kdb/abc123.jsonl',
+      path: 'abc123.jsonl',
       ref: '',
     });
     expect(
@@ -212,5 +204,59 @@ describe('v3 identity', () => {
     const keysABA = orderABA.map((e) => Catalog.dedupKey(e)).sort();
     const keysBAA = orderBAA.map((e) => Catalog.dedupKey(e)).sort();
     expect(keysABA).toEqual(keysBAA);
+  });
+});
+
+/**
+ * The 2026-08-24 host migration renamed every transcript directory
+ * (`-Users-nasta---CODING-NEW-DeepCast` → `-Users-serge--CODING-DeepCast`) and
+ * a key that included the directory re-indexed 347k rows as new. Identity
+ * must not notice a rename — on the scan side or the migration side.
+ */
+describe('transcript identity survives a renamed transcripts directory', () => {
+  const root = '/data/claude/projects';
+  const file = '74701c4c-3684-4878-bffc-d3499fe76f4d.jsonl';
+  const mk = (dir: string, over: Partial<Entry> = {}): Entry => ({
+    projectSlug: 'deepcast',
+    sourceType: 'claude_session',
+    sessionId: file.replace('.jsonl', ''),
+    title: 'Insight: something',
+    body: 'the body',
+    sourcePath: `${root}/${dir}/${file}`,
+    ...over,
+  });
+
+  it('applyIdentity: same file under old and new directory names → same key', () => {
+    const before = mk('-Users-nasta---CODING-NEW-DeepCast');
+    const after = mk('-Users-serge--CODING-DeepCast', { projectSlug: 'users-nasta-coding-new-deepcast' });
+    applyIdentity([before, after], { claudeRoot: root });
+    expect(before.identity).toEqual({ scope: 'claude', path: file, ref: '' });
+    expect(Catalog.dedupKey(after)).toBe(Catalog.dedupKey(before));
+  });
+
+  it('identityFromStored: the stored old-name row and the freshly scanned new-name entry agree', () => {
+    const stored = identityFromStored(
+      { source_type: 'claude_session', source_path: `${root}/-Users-nasta---CODING-NEW-DeepCast/${file}`, source_ref: null, title: 't', body: 'b' },
+      'deepcast', ['/data/code/DeepCast'], [root],
+    );
+    const fresh = mk('-Users-serge--CODING-DeepCast');
+    applyIdentity([fresh], { claudeRoot: root });
+    expect(stored).toEqual(fresh.identity);
+  });
+
+  it('keeps nested files distinct from the top-level one and different sessions apart', () => {
+    const top = mk('-Users-serge--CODING-DeepCast');
+    const nested = mk('-Users-serge--CODING-DeepCast', { sourcePath: `${root}/-Users-serge--CODING-DeepCast/sub/${file}` });
+    const other = mk('-Users-serge--CODING-DeepCast', { sourcePath: `${root}/-Users-serge--CODING-DeepCast/other.jsonl` });
+    applyIdentity([top, nested, other], { claudeRoot: root });
+    expect(new Set([top, nested, other].map((e) => Catalog.dedupKey(e))).size).toBe(3);
+  });
+
+  it('a mirror root works the same way, and an unknown root keeps the full path', () => {
+    const mirror = '/data/remote_mirror/m4max/claude';
+    const e = mk('-Users-serge--CODING-DeepCast', { sourcePath: `${mirror}/-Users-serge--CODING-DeepCast/${file}` });
+    applyIdentity([e], { claudeRoot: mirror });
+    expect(e.identity!.path).toBe(file);
+    expect(transcriptIdentityPath('/elsewhere/x/y.jsonl', root)).toBe('/elsewhere/x/y.jsonl');
   });
 });

@@ -1,7 +1,7 @@
 import { openSync, readSync, closeSync, statSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename } from 'node:path';
+import { basename, dirname } from 'node:path';
 import {
   Catalog,
   BACKLOG_PARSER_VERSION,
@@ -323,7 +323,7 @@ async function scanClaude(
         const { entries, meta } = distillClaudeJsonl(lines, {
           projectSlug: job.projectSlug, sourcePath: path, sessionId,
         });
-        applyIdentity(entries, { claudeDirName: basename(dir) });
+        applyIdentity(entries, { claudeRoot: dirname(dir) });
         tagMachine(entries, job.machine);
         const inserted = await deps.catalog.insertEntries(projectId, entries);
         indexed += await indexEntries(deps, inserted, (c) => progress?.({ file: path, chunks: c }));

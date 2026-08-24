@@ -7,3 +7,4 @@ coverage/
 data/
 *.log.lock
 backups/
+config/machines.yaml

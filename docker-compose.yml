@@ -84,7 +84,7 @@ services:
       # Dedicated `atlas_sync` SSH keypair. Directory (not file) mount: Docker
       # turns a missing bind-mount *file* into a directory, which would hand
       # ssh a directory as an identity file — `scripts/preflight.sh` (run from
-      # `make up`) guarantees the host directory exists first. `${HOME}` here
+      # `make start`) guarantees the host directory exists first. `${HOME}` here
       # is deliberate, not `~` — see ATLAS_KEYS_DIR in config/atlas.defaults.env.
       - '${ATLAS_KEYS_DIR:-${HOME}/.atlas/keys}:/keys:ro'
     depends_on:
