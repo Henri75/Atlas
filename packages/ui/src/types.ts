@@ -25,6 +25,12 @@ export interface SearchHit {
   /** 'archived' (downranked) or 'aging' (label only); absent = active. */
   docStatus?: 'aging' | 'archived';
   ageMonths?: number;
+  /**
+   * Which machine this entry was FIRST INGESTED FROM (spec §6) — provenance,
+   * not presence. Absent for a legacy pre-machine-model entry that has not
+   * been backfilled, or in single-machine mode.
+   */
+  machine?: string;
 }
 
 export interface SearchResult {
@@ -89,6 +95,47 @@ export interface ProjectRow {
   rootPath: string;
   hasKdb: boolean;
   entryCount: number;
+  /** Every machine this project has been seen on (spec §5); absent pre-fleet. */
+  locations?: { machine: string; hostPath: string; hasKdb: boolean }[];
+}
+
+/* ---------------------------------------------------------------------------
+ * Machines — mirrors GET /api/machines (packages/api/src/app.ts). Legacy
+ * single-machine installs answer `{ self: 'local', machines: [] }` rather
+ * than 404ing, so an empty array means "no fleet configured", not "loading".
+ * ------------------------------------------------------------------------- */
+
+/** machine_sync row, joined onto its machine by name; null = never attempted. */
+export interface MachineSync {
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  status: 'running' | 'ok' | 'unreachable' | 'error' | string;
+  bytes: number | null;
+  durationMs: number | null;
+  error: string | null;
+}
+
+export interface MachineRow {
+  name: string;
+  address: string;
+  user: string;
+  codeRoots: string[];
+  claudeProjects: string;
+  enabled: boolean;
+  sync: MachineSync | null;
+}
+
+export interface MachinesResponse {
+  self: string;
+  machines: MachineRow[];
+  /**
+   * Minutes between sync ticks, read from config/machines.yaml (or its
+   * schema default) — absent only in legacy mode, where there is no loaded
+   * fleet file to read one from and the feature itself is off. Consumers
+   * fall back to their own copy of the same default rather than treating
+   * absence as zero.
+   */
+  syncIntervalMin?: number;
 }
 
 export interface TimelineItem {
@@ -118,6 +165,22 @@ export interface SessionRow {
   prompt_count: number;
   action_count: number;
   files_touched: string[];
+}
+
+/** The full record behind a search snippet — GET /api/entries/:id. */
+export interface FullEntry {
+  id: number;
+  title: string;
+  body: string;
+  slug: string;
+  source_type: SourceType;
+  component?: string;
+  session_id?: string;
+  occurred_at?: string;
+  hostPath: string;
+  editorUrl: string;
+  /** First-ingested-from provenance (spec §6); absent pre-fleet or unbackfilled. */
+  machine?: string;
 }
 
 /** How a captured session message was classified at parse time. */

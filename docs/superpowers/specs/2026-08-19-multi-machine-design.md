@@ -3,6 +3,11 @@
 # Atlas Multi-Machine Indexing — Design
 
 ## Revision History
+- 2026-08-19 22:35 UTC — Task 23 code review correction: §8's
+  `ATLAS_FORCE_ACTIVE` escape-hatch value is `=true` (`config.ts`'s schema
+  additionally accepts `1`/`0` as a lenient parse, but the documented form
+  everywhere — spec, boot messages — is `true`/`false` like every other
+  boolean flag).
 - 2026-08-19 01:00 UTC — Hardened after two independent reviews. Assessor
   (confirmed): git transient-lock excludes + `GIT_OPTIONAL_LOCKS=0`, jsonl
   include-filter for the Claude mirror; its "git key omits projectSlug"
@@ -442,7 +447,7 @@ Three clients must find the active instance: the CLI (both machines), MCP
   `KDBSCOPE_API_URL` keeps working with a deprecation note (one variable,
   one migration).
 - **Continuous single-active guard** (api service): at boot, probe peers —
-  a live peer ⇒ refuse to start (clear message; `ATLAS_FORCE_ACTIVE=1`
+  a live peer ⇒ refuse to start (clear message; `ATLAS_FORCE_ACTIVE=true`
   escape hatch). While running, re-probe every tick; detecting a live peer
   (a proof-valid responder whose `bootId` ≠ mine) flips **both** instances
   to `state: conflicted` (dashboard banner, resolver refusal). No auto-kill

@@ -27,4 +27,14 @@ check "api search"   "$API/api/search?q=test&limit=1"
 check "mcp health"   "$MCP/health"
 check "ui"           "$UI/"
 
+# 200 alone doesn't catch a route answering the wrong shape (legacy mode's
+# `{ self, machines: [] }` vs a fleet body) — parse it and require `self`.
+machines_json=$(curl -s "$API/api/machines" || echo '')
+if echo "$machines_json" | node -e 'JSON.parse(require("fs").readFileSync(0,"utf8")).self !== undefined || process.exit(1)' 2>/dev/null; then
+  echo "ok   api machines (200, self present)"
+else
+  echo "FAIL api machines (bad JSON or missing \`self\`) — $API/api/machines"
+  fail=1
+fi
+
 exit $fail

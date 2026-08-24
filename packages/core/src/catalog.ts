@@ -11,13 +11,7 @@ import {
   type SourceType,
   type TimelineItem,
 } from './types.js';
-import {
-  contentHash,
-  deterministicUuid,
-  TRANSCRIPT_KEY_SCOPE,
-  transcriptIdentityPath,
-} from './ids.js';
-import { getConfig } from './config.js';
+import { contentHash, deterministicUuid } from './ids.js';
 import { resolveProjectAlias } from './discovery.js';
 import { tokenize } from './sparse.js';
 import {
@@ -222,6 +216,36 @@ ALTER TABLE usage_reply ADD COLUMN IF NOT EXISTS attempts INT;
 ALTER TABLE usage_reply ADD COLUMN IF NOT EXISTS request_id TEXT;
 -- The monitor's hot query: one class, newest first.
 CREATE INDEX IF NOT EXISTS usage_log_class_at_idx ON usage_log (route_class, at DESC);
+
+-- Which machine a row was FIRST ingested from (spec §6: ingestion provenance,
+-- not presence). '' means "predates the machine model"; backfillMachine()
+-- rewrites it to the self machine name on the first multi-machine boot.
+ALTER TABLE entries ADD COLUMN IF NOT EXISTS machine TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS machine TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS entries_machine ON entries (machine);
+
+-- One row per (project, machine) location. projects.root_path stays the SELF
+-- machine's path (spec §5); remote locations live only here.
+CREATE TABLE IF NOT EXISTS project_locations (
+  project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  machine TEXT NOT NULL,
+  root_path TEXT NOT NULL,
+  host_path TEXT NOT NULL DEFAULT '',
+  has_kdb BOOLEAN NOT NULL DEFAULT false,
+  seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (project_id, machine)
+);
+
+-- Per-machine sync health. status: never | ok | unreachable | error | running.
+CREATE TABLE IF NOT EXISTS machine_sync (
+  machine TEXT PRIMARY KEY,
+  last_attempt_at TIMESTAMPTZ,
+  last_success_at TIMESTAMPTZ,
+  status TEXT NOT NULL DEFAULT 'never',
+  bytes BIGINT,
+  duration_ms INT,
+  error TEXT
+);
 `;
 
 export interface ScanState {
@@ -280,9 +304,18 @@ export function ftsQuery(q: string): string {
   return terms.join(' | ');
 }
 
+/**
+ * Rows per `backfillMachine` batch, and how often it reports progress.
+ * 5000 keeps each transaction's WAL burst and lock hold small enough to be
+ * invisible next to the boot it runs inside, while still costing only ~100
+ * statements for a 475k-row catalog.
+ */
+const BACKFILL_BATCH = 5000;
+const BACKFILL_LOG_EVERY = 50_000;
+
 /** Shared by every query that rebuilds an Entry from the catalog. */
 const ENTRY_COLUMNS = `e.id, e.source_type, e.component, e.session_id, e.title, e.body,
-              e.occurred_at, e.source_path, e.source_ref, e.meta, p.slug`;
+              e.occurred_at, e.source_path, e.source_ref, e.meta, e.machine, p.slug`;
 
 /** Row → Entry. Kept in one place so re-embedding paths cannot drift apart. */
 function rowToEntry(row: any): Entry & { id: number } {
@@ -299,17 +332,15 @@ function rowToEntry(row: any): Entry & { id: number } {
     sourceRef: row.source_ref ?? undefined,
     // Without meta a collection rebuild would drop kind/doc_status payloads.
     meta: row.meta ?? undefined,
+    // `machine` is NOT NULL DEFAULT '' (never null); '' is the legacy
+    // pre-machine-model sentinel, normalized to absent here like every other
+    // optional field — without this, `backfillVectors`/`rebuildSparseVectors`
+    // re-embedding entries loaded from Postgres (e.g. after a model switch)
+    // would write `machine: undefined` onto EVERY point regardless of what
+    // Postgres actually holds, wiping the machine filter for the whole
+    // collection instead of just the points that predate this column.
+    machine: row.machine || undefined,
   };
-}
-
-/** The stored columns a transcript key is derived from. */
-export interface TranscriptKeyRow {
-  id: number;
-  sourcePath: string;
-  sourceRef: string | null;
-  title: string;
-  body: string;
-  dedupKey: string;
 }
 
 export class Catalog {
@@ -339,19 +370,160 @@ export class Catalog {
     await this.pool.end();
   }
 
-  async upsertProject(p: {
-    slug: string;
-    name: string;
-    rootPath: string;
-    hasKdb: boolean;
-  }): Promise<number> {
+  async upsertProject(
+    p: { slug: string; name: string; rootPath: string; hasKdb: boolean },
+    opts: { isSelf?: boolean } = {},
+  ): Promise<number> {
+    const isSelf = opts.isSelf !== false;
     const r = await this.pool.query(
-      `INSERT INTO projects (slug, name, root_path, has_kdb) VALUES ($1,$2,$3,$4)
-       ON CONFLICT (slug) DO UPDATE SET root_path = EXCLUDED.root_path, has_kdb = EXCLUDED.has_kdb
-       RETURNING id`,
-      [p.slug, p.name, p.rootPath, p.hasKdb],
+      isSelf
+        ? `INSERT INTO projects (slug, name, root_path, has_kdb) VALUES ($1,$2,$3,$4)
+           ON CONFLICT (slug) DO UPDATE SET root_path = EXCLUDED.root_path, has_kdb = EXCLUDED.has_kdb
+           RETURNING id`
+        // Remote discovery must never clobber the self machine's paths OR
+        // rename an existing project (spec §5) — a mirror-discovered project
+        // is never the source of truth for either. `slug = EXCLUDED.slug` is
+        // a value-less no-op update: PostgreSQL only returns a row from
+        // `ON CONFLICT ... RETURNING` when an UPDATE clause actually ran, so
+        // this is what makes `RETURNING id` work on conflict without
+        // touching a single real column.
+        : `INSERT INTO projects (slug, name, root_path, has_kdb) VALUES ($1,$2,$3,$4)
+           ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug
+           RETURNING id`,
+      [p.slug, p.name, isSelf ? p.rootPath : '', p.hasKdb],
     );
     return r.rows[0].id;
+  }
+
+  async upsertProjectLocation(loc: { projectId: number; machine: string; rootPath: string; hostPath: string; hasKdb: boolean }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO project_locations (project_id, machine, root_path, host_path, has_kdb)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (project_id, machine) DO UPDATE
+         SET root_path = EXCLUDED.root_path, host_path = EXCLUDED.host_path,
+             has_kdb = EXCLUDED.has_kdb, seen_at = now()`,
+      [loc.projectId, loc.machine, loc.rootPath, loc.hostPath, loc.hasKdb],
+    );
+  }
+
+  async listProjectLocations(): Promise<Map<number, { machine: string; rootPath: string; hostPath: string; hasKdb: boolean }[]>> {
+    const r = await this.pool.query(
+      `SELECT project_id, machine, root_path, host_path, has_kdb FROM project_locations ORDER BY machine`,
+    );
+    const map = new Map<number, { machine: string; rootPath: string; hostPath: string; hasKdb: boolean }[]>();
+    for (const row of r.rows) {
+      const list = map.get(row.project_id) ?? [];
+      list.push({ machine: row.machine, rootPath: row.root_path, hostPath: row.host_path, hasKdb: row.has_kdb });
+      map.set(row.project_id, list);
+    }
+    return map;
+  }
+
+  /**
+   * First multi-machine boot: stamp pre-machine rows with the self machine.
+   *
+   * Keyset-paged rather than one statement per table. This runs against a
+   * catalog that is already ~475k rows on this machine, and a single
+   * `UPDATE entries SET machine = $1 WHERE machine = ''` rewrites every one
+   * of them in ONE transaction — one long lock, one enormous WAL burst, and
+   * the whole thing rolls back on any interruption, so a boot that dies
+   * halfway through has to redo all of it. Batching bounds each
+   * transaction, lets an interrupted boot resume from wherever it got to
+   * (already-stamped rows no longer match `machine = ''`), and gives the
+   * operator progress instead of a silent multi-minute boot.
+   *
+   * `log` is optional so tests and library callers stay quiet; the indexer
+   * passes `console.log` and gets a line roughly every 50k rows.
+   */
+  async backfillMachine(selfName: string, log?: (msg: string) => void): Promise<number> {
+    let total = 0;
+    let lastLogged = 0;
+    for (const table of ['entries', 'sessions'] as const) {
+      let cursor = 0;
+      for (;;) {
+        // `id IN (SELECT ... ORDER BY id LIMIT n)` picks one bounded batch;
+        // RETURNING hands back exactly the ids updated, which is where the
+        // next cursor comes from — no second SELECT, and no dependence on
+        // rows that are no longer `''` after the UPDATE lands.
+        const r = await this.pool.query(
+          `UPDATE ${table} SET machine = $1
+             WHERE id IN (
+               SELECT id FROM ${table} WHERE machine = '' AND id > $2 ORDER BY id LIMIT ${BACKFILL_BATCH}
+             )
+           RETURNING id`,
+          [selfName, cursor],
+        );
+        const ids: number[] = r.rows.map((row: { id: number }) => row.id);
+        if (ids.length === 0) break;
+        total += ids.length;
+        cursor = Math.max(...ids);
+        if (total - lastLogged >= BACKFILL_LOG_EVERY) {
+          lastLogged = total;
+          log?.(`[indexer] backfilling machine: ${total} row(s) stamped (${table} id ${cursor})`);
+        }
+        // A short batch means the source is exhausted — nothing with
+        // `machine = ''` is left above the cursor, and everything below it
+        // has already been stamped by an earlier batch.
+        if (ids.length < BACKFILL_BATCH) break;
+      }
+    }
+    return total;
+  }
+
+  /**
+   * The scheduler's standing cross-machine divergence warnings (spec §5) —
+   * one `divergence:<projectId>` settings row per project whose locations
+   * disagree on git origin, cleared to `''` (not deleted) once they agree
+   * again. Empty values are filtered out here so callers get only live
+   * warnings, never a list padded with cleared rows.
+   */
+  async listDivergenceWarnings(): Promise<string[]> {
+    const r = await this.pool.query(
+      `SELECT value FROM settings WHERE key LIKE 'divergence:%' AND value <> '' ORDER BY key`,
+    );
+    return r.rows.map((row: { value: string }) => row.value);
+  }
+
+  async recordSyncStart(machine: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO machine_sync (machine, last_attempt_at, status) VALUES ($1, now(), 'running')
+       ON CONFLICT (machine) DO UPDATE SET last_attempt_at = now(), status = 'running', error = NULL`,
+      [machine],
+    );
+  }
+
+  async recordSyncResult(machine: string, r: { status: 'ok' | 'unreachable' | 'error'; bytes?: number; durationMs?: number; error?: string }): Promise<void> {
+    if (r.status === 'ok') {
+      await this.pool.query(
+        `INSERT INTO machine_sync (machine, last_attempt_at, last_success_at, status, bytes, duration_ms)
+         VALUES ($1, now(), now(), 'ok', $2, $3)
+         ON CONFLICT (machine) DO UPDATE SET last_success_at = now(), status = 'ok',
+           bytes = EXCLUDED.bytes, duration_ms = EXCLUDED.duration_ms, error = NULL`,
+        [machine, r.bytes ?? null, r.durationMs ?? null],
+      );
+    } else {
+      await this.pool.query(
+        `INSERT INTO machine_sync (machine, last_attempt_at, status, error)
+         VALUES ($1, now(), $2, $3)
+         ON CONFLICT (machine) DO UPDATE SET status = $2, error = $3`,
+        [machine, r.status, r.error ?? null],
+      );
+    }
+  }
+
+  async listMachineSync(): Promise<{ machine: string; lastAttemptAt: string | null; lastSuccessAt: string | null; status: string; bytes: number | null; durationMs: number | null; error: string | null }[]> {
+    const r = await this.pool.query(
+      `SELECT machine, last_attempt_at, last_success_at, status, bytes, duration_ms, error FROM machine_sync ORDER BY machine`,
+    );
+    return r.rows.map((row) => ({
+      machine: row.machine,
+      lastAttemptAt: row.last_attempt_at ? new Date(row.last_attempt_at).toISOString() : null,
+      lastSuccessAt: row.last_success_at ? new Date(row.last_success_at).toISOString() : null,
+      status: row.status,
+      bytes: row.bytes,
+      durationMs: row.duration_ms,
+      error: row.error,
+    }));
   }
 
   /**
@@ -1007,105 +1179,11 @@ export class Catalog {
     );
   }
 
-  /**
-   * Identity of an entry. Project-file sources (kdb logs, docs, commits) hash
-   * the project and the container path, which is the same on every host
-   * (`/data/code/<Project>/...`). Claude transcripts hash only what survives a
-   * host or path change — see `transcriptIdentityPath`.
-   */
-  static dedupKey(e: Entry, claudeProjectsDir: string = getConfig().claudeProjectsDir): string {
-    if (e.sourceType === 'claude_session') {
-      return deterministicUuid(
-        TRANSCRIPT_KEY_SCOPE,
-        transcriptIdentityPath(e.sourcePath, claudeProjectsDir),
-        e.sourceRef ?? '',
-        e.title,
-        contentHash(e.body),
-      );
-    }
-    return deterministicUuid(
-      e.projectSlug,
-      e.sourcePath,
-      e.sourceRef ?? '',
-      e.title,
-      contentHash(e.body),
-    );
-  }
-
-  /**
-   * Run `fn` while holding a session-level advisory lock on a dedicated
-   * connection. `migrate()` uses 732015 for schema DDL and the API takes the
-   * same one at boot — a long-running data migration must use its own key or
-   * it wedges every service restart behind it.
-   */
-  async withAdvisoryLock<T>(key: number, fn: () => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('SELECT pg_advisory_lock($1)', [key]);
-      try {
-        return await fn();
-      } finally {
-        await client.query('SELECT pg_advisory_unlock($1)', [key]).catch(() => {});
-      }
-    } finally {
-      client.release();
-    }
-  }
-
-  /** Transcript rows in id order, for streaming a re-key; bodies included because the key hashes them. */
-  async transcriptRowsAfter(afterId: number, limit: number): Promise<TranscriptKeyRow[]> {
-    const r = await this.pool.query(
-      `SELECT id, source_path, source_ref, title, body, dedup_key
-       FROM entries WHERE source_type='claude_session' AND id > $1 ORDER BY id LIMIT $2`,
-      [afterId, limit],
-    );
-    return r.rows.map((row) => ({
-      id: Number(row.id),
-      sourcePath: row.source_path,
-      sourceRef: row.source_ref,
-      title: row.title,
-      body: row.body,
-      dedupKey: row.dedup_key,
-    }));
-  }
-
-  /** Which of these keys are already taken, and by which entry. */
-  async entryIdsByKeys(keys: string[]): Promise<Map<string, number>> {
-    if (!keys.length) return new Map();
-    const r = await this.pool.query('SELECT id, dedup_key FROM entries WHERE dedup_key = ANY($1)', [
-      keys,
-    ]);
-    return new Map(r.rows.map((row) => [row.dedup_key as string, Number(row.id)]));
-  }
-
-  /**
-   * One transaction: drop the losers, then move the winners onto their new
-   * keys — in that order, because a loser may still hold the key a winner is
-   * about to take and `dedup_key` is UNIQUE. Callers delete the losers' vector
-   * points BEFORE this; a crash in between leaves rows a resumed run
-   * re-processes, whereas the reverse order leaves orphaned points nothing
-   * reclaims.
-   */
-  async applyRekey(plan: { drop: number[]; updates: { id: number; key: string }[] }): Promise<void> {
-    if (!plan.drop.length && !plan.updates.length) return;
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      if (plan.drop.length) await client.query('DELETE FROM entries WHERE id = ANY($1)', [plan.drop]);
-      if (plan.updates.length) {
-        await client.query(
-          `UPDATE entries e SET dedup_key = u.key
-           FROM unnest($1::bigint[], $2::text[]) AS u(id, key) WHERE e.id = u.id`,
-          [plan.updates.map((u) => u.id), plan.updates.map((u) => u.key)],
-        );
-      }
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw e;
-    } finally {
-      client.release();
-    }
+  static dedupKey(e: Entry): string {
+    // v3 (spec §6): machine-independent identity when the pipeline provided one;
+    // the legacy-shaped fallback IS the spec's conservative no-known-root rule.
+    const id = e.identity ?? { scope: e.projectSlug, path: e.sourcePath, ref: e.sourceRef ?? '' };
+    return deterministicUuid(id.scope, id.path, id.ref, e.title, contentHash(e.body));
   }
 
   /**
@@ -1130,10 +1208,10 @@ export class Catalog {
     }
     const rows = [...byKey.values()];
 
-    // 11 params/row against Postgres's 65535-parameter ceiling → cap the chunk
+    // 12 params/row against Postgres's 65535-parameter ceiling → cap the chunk
     // well under it so a huge file still fits in whole statements.
-    const COLS = 11;
-    const MAX_ROWS = Math.floor(60000 / COLS); // ~5454
+    const COLS = 12;
+    const MAX_ROWS = Math.floor(60000 / COLS); // ~5000
     const out: InsertedEntry[] = [];
 
     for (let start = 0; start < rows.length; start += MAX_ROWS) {
@@ -1153,12 +1231,19 @@ export class Catalog {
           e.sourceRef ?? null,
           JSON.stringify(e.meta ?? {}),
           key,
+          // '' (never null — the column is NOT NULL DEFAULT '') is the
+          // pre-machine-model sentinel. CRITICAL: this was missing entirely
+          // until Task 16 — every row inserted after boot kept '' regardless
+          // of what the scan job tagged it with, so the FTS side of the
+          // machine filter silently missed it forever (a dedup'd re-scan
+          // never re-inserts the row to fix it).
+          e.machine ?? '',
         );
-        return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11})`;
+        return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},$${b + 12})`;
       });
       const r = await this.pool.query(
         `INSERT INTO entries (project_id, source_type, component, session_id, title, body,
-                              occurred_at, source_path, source_ref, meta, dedup_key)
+                              occurred_at, source_path, source_ref, meta, dedup_key, machine)
          VALUES ${tuples.join(',')}
          ON CONFLICT (dedup_key) DO NOTHING
          RETURNING id, dedup_key`,
@@ -1342,13 +1427,14 @@ export class Catalog {
     return r.rows.map((row) => row.id);
   }
 
-  async upsertSession(projectId: number, meta: SessionMeta, sourcePath: string): Promise<void> {
+  async upsertSession(projectId: number, meta: SessionMeta, sourcePath: string, machine: string): Promise<void> {
     await this.pool.query(
-      `INSERT INTO sessions (id, project_id, title, cwd, started_at, ended_at, prompt_count, action_count, files_touched, source_path)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `INSERT INTO sessions (id, project_id, title, cwd, started_at, ended_at, prompt_count, action_count, files_touched, source_path, machine)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        ON CONFLICT (id) DO UPDATE SET title=COALESCE(EXCLUDED.title, sessions.title),
          ended_at=EXCLUDED.ended_at, prompt_count=EXCLUDED.prompt_count,
-         action_count=EXCLUDED.action_count, files_touched=EXCLUDED.files_touched`,
+         action_count=EXCLUDED.action_count, files_touched=EXCLUDED.files_touched,
+         machine = CASE WHEN sessions.machine = '' THEN EXCLUDED.machine ELSE sessions.machine END`,
       [
         meta.sessionId,
         projectId,
@@ -1360,6 +1446,7 @@ export class Catalog {
         meta.actionCount ?? 0,
         JSON.stringify(meta.filesTouched),
         sourcePath,
+        machine,
       ],
     );
   }
@@ -1542,6 +1629,26 @@ export class Catalog {
     return r.rows.map((row) => ({ ...rowToEntry(row), vectorizedIn: row.vectorized_in }));
   }
 
+  /**
+   * Like `vectorizedEntriesAfter`, but only `id` and `machine` — for the Task
+   * 17 payload backfill, which patches a single payload key per entry and has
+   * no use for title/body/meta. `vectorizedEntriesAfter`'s full ENTRY_COLUMNS
+   * projection (plus the `projects` join) would cost the whole catalog's text
+   * for a walk that never reads it.
+   */
+  async entryMachineAfter(
+    collection: string,
+    cursor: number,
+    limit: number,
+  ): Promise<{ id: number; machine: string }[]> {
+    const r = await this.pool.query(
+      `SELECT id, machine FROM entries
+       WHERE vectorized_in = $1 AND id > $2 ORDER BY id ASC LIMIT $3`,
+      [collection, cursor, limit],
+    );
+    return r.rows.map((row) => ({ id: row.id, machine: row.machine }));
+  }
+
   /** How many entries `vectorizedEntriesAfter` will walk — the rebuild's total. */
   async countVectorized(collection: string): Promise<number> {
     const r = await this.pool.query(
@@ -1589,9 +1696,11 @@ export class Catalog {
 
   async getEntries(ids: number[]): Promise<Map<number, any>> {
     if (!ids.length) return new Map();
+    // ENTRY_COLUMNS (not a hand-spelled list): this rebuilds full entries and
+    // must carry `machine` like every other such query — its previous
+    // omission left search-hit hydration with no provenance to hydrate from.
     const r = await this.pool.query(
-      `SELECT e.id, e.source_type, e.component, e.session_id, e.title, e.body,
-              e.occurred_at, e.source_path, e.source_ref, e.meta, p.slug
+      `SELECT ${ENTRY_COLUMNS}
        FROM entries e JOIN projects p ON p.id = e.project_id WHERE e.id = ANY($1)`,
       [ids],
     );
@@ -1636,6 +1745,13 @@ export class Catalog {
       params.push(filters.kind);
       where += ` AND e.meta->>'kind' = $${params.length}`;
     }
+    // Mirrors buildQdrantFilter's machine clause exactly — same precedence,
+    // same "first ingested from" semantics (spec §6). The two paths degrade
+    // into one another and must never disagree about what this means.
+    if (filters.machine) {
+      params.push(filters.machine);
+      where += ` AND e.machine = $${params.length}`;
+    }
     if (filters.docStatus === 'archived') {
       where += ` AND e.meta->>'docStatus' = 'archived'`;
     } else if (filters.docStatus === 'active') {
@@ -1643,9 +1759,7 @@ export class Catalog {
     }
     params.push(limit);
     const r = await this.pool.query(
-      `SELECT e.id, e.source_type, e.component, e.session_id, e.title, e.body,
-              e.occurred_at, e.source_path, e.source_ref, e.meta, p.slug,
-              ts_rank(e.fts, to_tsquery('english', $1)) AS rank
+      `SELECT ${ENTRY_COLUMNS}, ts_rank(e.fts, to_tsquery('english', $1)) AS rank
        FROM entries e JOIN projects p ON p.id = e.project_id
        WHERE ${where} ORDER BY rank DESC LIMIT $${params.length}`,
       params,
@@ -1662,6 +1776,8 @@ export class Catalog {
       occurredAt: row.occurred_at?.toISOString(),
       sourcePath: row.source_path,
       sourceRef: row.source_ref ?? undefined,
+      // `||`, not `??` — machine is NOT NULL DEFAULT '' (rowToEntry's convention).
+      machine: row.machine || undefined,
       // Same decoration contract as the vector path (SearchService.finalize).
       ...(row.meta?.docStatus === 'archived' ? { docStatus: 'archived' as const } : {}),
     }));
@@ -1801,6 +1917,35 @@ export class Catalog {
   async getSetting(key: string): Promise<string | null> {
     const r = await this.pool.query('SELECT value FROM settings WHERE key=$1', [key]);
     return r.rows[0]?.value ?? null;
+  }
+
+  /**
+   * Atomic get-or-create: mints `value` only if `key` is absent, and never
+   * overwrites an existing row — unlike `setSetting`, a last-writer-wins
+   * upsert. Needed for identities that must stay stable once minted (e.g.
+   * `install_id`, spec §8): a check-then-act `getSetting` + conditional
+   * `setSetting` races two concurrent boots into minting two different
+   * values, and whichever `setSetting` lands last silently wins — leaving
+   * the other boot reporting an unpersisted value until its next restart.
+   *
+   * `ON CONFLICT (key) DO NOTHING RETURNING value` returns the row it just
+   * inserted, or no row when a concurrent writer's insert already won —
+   * Postgres's unique index serializes the two, so by the time ours sees
+   * the conflict the other's row is already committed and visible. The
+   * follow-up SELECT then reads whatever IS durably there, which is always
+   * the value whichever writer actually won, never a value this call
+   * minted and immediately discarded.
+   */
+  async ensureSetting(key: string, value: string): Promise<string> {
+    const inserted = await this.pool.query(
+      `INSERT INTO settings (key, value, updated_at) VALUES ($1,$2,now())
+       ON CONFLICT (key) DO NOTHING
+       RETURNING value`,
+      [key, value],
+    );
+    if (inserted.rows[0]) return inserted.rows[0].value;
+    const existing = await this.pool.query('SELECT value FROM settings WHERE key=$1', [key]);
+    return existing.rows[0].value;
   }
 
   async logError(projectId: number | null, path: string, stage: string, message: string) {

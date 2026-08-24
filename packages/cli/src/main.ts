@@ -1,6 +1,23 @@
 #!/usr/bin/env node
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Command } from 'commander';
+import {
+  AtlasResolveError,
+  DEFAULT_REMOTE_RSYNC_PATH,
+  invalidateCache,
+  loadMachinesFileIfPresent,
+  machinesFilePath,
+  probeInstance,
+  readToken,
+  resolveActive,
+  writeCredentials,
+  RESOLVER_API_PORT,
+} from '@atlas/core';
 import { get, post, postStream, qs } from './api.js';
+import { addMachine, removeMachine } from './machinesFile.js';
+import { checkRemoteRsync, type Exec } from './rsyncPreflight.js';
 import {
   SOURCE_BADGE,
   bold,
@@ -9,13 +26,18 @@ import {
   date,
   dim,
   duration,
+  formatWhichRows,
   green,
   hr,
   magenta,
   num,
   red,
+  syncBadge,
   yellow,
+  type WhichRow,
 } from './format.js';
+
+const execFile = promisify(execFileCb);
 
 /**
  * atlas — terminal client for Atlas. Every command supports --json for
@@ -74,12 +96,16 @@ program
   .option('-s, --source <types>', 'one source type or a comma-separated subset (doc,kdb_component)')
   .option('-c, --component <name>')
   .option('-k, --kind <kind>', 'insight | plan | summary | action | prompt | response')
+  .option(
+    '-m, --machine <name>',
+    'first ingested from — shared git-synced content belongs to whichever machine synced first',
+  )
   .option('-n, --limit <n>', 'max results', '10')
   .option('--doc-status <s>', 'active (exclude archived docs) | archived (only them)')
   .description('hybrid search across all indexed history')
   .action(async (words, o) => {
     const r = await get(
-      `/api/search${qs({ q: words.join(' '), project: o.project, source: o.source, component: o.component, kind: o.kind, docStatus: o.docStatus, limit: o.limit })}`,
+      `/api/search${qs({ q: words.join(' '), project: o.project, source: o.source, component: o.component, kind: o.kind, machine: o.machine, docStatus: o.docStatus, limit: o.limit })}`,
     );
     out(r, () => {
       if (r.degraded) console.log(yellow(`⚠ ${degradedReason(r.mode)}\n`));
@@ -141,6 +167,268 @@ program
         );
       }
     });
+  });
+
+const machinesCmd = program
+  .command('machines')
+  .description('fleet status and config (config/machines.yaml) — see subcommands');
+
+machinesCmd
+  .command('list', { isDefault: true })
+  .description('fleet status: sync health, last success, bytes per machine (from /api/machines)')
+  .action(async () => {
+    const r = await get('/api/machines');
+    out(r, () => {
+      if (!r.machines.length) {
+        console.log(dim('single-machine mode — no config/machines.yaml configured'));
+        return;
+      }
+      for (const m of r.machines) {
+        const tag = m.name === r.self ? ' (self)' : '';
+        console.log(
+          `${bold((m.name + tag).padEnd(26))} ${dim(m.address.padEnd(16))} ` +
+            `${m.enabled ? green('enabled ') : dim('disabled')}  ${syncBadge(m.sync?.status)}  ` +
+            `${dim('last success')} ${date(m.sync?.lastSuccessAt) || dim('never')}  ${bytes(m.sync?.bytes)}`,
+        );
+        if (m.sync?.error) console.log(`   ${red(m.sync.error)}`);
+      }
+      // Fleet-wide, matching the wire shape: a divergence is a disagreement
+      // BETWEEN machines about one project's identity (spec §5), so it hangs
+      // off the response, not off a single machine row. This used to read a
+      // per-machine field the API never sent — dead code that rendered
+      // nothing no matter how many divergences the scheduler had recorded.
+      if (Array.isArray(r.divergences) && r.divergences.length) {
+        console.log('');
+        for (const w of r.divergences) console.log(yellow(`⚠ ${w}`));
+      }
+    });
+  });
+
+machinesCmd
+  .command('add')
+  .description('register a machine in config/machines.yaml (edits the checkout — commit + push after)')
+  .requiredOption('--name <name>', 'machine name — frozen once it has indexed data')
+  .requiredOption('--address <address>', 'IP or LAN DNS name resolvable from peers (not *.local)')
+  .requiredOption('--user <user>', 'SSH user on that machine')
+  .option(
+    '--code-root <path>',
+    'a code root to sync (repeatable: --code-root a --code-root b)',
+    (v: string, prev: string[]) => [...prev, v],
+    [] as string[],
+  )
+  .requiredOption('--claude-projects <path>', 'that machine\'s ~/.claude/projects directory')
+  .option(
+    '--skip-preflight',
+    'DANGEROUS: skip the reachability + openrsync check. Only for pre-provisioning a ' +
+      'machine that is not reachable yet — until you verify it manually (docs/multi-machine.md ' +
+      'step 4), its first sync job may fail outright, or run against openrsync with different ' +
+      '--delete/filter semantics than the sync engine assumes.',
+  )
+  .action(async (o) => {
+    if (!o.codeRoot.length) {
+      console.error(red('at least one --code-root is required'));
+      process.exitCode = 1;
+      return;
+    }
+
+    if (o.skipPreflight) {
+      console.warn(
+        yellow(
+          `⚠️  --skip-preflight: enrolling "${o.name}" WITHOUT verifying it is reachable or that its ` +
+            `rsync is GNU rsync (not openrsync). Verify manually before the first sync: ` +
+            `ssh ${o.user}@${o.address} ${DEFAULT_REMOTE_RSYNC_PATH} --version`,
+        ),
+      );
+    } else {
+      const preflightExec: Exec = async (cmd, args, opts) => {
+        const r = await execFile(cmd, args, { timeout: opts?.timeoutMs });
+        return { stdout: r.stdout };
+      };
+      const result = await checkRemoteRsync(preflightExec, {
+        user: o.user,
+        address: o.address,
+        remoteRsyncPath: DEFAULT_REMOTE_RSYNC_PATH,
+      });
+      if (!result.ok) {
+        if (result.reason === 'unreachable') {
+          console.error(
+            red(
+              `cannot reach ${o.user}@${o.address} (${result.detail}) — the machine must be reachable ` +
+                `to enroll (ssh-keyscan needs it too, see docs/multi-machine.md step 3). Use ` +
+                `--skip-preflight only to pre-provision a machine that is genuinely offline right now.`,
+            ),
+          );
+        } else if (result.reason === 'openrsync') {
+          console.error(
+            red(
+              `${o.address}'s rsync is openrsync ("${result.detail}") — stock macOS /usr/bin/rsync, ` +
+                `whose --delete/filter semantics differ from GNU rsync (docs/multi-machine.md step 4). ` +
+                `Run "brew install rsync" on ${o.address}, then retry.`,
+            ),
+          );
+        } else {
+          console.error(
+            red(
+              `could not verify ${o.address}'s rsync — unexpected "--version" output ` +
+                `("${result.detail}"), refusing as suspect (docs/multi-machine.md step 4).`,
+            ),
+          );
+        }
+        process.exitCode = 1;
+        return;
+      }
+    }
+
+    const path = machinesFilePath();
+    const docText = existsSync(path) ? readFileSync(path, 'utf8') : 'machines: []\n';
+    try {
+      const updated = addMachine(docText, {
+        name: o.name,
+        address: o.address,
+        user: o.user,
+        codeRoots: o.codeRoot,
+        claudeProjects: o.claudeProjects,
+      });
+      writeFileSync(path, updated);
+      console.log(green(`added "${o.name}" to ${path} — commit + push, then enable it on the next restart`));
+    } catch (e) {
+      console.error(red(`could not add machine: ${(e as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+machinesCmd
+  .command('remove <name>')
+  .description(
+    'remove a machine from config/machines.yaml — refused if it has ever synced (frozen-name rule, spec §3)',
+  )
+  .action(async (name) => {
+    const path = machinesFilePath();
+    if (!existsSync(path)) {
+      console.error(red(`${path} does not exist — nothing to remove`));
+      process.exitCode = 1;
+      return;
+    }
+    // Fail closed: an unreachable API means sync history can't be ruled out.
+    let status: any;
+    try {
+      status = await get('/api/machines');
+    } catch (e) {
+      console.error(
+        red(`cannot verify sync history — API unreachable (${(e as Error).message}); refusing to remove`),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const known = status.machines.find((x: any) => x.name === name);
+    if (known?.sync) {
+      console.error(
+        red(`"${name}" has sync history — removing it would orphan indexed data (frozen-name rule)`),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      const updated = removeMachine(readFileSync(path, 'utf8'), name);
+      writeFileSync(path, updated);
+      console.log(green(`removed "${name}" from ${path} — commit + push`));
+    } catch (e) {
+      console.error(red(`could not remove machine: ${(e as Error).message}`));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command('connect')
+  .requiredOption('--token <token>', 'bearer token for this fleet (must match ATLAS_TOKEN on every machine)')
+  .description('save a fleet token to ~/.atlas/credentials (mode 0600), then probe and report the active instance')
+  .action(async (o) => {
+    // Saved before the probe, deliberately: the token should stick even if
+    // the fleet isn't reachable right now (spec §8 — this is a config step,
+    // not a connectivity check).
+    writeCredentials(o.token);
+    try {
+      const resolved = await resolveActive({ machinesFile: machinesFilePath(), token: o.token, cachePath: null });
+      out(resolved, () => {
+        console.log(green(`connected: ${resolved.machine} (${resolved.baseUrl})`));
+        console.log(dim(`  mcp  ${resolved.mcpUrl}`));
+        console.log(dim(`  ui   ${resolved.uiUrl}`));
+      });
+    } catch (e) {
+      if (!(e instanceof AtlasResolveError)) throw e;
+      out({ error: e.detail }, () => console.error(red(e.detail)));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command('which')
+  .description('probe every machine in config/machines.yaml right now (ignores the resolver cache) and show which one is active')
+  .action(async () => {
+    const machinesFile = machinesFilePath();
+    const token = readToken();
+    const mf = loadMachinesFileIfPresent(machinesFile);
+
+    // "Ignores the resolver cache" has to mean it, for the caller too: this
+    // command exists to be believed after something moved, so drop any
+    // cached entry before probing rather than leaving the NEXT command
+    // (which does read the cache) trusting a host this probe may have just
+    // shown to be gone.
+    invalidateCache();
+
+    if (!mf || mf.machines.length === 0) {
+      out({ rows: [], winner: undefined }, () => {
+        console.log(dim(`single-machine mode — no ${machinesFile}`));
+      });
+      return;
+    }
+
+    // Two probe rounds, deliberately: this loop probes every configured
+    // machine individually (for the display table, including losers)
+    // while `resolveActive` below probes them again to apply the
+    // exactly-one-active rule (spec §8) — reusing its selection logic
+    // rather than re-deriving it here, at the cost of one extra round trip
+    // per machine for a command that exists purely to be a diagnostic.
+    const rows: WhichRow[] = await Promise.all(
+      mf.machines.map(async (m) => ({
+        name: m.name,
+        address: m.address,
+        outcome: await probeInstance(`http://${m.address}:${RESOLVER_API_PORT}`, token),
+      })),
+    );
+
+    let winner: string | undefined;
+    let errorDetail: string | undefined;
+    try {
+      winner = (await resolveActive({ machinesFile, token, cachePath: null })).machine;
+    } catch (e) {
+      if (!(e instanceof AtlasResolveError)) throw e;
+      errorDetail = e.detail;
+    }
+
+    out({ rows, winner, error: errorDetail }, () => {
+      for (const line of formatWhichRows(rows, winner)) console.log(line);
+      if (errorDetail) console.log(`\n${red(errorDetail)}`);
+    });
+    if (errorDetail) process.exitCode = 1;
+  });
+
+program
+  .command('open')
+  .description('resolve the active instance and open its UI (macOS: default browser; elsewhere: prints the URL)')
+  .action(async () => {
+    try {
+      const resolved = await resolveActive({ machinesFile: machinesFilePath(), token: readToken() });
+      if (process.platform === 'darwin') {
+        await execFile('open', [resolved.uiUrl]);
+      } else {
+        console.log(resolved.uiUrl);
+      }
+    } catch (e) {
+      if (!(e instanceof AtlasResolveError)) throw e;
+      console.error(red(e.detail));
+      process.exitCode = 1;
+    }
   });
 
 program

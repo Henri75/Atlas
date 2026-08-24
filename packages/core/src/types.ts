@@ -36,6 +36,19 @@ export interface Project {
   discoveredAt: string;
 }
 
+/**
+ * Machine-independent identity triple for dedup key v3 (spec §6): `scope` is
+ * the project slug (or the literal `claude` for transcripts), `path` is the
+ * source path normalized relative to a known root, `ref` is a content-derived
+ * locator (sha, anchor, or `occ:<k>` occurrence ordinal — never a raw line
+ * number, which shifts under concurrent appends).
+ */
+export interface EntryIdentity {
+  scope: string;
+  path: string;
+  ref: string;
+}
+
 /** Browsable unit: one changelog line, one session block, one commit, one doc section… */
 export interface Entry {
   projectSlug: string;
@@ -53,6 +66,21 @@ export interface Entry {
   /** Locator inside the source: commit sha, byte offset, heading anchor… */
   sourceRef?: string;
   meta?: Record<string, unknown>;
+  /**
+   * Machine-independent identity for dedup key v3 (spec §6): set by
+   * `applyIdentity`/`identityFromStored` in identity.ts. Absent means the
+   * pipeline never ran identity normalization — `Catalog.dedupKey` then falls
+   * back to the legacy v2-shaped key from `projectSlug`/`sourcePath`/`sourceRef`.
+   */
+  identity?: EntryIdentity;
+  /**
+   * Which machine this entry was FIRST INGESTED FROM (spec §6) — set by the
+   * scan pipeline (`job.machine`) in the same pass as `applyIdentity`.
+   * `Catalog.insertEntries` writes it (defaulting to `''`) into the `machine`
+   * column, and `indexEntries` copies it onto the Qdrant payload, so both
+   * search paths see the same value for the same entry.
+   */
+  machine?: string;
 }
 
 export interface StoredEntry extends Entry {
@@ -117,6 +145,13 @@ export interface SearchFilters {
   until?: string;
   /** 'active' excludes archived docs; 'archived' targets them. Default: both. */
   docStatus?: 'active' | 'archived';
+  /**
+   * Which machine an entry was FIRST INGESTED FROM (spec §6) — provenance,
+   * not "currently present on". Both search paths must filter it identically
+   * (see `buildQdrantFilter` / `Catalog.ftsSearch`). '' is the legacy
+   * pre-machine-model sentinel; no surface sends it as a real filter value.
+   */
+  machine?: string;
 }
 
 export interface SearchHit {
@@ -131,6 +166,12 @@ export interface SearchHit {
   occurredAt?: string;
   sourcePath: string;
   sourceRef?: string;
+  /**
+   * First-ingested-from machine (spec §6: provenance, not presence — shared
+   * git-synced content belongs to whichever machine synced first). Absent
+   * for a legacy pre-machine-model entry that hasn't been backfilled yet.
+   */
+  machine?: string;
   /**
    * Doc staleness: 'archived' (archive-style path, downranked) or 'aging'
    * (old but untouched, label only). Absent = active or not a doc.

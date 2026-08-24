@@ -2,12 +2,19 @@
  * The view axis, in one place.
  *
  * This list used to live inside the Sidebar, which was fine while the rail was
- * its only consumer. It no longer is: the settings menu offers the same six
+ * its only consumer. It no longer is: the settings menu offers the same seven
  * views as start-up choices, and App validates a persisted preference against
  * them. A second hardcoded copy would drift the moment a view is added, so the
  * rail, the menu and the validator all read this one.
  */
-export type View = 'dashboard' | 'search' | 'timeline' | 'components' | 'sessions' | 'monitor';
+export type View =
+  | 'dashboard'
+  | 'search'
+  | 'timeline'
+  | 'components'
+  | 'sessions'
+  | 'monitor'
+  | 'machines';
 
 /**
  * The glyphs are deliberately geometric rather than pictorial: this is an
@@ -25,11 +32,14 @@ export const VIEWS: { key: View; label: string; hotkey: string; icon: string }[]
   // Last in the rail because it is about Atlas rather than about your projects —
   // the only view whose subject is the tool itself.
   { key: 'monitor', label: 'Monitor', hotkey: '6', icon: '◔' },
+  // The fleet, not a project — it belongs with Monitor at the tail rather than
+  // among the project-scoped views above it.
+  { key: 'machines', label: 'Machines', hotkey: '7', icon: '▣' },
 ];
 
 /**
  * Guard for anything that reaches us from outside the type system — in practice
- * the persisted start-view preference. App renders views as six independent
+ * the persisted start-view preference. App renders views as seven independent
  * `view === '…'` checks with no fallback arm, so an unrecognised value would
  * render a blank page rather than an error. Coerce instead.
  */

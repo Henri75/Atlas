@@ -1,27 +1,25 @@
 import { useEffect, useState } from 'react';
-import type { SourceType } from '../types';
+import { api } from '../api';
+import type { FullEntry } from '../types';
 import { Markdown } from './Markdown';
 import { Badge, Spinner, Stamp } from './ui';
-
-interface FullEntry {
-  id: number;
-  title: string;
-  body: string;
-  slug: string;
-  source_type: SourceType;
-  component?: string;
-  session_id?: string;
-  occurred_at?: string;
-  hostPath: string;
-  editorUrl: string;
-}
 
 /**
  * Search shows a 280-char snippet. This drawer shows the whole record, plus a
  * way back to the file it came from. It overlays rather than navigates so the
  * result list stays on screen as context.
  */
-export function EntryDrawer({ entryId, onClose }: { entryId: number | null; onClose: () => void }) {
+export function EntryDrawer({
+  entryId,
+  onClose,
+  /** Gates the machine line — same fleet-size rule as the hit-row badge, so a
+   *  single-machine install shows nothing new here either. */
+  multiMachine = false,
+}: {
+  entryId: number | null;
+  onClose: () => void;
+  multiMachine?: boolean;
+}) {
   const [entry, setEntry] = useState<FullEntry | null>(null);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
@@ -31,8 +29,8 @@ export function EntryDrawer({ entryId, onClose }: { entryId: number | null; onCl
     setError('');
     setCopied(false);
     if (entryId == null) return;
-    fetch(`/api/entries/${entryId}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+    api
+      .entry(entryId)
       .then(setEntry)
       .catch((e: Error) => setError(e.message));
   }, [entryId]);
@@ -109,6 +107,11 @@ export function EntryDrawer({ entryId, onClose }: { entryId: number | null; onCl
                   </button>
                 </div>
                 <p className="mt-1 font-mono text-[10px] text-faint break-all">{entry.hostPath}</p>
+                {multiMachine && entry.machine && (
+                  <p className="mt-0.5 font-mono text-[10px] text-faint">
+                    first ingested from <span className="text-muted">{entry.machine}</span>
+                  </p>
+                )}
 
                 {/* The record as it was written: kdb entries, commit bodies and
                     docs are all markdown at the source, so they render as

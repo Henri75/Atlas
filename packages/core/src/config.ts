@@ -112,6 +112,45 @@ const schema = z.object({
   apiPort: z.coerce.number().int().default(8710),
   mcpPort: z.coerce.number().int().default(8711),
   apiUrl: z.string().default('http://api:8710'),
+  /** Committed machine-fleet SSoT; absent file = legacy single-machine mode. */
+  machinesFile: z.string().default('/config/machines.yaml'),
+  /** Which machines.yaml entry is THIS host. Required once the file exists. */
+  atlasSelf: z.string().optional(),
+  /**
+   * Host bind address api/mcp/ui publish their ports on (spec §7). Also read
+   * at boot (api + mcp `main.ts`) to fail closed: a non-loopback bind with no
+   * `atlasToken` refuses to start rather than serve the LAN unauthenticated.
+   * qdrant/redis/postgres ignore this and stay on `127.0.0.1` regardless.
+   */
+  atlasBind: z.string().default('127.0.0.1'),
+  /**
+   * Bearer token required for non-loopback requests once set (spec §7).
+   * Empty/absent = legacy localhost-only mode: `authMiddleware` is a no-op.
+   */
+  atlasToken: z.string().optional(),
+  /**
+   * Emergency escape hatch for the boot-time single-active guard (spec §8,
+   * Task 23): a live peer normally refuses to let this instance start.
+   * Deliberately absent from `config/atlas.defaults.env` — this overrides a
+   * safety check meant to prevent two stacks writing the same index at
+   * once, so it belongs in a one-off shell/Doppler override for the boot
+   * that needs it, never in the committed fleet-wide defaults.
+   *
+   * The documented value is `ATLAS_FORCE_ACTIVE=true` (spec §8, boot error
+   * text) — but this one flag ALSO accepts `1`/`0`, unlike every other
+   * boolean flag in this schema, which stay strict `true`/`false` only.
+   * This is the one place where a rejected value is actively dangerous: an
+   * operator overriding the guard is already mid-incident, reaching for the
+   * Unix-y `=1` habit, and a `ZodError` at that moment means the process
+   * never starts at all — the exact opposite of what the override was for.
+   * Belt and braces for an emergency flag.
+   */
+  atlasForceActive: z
+    .union([
+      z.boolean(),
+      z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1'),
+    ])
+    .default(false),
 });
 
 export type AppConfig = z.infer<typeof schema>;
@@ -182,6 +221,11 @@ function fromEnv(env: NodeJS.ProcessEnv): AppConfig {
     apiPort: opt(env.API_PORT),
     mcpPort: opt(env.MCP_PORT),
     apiUrl: opt(env.KDBSCOPE_API_URL),
+    machinesFile: opt(env.ATLAS_MACHINES_FILE),
+    atlasSelf: opt(env.ATLAS_SELF),
+    atlasBind: opt(env.ATLAS_BIND),
+    atlasToken: opt(env.ATLAS_TOKEN),
+    atlasForceActive: opt(env.ATLAS_FORCE_ACTIVE),
   });
 }
 

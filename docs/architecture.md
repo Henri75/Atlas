@@ -3,6 +3,7 @@
 # Architecture
 
 ## Revision History
+- 2026-08-19 22:01 UTC — Multi-machine: new *Machines* section (machine model, sync engine, dedup key v3, resolution). See `docs/multi-machine.md` (runbooks) and `docs/adr/20260819-multi-machine-one-active-instance.md` (decision).
 - 2026-07-17 15:49 UTC — Documented *Concurrency and data integrity*: why many simultaneous agents + a background reindex never corrupt data (stateless reads, idempotent `ON CONFLICT` writes, collision-free job keys, lone-append telemetry), and the single-instance `api`/`mcp` assumption.
 - 2026-07-13 00:20 UTC — Multi-project scope (search/ask/timeline); UI information architecture: rail holds views, a persistent scope bar holds projects. See *Scoping by project*.
 - 2026-07-12 22:50 UTC — Answer telemetry: the served model (from the gateway's headers) replaces the configured one, plus token usage, TTFT and generation rate. See *Served model vs configured model*.
@@ -59,6 +60,67 @@ in `docker-compose.yml` for the same reason — it fixes the volume prefix
 
 All domain logic lives in `packages/core`; services are thin wrappers, which is
 what keeps the unit tests fast and hermetic.
+
+## Machines
+
+Full design and rationale: `docs/superpowers/specs/2026-08-19-multi-machine-design.md`;
+decision record: `docs/adr/20260819-multi-machine-one-active-instance.md`; the
+operator runbook (enrolling a machine, moving the stack, the migration
+rollout ritual, LAN access) lives at `docs/multi-machine.md`.
+
+**One active instance holds THE index.** There is no full stack per machine
+and no per-machine index to fuse — every other configured machine is a
+*source*, pulled from, never a peer index. This keeps answers consistent
+regardless of which machine you ask from, at the cost of the active instance
+being a single point of index availability (source data is unaffected — see
+*Moving the stack*, `docs/multi-machine.md`).
+
+- **Machine model.** `config/machines.yaml` (committed, mounted read-only
+  into `indexer`/`api`) is the fleet SSoT: name (frozen once data exists),
+  address, SSH user, code roots, Claude projects dir, `enabled`. Each running
+  host names itself via `ATLAS_SELF` in its own gitignored `.env` — never
+  hostname-guessed, and boot fails loudly if it is unset or names no entry.
+  `packages/core/src/machines.ts` owns the schema; `atlas machines
+  add|remove|list` edits and reports on it.
+- **Sync engine.** A new BullMQ job type (`sync:<machine>`, `indexer`) runs
+  `rsync` over SSH into a named volume (`remote_mirror`, mounted only in
+  `indexer`) on `sync.intervalMin` (default 10), skipping disabled or
+  unreachable (asleep) machines cleanly rather than erroring. Once synced,
+  the mirror is read by the same four scanners as any local checkout — they
+  stay entirely machine-blind. Safety rails: a destination-prefix guard on
+  `--delete`, `--partial-dir` (never bare `--partial`, which would leave a
+  truncated file under its final name), and git transient state excluded so
+  a mid-sync `.git` never poisons a `git log` watermark permanently (it
+  fails into `index_errors` and self-heals next pass instead).
+- **Identity — dedup key v3.** Entry identity moved from hashing the
+  absolute container `sourcePath` to a machine-independent normalized form
+  (project-relative paths for kdb/docs, `.` + commit sha for git, and a
+  scope of the literal `claude` — deliberately dropping the project slug —
+  for transcripts, so a Migration-Assistant-copied `~/.claude/projects`
+  corpus dedups instead of re-embedding under new attribution). Migrated
+  in-place, once, resumable, and rehearsed against a throwaway copy of the
+  live catalog before ever running for real. No vector moves: Qdrant point
+  ids still hash the *stored* `source_path` under the frozen v2 id
+  namespace. See the ADR for the full key design and why it does not
+  re-trigger the moved-checkouts alias ADR's revisit clause.
+- **Resolution.** Three kinds of client (CLI, the `atlas-connect` MCP shim,
+  the browser) need to find whichever machine is currently active. A
+  nonce-challenged, HMAC-proved `/api/instance` endpoint lets a host-side
+  resolver (`packages/core/src/resolve.ts`) probe every configured machine
+  and demand **exactly one** proof-valid, non-conflicted responder — zero or
+  multiple is a loud, named error, never a silent pick. A continuous
+  single-active guard (the `api` service) re-probes while running, so a
+  peer that comes back online mid-session is caught within one tick on both
+  sides. `atlas-connect` (`claude mcp add atlas -- atlas-connect`) is a tiny
+  stdio MCP shim that resolves lazily and never needs re-registering, no
+  matter which machine ends up active. `atlas which` / `atlas open` expose
+  the same resolution for humans.
+- **Provenance.** Every entry/session carries `machine` — the machine of
+  **first ingestion**, not presence (shared git-synced content belongs to
+  whichever machine synced it first). Search/CLI/MCP expose it as a filter
+  with that documented semantic; `project_locations` (per-project, per-
+  machine) is the presence signal. See *Known limitations* in
+  `docs/multi-machine.md`.
 
 ## Concurrency and data integrity
 

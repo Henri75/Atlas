@@ -33,10 +33,10 @@ function fakeCatalog() {
   (cat as any).pool = {
     query: async (sql: string, params: unknown[]) => {
       calls.push({ sql, params });
-      // Re-derive the dedup_key column (every 11th param, 0-indexed at 10) to
+      // Re-derive the dedup_key column (every 12th param, 0-indexed at 10) to
       // fabricate a plausible RETURNING set — id paired with each key.
       const keys: string[] = [];
-      for (let i = 10; i < params.length; i += 11) keys.push(params[i] as string);
+      for (let i = 10; i < params.length; i += 12) keys.push(params[i] as string);
       return { rows: keys.map((dedup_key, i) => ({ id: i + 1, dedup_key })) };
     },
   };
@@ -52,8 +52,8 @@ describe('Catalog.insertEntries — the idempotent write path', () => {
     const out = await cat.insertEntries(1, [dup, { ...dup }, { ...dup }]);
 
     expect(calls).toHaveLength(1);
-    // 11 columns × 1 surviving row = 11 params, not 33.
-    expect(calls[0]!.params).toHaveLength(11);
+    // 12 columns × 1 surviving row = 12 params, not 36.
+    expect(calls[0]!.params).toHaveLength(12);
     expect(out).toHaveLength(1);
   });
 
@@ -64,13 +64,13 @@ describe('Catalog.insertEntries — the idempotent write path', () => {
       entry({ body: 'two' }),
       entry({ body: 'three' }),
     ]);
-    expect(calls[0]!.params).toHaveLength(33);
+    expect(calls[0]!.params).toHaveLength(36);
     expect(out).toHaveLength(3);
   });
 
   it('chunks so a single statement never exceeds the parameter ceiling', async () => {
     const { cat, calls } = fakeCatalog();
-    // 6000 distinct entries × 11 params = 66000 > Postgres 65535 ceiling, so it
+    // 6000 distinct entries × 12 params = 72000 > Postgres 65535 ceiling, so it
     // must split. Distinct bodies keep them from collapsing into one.
     const many = Array.from({ length: 6000 }, (_, i) => entry({ body: `body ${i}` }));
     const out = await cat.insertEntries(1, many);
@@ -78,7 +78,7 @@ describe('Catalog.insertEntries — the idempotent write path', () => {
     expect(calls.length).toBeGreaterThan(1);
     for (const c of calls) {
       expect(c.params.length).toBeLessThanOrEqual(65535);
-      expect(c.params.length % 11).toBe(0);
+      expect(c.params.length % 12).toBe(0);
     }
     // Every distinct entry still comes back — chunking loses nothing.
     expect(out).toHaveLength(6000);

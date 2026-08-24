@@ -15,6 +15,8 @@ export interface DiscoveredProject {
   /** The same tree as the user sees it. Claude dir names encode this one. */
   hostPath?: string;
   hasKdb: boolean;
+  /** Which fleet machine's root this was discovered under. Absent = self/legacy. */
+  machine?: string;
 }
 
 /**

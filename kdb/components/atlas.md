@@ -1558,6 +1558,65 @@
 **Status:**
 - Completed (config + reaper + guards + the marker that makes them reach live data). Applies on the next indexer boot, which the operator controls.
 ---
+### [2026-08-19] - Task 5: /api/machines + project locations (multi-machine spec)
+
+**Objective:**
+- Expose the machine fleet and per-project machine locations over the API, in the exact shapes later tasks (CLI table, UI Machines page) will consume.
+
+**Summary of Work:**
+- Added `GET /api/machines`: joins `deps.machines()` (fleet config + self, resolved once at boot from config/machines.yaml + ATLAS_SELF) with `deps.listMachineSync()` (live sync health) by machine name; legacy mode (no machines file) returns `{ self: 'local', machines: [] }` rather than 404ing.
+- `GET /api/projects` rows now carry `locations: [{ machine, hostPath, hasKdb }]` from `deps.listProjectLocations()`, keyed by project id; empty array when a project has no recorded locations.
+- Extended `ApiDeps` with `machines`, `listMachineSync`, `listProjectLocations`; wired real deps in `packages/api/src/main.ts`, resolving self the same way the indexer scheduler's `resolveSelfName` does.
+
+**Key Decisions & Rationale:**
+- A location's `hostPath` is passed through unchanged, not re-translated via `toHostPath` — it is already host-side at discovery time (indexer scanners.ts `toHost`), unlike `rootPath` which is a container path.
+- `/api/machines` machine fields are an explicit allowlist (name/address/user/codeRoots/claudeProjects/enabled/sync), deliberately dropping `remoteRsyncPath`/`slugOverrides` from the wire shape, since later tasks consume this response verbatim.
+- Fleet/self resolved once at boot (closure in main.ts) rather than re-read per request: config/machines.yaml is a committed SSoT that needs a restart to change anyway, matching the scheduler's existing precedent (resolveSelfName).
+
+**Code/Files Modified:**
+- packages/api/src/app.ts
+- packages/api/src/main.ts
+- test/api/routes.test.ts
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** TDD from the brief's own test snippets caught the route/shape contract early; the existing `makeDeps` idiom made the new deps a one-line addition with harmless legacy defaults, so all 73 pre-existing route tests kept passing unedited.
+- **What Failed:** N/A — no dead ends on this task.
+
+**Status:**
+- Completed
+---
+### [2026-08-19] - Task 27: Multi-machine feature closure — runbooks, ADR, docs, help-audit guard
+
+**Objective:**
+- Close out the multi-machine feature (Tasks 1-26): ops runbooks, ADR, doc updates, a help-audit guard, and the feature-level KDB record.
+
+**Summary of Work:**
+- Feature-level summary of what shipped across Tasks 1-26, closed out here: machine model (`config/machines.yaml` SSoT + `ATLAS_SELF`, frozen names, `slugOverrides`); SSH-pull sync engine (`sync:<machine>` BullMQ job, `remote_mirror` volume, destination-prefix + `--partial-dir` safety rails, git-transient-state excludes, the `scanGit` watermark-wedge fix); cross-machine projects (`project_locations`, machine-aware `upsertProject`, origin-URL/root-sha divergence check, machine-aware Claude-dir matching); dedup key v3 — machine-independent normalized identity (project-relative paths; `claude`-scoped, slug-dropped transcript keys so Migration-Assistant copies dedup instead of re-embedding), migrated in place under its own advisory lock (732016), resumable, rehearsal-gated (`make db-dump` + `make dedup-rehearsal` against a throwaway copy of the live catalog — real run cleared: 474,736 rows before/after, 0 collisions, 17 ordinal groups, ~17 min wall clock); provenance UX (`machine` on entries/sessions, search/CLI/MCP filter, editor deep links, Machines page); LAN auth (`ATLAS_BIND`/`ATLAS_TOKEN`, fail-closed boot, UI token prompt, `~/.atlas/credentials`); verified resolution (`/api/instance` nonce-HMAC challenge/proof, `bootId` self-recognition, continuous single-active guard, host-side resolver with cached+re-probe-on-conflict, `atlas-connect` MCP shim, `atlas which`/`open`/`connect`/`machines`). This task's own additions: `docs/multi-machine.md` (add-machine, moving-the-stack, migration-rollout+wedge-recovery, LAN-access runbooks, known limitations), the ADR, `docs/architecture.md`/`configuration.md`/`api.md`/`README.md`/`index.md` updates (including the stale no-auth prose deferred from Task 21), and a new `make help-audit` guard (`test/makefile_help.test.ts`) so an undescribed Make target can no longer silently vanish from `make help`.
+
+**Key Decisions & Rationale:**
+- One active instance (not a full stack per machine, not federated per-machine indexes) — avoids double-embedding shared content and divergent answers depending which machine you ask.
+- Dedup v3 drops the project slug from the Claude-transcript key scope specifically so a Migration-Assistant-copied `~/.claude/projects` corpus collapses onto the first-recorded entry instead of re-embedding under new attribution (days of Ollama avoided).
+- The resolver's nonce-HMAC proof means the shared bearer token is only ever sent to an endpoint that has already proved it holds it — never handed to a rogue listener or reassigned-DHCP peer.
+- `bootId` (per-process, random) alongside `installId` distinguishes a genuine peer with a cloned volume (same `installId`, different `bootId` — real conflict) from a hairpin probe reaching yourself (same `bootId` — not a conflict).
+- `help-audit` respects a `## @internal` marker (not just a description) so a helper nobody runs directly (`print-compose`) is declared rather than silently exempted or forced into user-facing `make help` output.
+
+**Code/Files Modified:**
+- packages/core/src/{machines,dedupMigration,identity,resolve,instanceProof,atlasHome}.ts (Tasks 1-26)
+- packages/indexer/src/sync.ts, packages/api/src/{app,guard,instance}.ts, packages/atlas-connect/src/*, packages/cli/src/main.ts (Tasks 1-26)
+- docker-compose.yml, config/{atlas.defaults.env,machines.yaml} (Tasks 1-26)
+- docs/multi-machine.md (new), docs/adr/20260819-multi-machine-one-active-instance.md (new) — Task 27
+- docs/architecture.md, docs/configuration.md, docs/api.md, docs/index.md, README.md — Task 27
+- Makefile (help grep excludes `@internal`, new `help-audit` target, `print-compose` marked `## @internal`), test/makefile_help.test.ts (new) — Task 27
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** the rehearsal gate (Task 10) caught a real `pg_isready`-vs-two-phase-Postgres-startup race before it could hit the live migration; measuring the real catalog (474,720 entries / 16,473 files) rather than trusting the spec's stale ~323k estimate kept the runtime math honest. The `help-audit` guard was mutation-verified twice (a stripped `## ` description, and a stripped `## @internal` marker) — both turned it RED before the fix was restored.
+- **What Failed:** n/a for this closure task; carried-forward, accepted-for-v1 gaps (not failures): presence-based ("exists on machine X") filtering, fleet-wide non-default `API_PORT`, UI machine editing, TLS/Tailscale hardening — all documented in `docs/multi-machine.md#known-limitations` and the ADR's Consequences.
+
+**Status:**
+- Completed
+
+Reference: docs/adr/20260819-multi-machine-one-active-instance.md; docs/superpowers/specs/2026-08-19-multi-machine-design.md.
+---
 ### [2026-08-24] - M4 Max migration: restore Atlas/Assessor MCP + machine-local roots
 
 **Objective:**

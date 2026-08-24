@@ -56,21 +56,31 @@ const CONSUMED_BY_COMPOSE = new Set([
   'CLAUDE_PROJECTS_HOST',
   'CODE_ROOT',
   'CLAUDE_PROJECTS_DIR',
+  // Interpolated straight into the indexer's `/keys` bind-mount source
+  // (docker-compose.yml) — nothing in packages/core reads it directly.
+  'ATLAS_KEYS_DIR',
 ]);
 
 /**
  * Read by `config.ts` but deliberately not listed with a value.
  *
  * `CODE_ROOT_2..5` are optional extra mounts; listing them empty would activate
- * nothing but suggests they are configured. The rest are documented in the file
- * as commented-out or intentionally-blank lines and are picked up by
- * `keysInFile`, so nothing lands here that a reader would miss.
+ * nothing but suggests they are configured. `ATLAS_SELF` is per-machine `.env`
+ * material (not fleet-wide). `ATLAS_FORCE_ACTIVE` is the single-active guard's
+ * emergency escape hatch (spec §8, Task 23) — it overrides a safety check
+ * meant to stop two stacks writing the same index at once, so it belongs in a
+ * one-off override for the boot that needs it, never in the committed
+ * fleet-wide defaults a reader would copy verbatim. The rest are documented
+ * in the file as commented-out or intentionally-blank lines and are picked up
+ * by `keysInFile`, so nothing lands here that a reader would miss.
  */
 const INTENTIONALLY_ABSENT = new Set([
   'CODE_ROOT_2',
   'CODE_ROOT_3',
   'CODE_ROOT_4',
   'CODE_ROOT_5',
+  'ATLAS_SELF',
+  'ATLAS_FORCE_ACTIVE',
 ]);
 
 describe('config/atlas.defaults.env', () => {
@@ -90,7 +100,7 @@ describe('config/atlas.defaults.env', () => {
   it('leaves every secret empty, because secrets come from Doppler', () => {
     // A key committed here would be a key in git history. The slots exist so the
     // shape is documented; the values come from the shell at container creation.
-    for (const secret of ['EMBEDDINGS_API_KEY', 'LLM_API_KEY']) {
+    for (const secret of ['EMBEDDINGS_API_KEY', 'LLM_API_KEY', 'ATLAS_TOKEN']) {
       const m = new RegExp(`^${secret}=(.*)$`, 'm').exec(defaultsFile);
       expect(m, `${secret} should be present as an empty slot`).not.toBeNull();
       expect(m![1]!.trim()).toBe('');

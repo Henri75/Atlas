@@ -3,8 +3,12 @@
 FROM node:22.23.1-bookworm-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf
 
 # git: the indexer shells out to `git log` on the read-only mounted repos.
+# openssh-client + rsync: fleet sync (spec §4) — the indexer shells out to
+# `ssh`/`rsync` to pull other machines' code + Claude transcripts into
+# remote_mirror. Unused by api/mcp, but one shared image (SERVICE build arg)
+# means every service pays the ~2MB either way.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates \
+  && apt-get install -y --no-install-recommends git ca-certificates openssh-client rsync \
   && rm -rf /var/lib/apt/lists/* \
   && git config --system safe.directory '*'
 

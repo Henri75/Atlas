@@ -1,0 +1,13 @@
+# Atlas machine fleet — committed SSoT (spec: docs/superpowers/specs/2026-08-19-multi-machine-design.md).
+# Names are FROZEN once indexed. Addresses must resolve from inside containers (no *.local).
+# Each running machine sets ATLAS_SELF=<name> in its gitignored .env.
+machines:
+  - name: nasta-mbp
+    address: 127.0.0.1        # replace with this Mac's LAN IP when a second machine joins
+    user: nasta
+    codeRoots:
+      - "/Users/nasta/__CODING NEW"
+    claudeProjects: /Users/nasta/.claude/projects
+sync:
+  intervalMin: 10
+  excludes: []

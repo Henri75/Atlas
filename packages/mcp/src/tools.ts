@@ -11,6 +11,46 @@ export interface ToolDef {
   schema: z.ZodRawShape;
   /** Returns the API path + init for this call. */
   request: (args: any) => { path: string; init?: RequestInit };
+  /**
+   * Optional second API call whose JSON is merged onto the primary response
+   * under `key` — for a tool whose answer must draw from more than one REST
+   * endpoint (currently only atlas_status: index health + /api/machines'
+   * per-machine sync block). main.ts fetches both and combines them via
+   * mergeToolResponse; every other tool proxies exactly one endpoint.
+   */
+  merge?: (args: any) => { key: string; path: string; init?: RequestInit };
+}
+
+/**
+ * Combines a tool's primary JSON response with a second endpoint's JSON
+ * under `key`. Never throws and never lets a secondary failure blank the
+ * primary data: a primary response that isn't JSON is returned untouched
+ * (nothing to merge into — preserves the "raw text through" contract every
+ * other tool relies on); a secondary that failed or wasn't JSON degrades to
+ * a generic `{ error }` note under `key` rather than embedding the raw fetch
+ * error, which can carry internal hostnames.
+ */
+export function mergeToolResponse(
+  primaryText: string,
+  key: string,
+  secondary: { ok: boolean; text: string },
+): string {
+  let primary: unknown;
+  try {
+    primary = JSON.parse(primaryText);
+  } catch {
+    return primaryText;
+  }
+  if (typeof primary !== 'object' || primary === null) return primaryText;
+  let value: unknown = { error: `${key} data unavailable` };
+  if (secondary.ok) {
+    try {
+      value = JSON.parse(secondary.text);
+    } catch {
+      /* keep the generic error placeholder */
+    }
+  }
+  return JSON.stringify({ ...(primary as Record<string, unknown>), [key]: value });
 }
 
 const qs = (params: Record<string, unknown>): string => {
@@ -27,6 +67,19 @@ const jsonPost = (body: unknown): RequestInit => ({
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify(body),
 });
+
+/**
+ * `Authorization: Bearer <token>` header for the API calls main.ts makes on
+ * an agent's behalf (spec §7) — empty when no token is configured (legacy
+ * mode). Every call this server makes arrives at the API over the Docker
+ * bridge network, never the loopback interface, so once `ATLAS_TOKEN` is
+ * set, every tool call needs this or the API 401s it regardless of
+ * `ATLAS_BIND`. Kept here (not inline in main.ts) so it's testable without
+ * triggering main.ts's import-time `getConfig()`/fail-closed check/`listen`.
+ */
+export function bearerHeader(token?: string): Record<string, string> {
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
 
 /**
  * Kinds of indexed *content*, not names of this tool. The `kdb_` prefix marks
@@ -81,6 +134,7 @@ How to use it well:
 - Prefer UNSCOPED search/ask first. A feature often lives under a different project slug than you expect; a wrong 'project' filter is the main reason a real answer looks missing.
 - Slugs that look like flattened absolute paths (e.g. "users-nasta-documents-…") are a project's EARLIER LOCATION, from before its checkout moved. They are NOT duplicates — they hold the only copy of that period's history. They carry an aliasOf field naming the canonical project, and scoping to that canonical slug now includes them automatically, so scope normally and ignore the split.
 - Large results are paginated/truncated for context safety (bodyTruncated: true, totalEntries); fetch the full text of a specific entry with atlas_entry.
+- The \`machine\` filter on atlas_search/atlas_ask means first ingested from — shared git-synced content belongs to whichever machine synced first; for 'exists on machine X' read a project's locations, not the machine filter.
 
 WHY THESE TRIGGERS (background — the rules above are the operative part):
 
@@ -130,6 +184,12 @@ export const TOOLS: ToolDef[] = [
         .describe(
           'Narrow to how a Claude session message was classified. "insight" and "summary" are often more useful than a keyword search.',
         ),
+      machine: z
+        .string()
+        .optional()
+        .describe(
+          'Machine name filter (see atlas_status for known names). Semantics: first ingested from — shared git-synced content belongs to whichever machine synced first; for \'exists on machine X\' read a project\'s locations.',
+        ),
       doc_status: z
         .enum(['active', 'archived'])
         .optional()
@@ -149,7 +209,7 @@ export const TOOLS: ToolDef[] = [
       limit: z.number().int().min(1).max(100).optional(),
     },
     request: (a) => ({
-      path: `/api/search${qs({ q: a.query, project: a.project, source: a.source, component: a.component, kind: a.kind, docStatus: a.doc_status, since: a.since, until: a.until, limit: a.limit })}`,
+      path: `/api/search${qs({ q: a.query, project: a.project, source: a.source, component: a.component, kind: a.kind, machine: a.machine, docStatus: a.doc_status, since: a.since, until: a.until, limit: a.limit })}`,
     }),
   },
   {
@@ -162,6 +222,12 @@ export const TOOLS: ToolDef[] = [
         .string()
         .optional()
         .describe('Optional project slug. Omit unless you are sure of the slug; a wrong scope hides answers that live in a sibling project.'),
+      machine: z
+        .string()
+        .optional()
+        .describe(
+          'Machine name filter (see atlas_status for known names). Semantics: first ingested from — shared git-synced content belongs to whichever machine synced first; for \'exists on machine X\' read a project\'s locations.',
+        ),
       since: z
         .string()
         .optional()
@@ -303,8 +369,10 @@ export const TOOLS: ToolDef[] = [
     description:
       'Index health: project/entry/chunk counts, per-source breakdown, last run time, recent errors count, ' +
       'and unsearchableEntries — entries that are indexed but have no vectors yet, so search cannot return them. ' +
-      'A non-zero unsearchableEntries that is not falling means results may be incomplete for reasons unrelated to your query.',
+      'A non-zero unsearchableEntries that is not falling means results may be incomplete for reasons unrelated to your query. ' +
+      "Also carries a `machines` block (per-machine sync status, last success, bytes) when multi-machine is configured; empty in single-machine mode.",
     schema: {},
     request: () => ({ path: '/api/stats' }),
+    merge: () => ({ key: 'machines', path: '/api/machines' }),
   },
 ];

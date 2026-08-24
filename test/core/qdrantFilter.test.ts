@@ -89,6 +89,35 @@ describe('buildQdrantFilter docStatus', () => {
 });
 
 /**
+ * spec §6: 'machine' means "first ingested from", not "currently present on".
+ * Filters exactly like component — an exact keyword match, no index behind it
+ * (see the `PAYLOAD_INDEXES` guard test in qdrantStorage.test.ts).
+ */
+describe('buildQdrantFilter machine', () => {
+  it('filters by machine as an exact keyword match', () => {
+    expect(buildQdrantFilter({ machine: 'nasta-mbp' })).toEqual({
+      must: [{ key: 'machine', match: { value: 'nasta-mbp' } }],
+    });
+  });
+
+  it('ignores an empty machine string rather than filtering on ""', () => {
+    // '' is the legacy pre-machine-model sentinel (spec §6); no surface ever
+    // sends it as a real filter value, and treating it as "no constraint" —
+    // same as project/component above — keeps it that way.
+    expect(buildQdrantFilter({ machine: '' })).toBeUndefined();
+  });
+
+  it('combines machine with the other filters', () => {
+    expect(buildQdrantFilter({ project: 'deepcast', machine: 'nasta-mbp' })).toEqual({
+      must: [
+        { key: 'project', match: { value: 'deepcast' } },
+        { key: 'machine', match: { value: 'nasta-mbp' } },
+      ],
+    });
+  });
+});
+
+/**
  * Projects filter exactly like source types: one is an equality, several are an
  * OR, none is no constraint. The two must stay symmetric — they are the same
  * idiom, and a reader should be able to trust that.

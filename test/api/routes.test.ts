@@ -154,6 +154,7 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     backlogMatchThreshold: 0.5,
     usagePageSize: 100,
     enqueueScan: vi.fn(async () => 1),
+    triggerSync: vi.fn(async () => {}),
     enqueueAdoption: vi.fn(async () => 1),
     vectorCount: async () => 123,
     meta: () => ({ embedder: 'ollama/nomic-embed-text', collection: 'kdbscope_x' }),
@@ -172,6 +173,12 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     vectorStats: async () => ({ points: 157_369, vectors: 314_201, segments: 7 }),
     embeddingsProvider: 'auto',
     servingEmbedder: () => ({ name: 'ollama', model: 'nomic-embed-text', dim: 768 }),
+    // Legacy single-machine defaults: harmless unless a test opts into the fleet.
+    machines: () => ({ fleet: null, self: 'local' }),
+    listMachineSync: async () => [],
+    listDivergenceWarnings: async () => [],
+    listProjectLocations: async () => new Map(),
+    instance: async () => ({ machine: 'local', installId: 'test-install-id', entries: 10 }),
     ...overrides,
   };
 }
@@ -181,6 +188,23 @@ describe('api routes', () => {
     const res = await buildApp(makeDeps()).request('/api/health');
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true });
+  });
+
+  /**
+   * Spec §8: Task 24's resolver watches this header on ANY response (not
+   * just /api/instance) to invalidate its cache the moment a peer conflict
+   * is detected. Proven here on an unrelated route and on a 404, so the
+   * middleware's "EVERY response" claim isn't just true for its own route.
+   */
+  it('every /api/* response carries X-Atlas-Machine and X-Atlas-State, even a 404', async () => {
+    const app = buildApp(makeDeps({ machines: () => ({ fleet: null, self: 'nasta-mbp' }) }));
+    const ok = await app.request('/api/health');
+    expect(ok.headers.get('X-Atlas-Machine')).toBe('nasta-mbp');
+    expect(ok.headers.get('X-Atlas-State')).toBe('active');
+    const notFound = await app.request('/api/projects/nope/components');
+    expect(notFound.status).toBe(404);
+    expect(notFound.headers.get('X-Atlas-Machine')).toBe('nasta-mbp');
+    expect(notFound.headers.get('X-Atlas-State')).toBe('active');
   });
 
   it('GET /api/stats merges catalog stats + vector count + meta + queue depth', async () => {
@@ -392,6 +416,58 @@ describe('api routes', () => {
     );
   });
 
+  /**
+   * Gap found while wiring the MCP atlas_ask `machine` param (Task 19):
+   * GET /api/search already forwards `machine` (see 'passes the machine
+   * filter through' above), but POST /api/ask built its filters object
+   * without it — the field existed on SearchFilters and flowed straight
+   * through Ask.ask -> SearchService.search, only the route dropped it.
+   */
+  it('POST /api/ask forwards machine to the search filter', async () => {
+    const ask = {
+      ask: vi.fn(async (_q: string, _f: Record<string, unknown>) => ({
+        answer: 'a', sources: [], model: 'm', degraded: false,
+      })),
+    };
+    const app = buildApp(makeDeps({ ask: ask as any }));
+    await app.request('/api/ask', {
+      method: 'POST',
+      body: JSON.stringify({ question: 'q', machine: 'nasta-mbp' }),
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(ask.ask).toHaveBeenCalledWith(
+      'q',
+      expect.objectContaining({ machine: 'nasta-mbp' }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  /**
+   * Task 19 fixed POST /api/ask; POST /api/ask/stream built its own filters
+   * object independently and had the same gap. The UI's Ask box calls the
+   * stream endpoint exclusively, so this is the one that actually matters to
+   * a user typing into the machine dropdown.
+   */
+  it('POST /api/ask/stream forwards machine to the search filter', async () => {
+    async function* fakeStream() {
+      yield { type: 'done', model: 'm', degraded: false };
+    }
+    const askStream = vi.fn((_q: string, _f: Record<string, unknown>) => fakeStream());
+    const app = buildApp(makeDeps({ ask: { askStream } as any }));
+    await app.request('/api/ask/stream', {
+      method: 'POST',
+      body: JSON.stringify({ question: 'q', machine: 'nasta-mbp' }),
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(askStream).toHaveBeenCalledWith(
+      'q',
+      expect.objectContaining({ machine: 'nasta-mbp' }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it('POST /api/ask requires question', async () => {
     const res = await buildApp(makeDeps()).request('/api/ask', {
       method: 'POST',
@@ -458,6 +534,17 @@ describe('api routes', () => {
     const app = buildApp(makeDeps({ search: search as any }));
     await app.request('/api/search?q=x&kind=insight');
     expect(search.search).toHaveBeenCalledWith('x', expect.objectContaining({ kind: 'insight' }), 20);
+  });
+
+  it('GET /api/search passes the machine filter through', async () => {
+    const search = {
+      search: vi.fn(async (_q: string, _f: Record<string, unknown>) => ({
+        hits: [], mode: 'hybrid', degraded: false, tookMs: 1,
+      })),
+    };
+    const app = buildApp(makeDeps({ search: search as any }));
+    await app.request('/api/search?q=x&machine=nasta-mbp');
+    expect(search.search).toHaveBeenCalledWith('x', expect.objectContaining({ machine: 'nasta-mbp' }), 20);
   });
 
   it('POST /api/ask returns synthesized answer', async () => {
@@ -555,6 +642,232 @@ describe('api routes', () => {
     expect(body[1].rootPath).toBe('');
   });
 
+  /** rootPath is a container path; locations' hostPath is already host-side. */
+  it('GET /api/projects carries per-machine locations', async () => {
+    const deps = makeDeps({
+      listProjectLocations: async () =>
+        new Map([
+          [
+            1,
+            [
+              { machine: 'nasta-mbp', rootPath: '/data/code/DeepCast', hostPath: '/Users/nasta/code/DeepCast', hasKdb: true },
+              { machine: 'mac-mini', rootPath: '/data/remote/mac-mini/code0/DeepCast', hostPath: '/Users/nasta/mini/DeepCast', hasKdb: false },
+            ],
+          ],
+        ]),
+    });
+    deps.catalog.listProjects = async () => [
+      { id: 1, slug: 'deepcast', name: 'DeepCast', rootPath: '/data/code/DeepCast', entryCount: 10 },
+      { id: 2, slug: 'from-transcripts', name: 'x', rootPath: '', entryCount: 3 },
+    ] as any;
+    const body = await (await buildApp(deps).request('/api/projects')).json();
+    expect(body[0].locations).toEqual([
+      { machine: 'nasta-mbp', hostPath: '/Users/nasta/code/DeepCast', hasKdb: true },
+      { machine: 'mac-mini', hostPath: '/Users/nasta/mini/DeepCast', hasKdb: false },
+    ]);
+    // A project with no recorded locations still gets the field, just empty.
+    expect(body[1].locations).toEqual([]);
+  });
+
+  describe('GET /api/machines', () => {
+    const fleetOf = (overrides: Partial<{ name: string; enabled: boolean }> = {}) => ({
+      fleet: {
+        machines: [
+          {
+            name: overrides.name ?? 'nasta-mbp',
+            address: '127.0.0.1',
+            user: 'nasta',
+            codeRoots: ['/x'],
+            claudeProjects: '/y',
+            enabled: overrides.enabled ?? true,
+            remoteRsyncPath: '/opt/homebrew/bin/rsync',
+            slugOverrides: {},
+          },
+        ],
+        sync: { intervalMin: 10, excludes: [] },
+      },
+      self: overrides.name ?? 'nasta-mbp',
+    });
+
+    it('merges config and sync state', async () => {
+      const app = buildApp(makeDeps({
+        machines: () => fleetOf(),
+        listMachineSync: async () => [
+          {
+            machine: 'nasta-mbp',
+            lastAttemptAt: '2026-08-19T12:00:00.000Z',
+            lastSuccessAt: '2026-08-19T12:00:05.000Z',
+            status: 'ok',
+            bytes: 4096,
+            durationMs: 5000,
+            error: null,
+          },
+        ],
+      }));
+      const r = await app.request('/api/machines');
+      expect(r.status).toBe(200);
+      const body = await r.json();
+      expect(body.self).toBe('nasta-mbp');
+      expect(body.machines[0]).toMatchObject({
+        name: 'nasta-mbp', address: '127.0.0.1', user: 'nasta',
+        codeRoots: ['/x'], claudeProjects: '/y', enabled: true,
+      });
+      // Exact key set: the sync row also carries `machine` (redundant with the
+      // map key), which must NOT leak onto the wire — later tasks (CLI table,
+      // UI Machines page) consume this shape verbatim.
+      expect(body.machines[0].sync).toEqual({
+        lastAttemptAt: '2026-08-19T12:00:00.000Z',
+        lastSuccessAt: '2026-08-19T12:00:05.000Z',
+        status: 'ok',
+        bytes: 4096,
+        durationMs: 5000,
+        error: null,
+      });
+    });
+
+    it('reports sync: null for a machine with no sync row yet', async () => {
+      const app = buildApp(makeDeps({ machines: () => fleetOf(), listMachineSync: async () => [] }));
+      const body = await (await app.request('/api/machines')).json();
+      expect(body.machines[0].sync).toBeNull();
+    });
+
+    /**
+     * The dashboard's staleness coloring needs this to avoid hardcoding a
+     * second copy of the config default — read straight from the loaded
+     * MachinesFile, not the route's own literal. `fleetOf()`'s default
+     * (10) is indistinguishable from a hardcode, so this pins a non-default
+     * value (15) to prove it is actually read through.
+     */
+    it('carries the fleet-configured sync interval', async () => {
+      const withInterval = fleetOf();
+      withInterval.fleet.sync = { intervalMin: 15, excludes: [] };
+      const app = buildApp(makeDeps({ machines: () => withInterval }));
+      const body = await (await app.request('/api/machines')).json();
+      expect(body.syncIntervalMin).toBe(15);
+    });
+
+    /**
+     * The scheduler has written `divergence:<projectId>` settings rows since
+     * Task 12 and nothing ever read them back — a standing cross-machine
+     * identity divergence (spec §5) was visible only to whoever happened to
+     * tail the indexer log. They surface here, fleet-wide rather than
+     * per-machine: a divergence is a disagreement BETWEEN machines.
+     */
+    it('surfaces stored divergence warnings', async () => {
+      const app = buildApp(makeDeps({
+        machines: () => fleetOf(),
+        listDivergenceWarnings: async () => ['DeepCast: origin differs across nasta-mbp, m4max'],
+      }));
+      const body = await (await app.request('/api/machines')).json();
+      expect(body.divergences).toEqual(['DeepCast: origin differs across nasta-mbp, m4max']);
+    });
+
+    it('reports an empty divergences array when there are none', async () => {
+      const app = buildApp(makeDeps({ machines: () => fleetOf() }));
+      const body = await (await app.request('/api/machines')).json();
+      expect(body.divergences).toEqual([]);
+    });
+
+    /** No config/machines.yaml on disk = legacy single-machine mode. */
+    it('legacy mode returns self: local and an empty machine list', async () => {
+      const app = buildApp(makeDeps({ machines: () => ({ fleet: null, self: 'local' }) }));
+      const body = await (await app.request('/api/machines')).json();
+      // No loaded MachinesFile to read an interval from, and the feature
+      // itself is off — omitted rather than inventing a value, which also
+      // keeps this exact-equality assertion meaningful.
+      expect(body).toEqual({ self: 'local', machines: [] });
+    });
+  });
+
+  describe('POST /api/admin/sync', () => {
+    const fleetWith = (machines: { name: string; enabled: boolean }[]) => ({
+      fleet: {
+        machines: machines.map((m) => ({
+          name: m.name,
+          address: '127.0.0.1',
+          user: 'nasta',
+          codeRoots: ['/x'],
+          claudeProjects: '/y',
+          enabled: m.enabled,
+          remoteRsyncPath: '/opt/homebrew/bin/rsync',
+          slugOverrides: {},
+        })),
+        sync: { intervalMin: 10, excludes: [] },
+      },
+      self: 'nasta-mbp',
+    });
+
+    it('404s on an unknown machine', async () => {
+      const deps = makeDeps({ machines: () => fleetWith([{ name: 'nasta-mbp', enabled: true }]) });
+      const res = await buildApp(deps).request('/api/admin/sync', {
+        method: 'POST',
+        body: JSON.stringify({ machine: 'nope' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(404);
+      expect(deps.triggerSync).not.toHaveBeenCalled();
+    });
+
+    it('400s on a disabled machine', async () => {
+      const deps = makeDeps({
+        machines: () => fleetWith([{ name: 'mac-mini', enabled: false }]),
+      });
+      const res = await buildApp(deps).request('/api/admin/sync', {
+        method: 'POST',
+        body: JSON.stringify({ machine: 'mac-mini' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(400);
+      expect(deps.triggerSync).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Self is a fleet entry like any other, so it sails through the
+     * unknown-machine lookup and (being enabled) through the disabled check
+     * — and then enqueues a job to rsync this machine from itself. There is
+     * nothing to pull: self's code and transcripts are bind-mounted, and the
+     * scheduler's own cadence skips self for exactly this reason.
+     */
+    it('400s on the self machine — there is nothing to sync from itself', async () => {
+      const deps = makeDeps({
+        machines: () => fleetWith([{ name: 'nasta-mbp', enabled: true }]),
+      });
+      const res = await buildApp(deps).request('/api/admin/sync', {
+        method: 'POST',
+        body: JSON.stringify({ machine: 'nasta-mbp' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/this machine/);
+      expect(deps.triggerSync).not.toHaveBeenCalled();
+    });
+
+    it('202s and enqueues on an enabled machine', async () => {
+      const deps = makeDeps({
+        machines: () => fleetWith([{ name: 'mac-mini', enabled: true }]),
+      });
+      const res = await buildApp(deps).request('/api/admin/sync', {
+        method: 'POST',
+        body: JSON.stringify({ machine: 'mac-mini' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ enqueued: true });
+      expect(deps.triggerSync).toHaveBeenCalledWith('mac-mini');
+    });
+
+    /** Legacy single-machine mode (no config/machines.yaml): no fleet to sync. */
+    it('404s in legacy mode (no fleet)', async () => {
+      const deps = makeDeps({ machines: () => ({ fleet: null, self: 'local' }) });
+      const res = await buildApp(deps).request('/api/admin/sync', {
+        method: 'POST',
+        body: JSON.stringify({ machine: 'anything' }),
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(404);
+    });
+  });
+
   it('GET /api/search decorates every hit with a host path', async () => {
     const hit = {
       entryId: 1,
@@ -573,6 +886,41 @@ describe('api routes', () => {
     expect(body.hits[0].hostPath).toBe('/Users/nasta/__CODING NEW/DeepCast');
     // A commit sha is not a line number.
     expect(body.hits[0].editorUrl).not.toContain(':aaa111');
+  });
+
+  /** A hit under a mirror mapping gets a remote-aware editor link (spec §9). */
+  it('GET /api/search gives a hit under a mirror mapping a vscode-remote link', async () => {
+    const hit = {
+      entryId: 2,
+      score: 1,
+      projectSlug: 'x',
+      sourceType: 'kdb_changelog',
+      title: 't',
+      snippet: 's',
+      sourcePath: '/data/remote/m4max/code1/x/kdb/changelog.log',
+      sourceRef: 'line:5',
+    };
+    const deps = makeDeps({
+      search: { search: async () => ({ hits: [hit], mode: 'hybrid', degraded: false, tookMs: 1 }) } as any,
+      pathMappings: [
+        { containerRoot: '/data/code', hostRoot: '/Users/nasta/__CODING NEW' },
+        {
+          containerRoot: '/data/remote/m4max/code1',
+          hostRoot: '/Users/serge/CODING',
+          machine: 'm4max',
+          sshUser: 'serge',
+          sshAddress: '192.168.1.30',
+        },
+      ],
+    });
+    const body = await (await buildApp(deps).request('/api/search?q=x')).json();
+    expect(body.hits[0].hostPath).toBe('/Users/serge/CODING/x/kdb/changelog.log');
+    expect(body.hits[0].editorUrl).toBe(
+      'vscode://vscode-remote/ssh-remote+serge@192.168.1.30/Users/serge/CODING/x/kdb/changelog.log',
+    );
+    // No self-scheme :line suffix, and no line at all (the remote scheme ignores it).
+    expect(body.hits[0].editorUrl).not.toContain(':5');
+    expect(body.hits[0].machine).toBe('m4max');
   });
 });
 
@@ -774,6 +1122,25 @@ describe('usage telemetry', () => {
    * Every `/api/*` call is recorded now, and polling noise is separated at READ
    * time by `route_class` instead, so the rows exist and the reader chooses.
    */
+  /**
+   * Privacy pin for the spec §7 claim "tokens are never logged". `recordCall`
+   * never receives headers at all — this proves that stays true once a
+   * request is actually gated by a token, not just in the unauthenticated
+   * default the other tests here run under.
+   */
+  it('never logs the Authorization header — the recorded path/query stay clean even when a token gates the request', async () => {
+    const app = buildApp(makeDeps({ atlasToken: 'sekret-token' }));
+    const res = await app.request('/api/search?q=hello', {
+      headers: { 'x-atlas-client': 'cli', authorization: 'Bearer sekret-token' },
+    });
+    expect(res.status).toBe(200); // the token was valid — this call was actually authorized
+    await flush();
+    expect(usageRows).toHaveLength(1);
+    const row = usageRows[0] as { path: string; query?: string };
+    expect(row.path).not.toMatch(/sekret-token|bearer/i);
+    expect(row.query ?? '').not.toMatch(/sekret-token|bearer/i);
+  });
+
   it('records unlabeled (UI) requests too, as an unknown client', async () => {
     await buildApp(makeDeps()).request('/api/search?q=hello');
     await flush();

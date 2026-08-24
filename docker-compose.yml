@@ -1,5 +1,8 @@
 # Atlas stack. Copy .env.example to .env first (make env).
-# All host ports bind to 127.0.0.1 — this is a single-user local tool.
+# Host ports bind to 127.0.0.1 by default — a single-user local tool. api/mcp/ui
+# bind to ATLAS_BIND instead (spec §7: set it to 0.0.0.0 to serve the LAN, only
+# together with ATLAS_TOKEN — see config/atlas.defaults.env). qdrant/redis/postgres
+# always stay 127.0.0.1 regardless of ATLAS_BIND.
 
 # Pinned so the volume prefix stops depending on the directory name. Compose
 # derives the project name from the folder unless told otherwise, which means
@@ -46,6 +49,13 @@ x-node-common: &node-common
     # which is the state Atlas runs in today (Ollama and the G2P proxy need no key).
     EMBEDDINGS_API_KEY: ${EMBEDDINGS_API_KEY:-}
     LLM_API_KEY: ${LLM_API_KEY:-}
+    # Multi-machine: which machines.yaml entry is this host
+    ATLAS_SELF: ${ATLAS_SELF:-}
+    # LAN bind + bearer token (spec §7). ATLAS_BIND also drives the host-port
+    # bindings below via the same var; passed through here too so api/mcp can
+    # fail closed at boot when it is non-loopback with no token set.
+    ATLAS_BIND: ${ATLAS_BIND:-127.0.0.1}
+    ATLAS_TOKEN: ${ATLAS_TOKEN:-}
   extra_hosts:
     - 'host.docker.internal:host-gateway'
 
@@ -66,7 +76,17 @@ services:
       - '${CODE_ROOT_HOST_4:-${CODE_ROOT_HOST:?set by config/atlas.defaults.env — run compose through make}}:/data/code4:ro'
       - '${CODE_ROOT_HOST_5:-${CODE_ROOT_HOST:?set by config/atlas.defaults.env — run compose through make}}:/data/code5:ro'
       - '${CLAUDE_PROJECTS_HOST:?set by config/atlas.defaults.env — run compose through make}:/data/claude/projects:ro'
+      - ./config:/config:ro
       - hf_cache:/app/.cache
+      # Fleet sync mirror (spec §4) — rsync destination for every other
+      # machine's code + Claude transcripts. rw, indexer-only.
+      - remote_mirror:/data/remote
+      # Dedicated `atlas_sync` SSH keypair. Directory (not file) mount: Docker
+      # turns a missing bind-mount *file* into a directory, which would hand
+      # ssh a directory as an identity file — `scripts/preflight.sh` (run from
+      # `make up`) guarantees the host directory exists first. `${HOME}` here
+      # is deliberate, not `~` — see ATLAS_KEYS_DIR in config/atlas.defaults.env.
+      - '${ATLAS_KEYS_DIR:-${HOME}/.atlas/keys}:/keys:ro'
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -79,8 +99,9 @@ services:
       args: { SERVICE: api }
     <<: *node-common
     ports:
-      - '127.0.0.1:${API_PORT:-8710}:8710'
+      - '${ATLAS_BIND:-127.0.0.1}:${API_PORT:-8710}:8710'
     volumes:
+      - ./config:/config:ro
       - hf_cache:/app/.cache
       # Read-only so the dashboard can report Qdrant's real disk usage. Qdrant
       # has no API for it (its telemetry `disk_usage_bytes` reports 0), and
@@ -103,7 +124,7 @@ services:
       args: { SERVICE: mcp }
     <<: *node-common
     ports:
-      - '127.0.0.1:${MCP_PORT:-8711}:8711'
+      - '${ATLAS_BIND:-127.0.0.1}:${MCP_PORT:-8711}:8711'
     healthcheck:
       test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8711/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
@@ -118,7 +139,7 @@ services:
       dockerfile: docker/ui.Dockerfile
     restart: unless-stopped
     ports:
-      - '127.0.0.1:${UI_PORT:-8712}:80'
+      - '${ATLAS_BIND:-127.0.0.1}:${UI_PORT:-8712}:80'
     depends_on:
       api: { condition: service_healthy }
 
@@ -219,3 +240,4 @@ volumes:
   redis_data:
   pg_data:
   hf_cache:
+  remote_mirror:

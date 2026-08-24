@@ -7,6 +7,7 @@ import {
   Badge,
   DegradedBanner,
   Empty,
+  MachineBadge,
   ModeSwitch,
   MultiSelect,
   ProjectTag,
@@ -18,6 +19,7 @@ import {
 import { EntryDrawer } from '../components/EntryDrawer';
 import { Markdown } from '../components/Markdown';
 import { AskComposer, Conversation, useAskConversation } from './AskConversation';
+import { useMachines } from '../useMachines';
 
 /**
  * Search and Ask: one instrument, two modes.
@@ -101,6 +103,9 @@ export function SearchView({
   const [sources, setSources] = useState<SourceType[]>([]);
   const [kind, setKind] = useState<EntryKind | ''>('');
   const [docStatus, setDocStatus] = useState<'' | 'active' | 'archived'>('');
+  // Which machine an entry was FIRST INGESTED FROM (spec §6) — provenance,
+  // not presence. '' means unconstrained.
+  const [machine, setMachine] = useState('');
   const [result, setResult] = useState<SearchResult | null>(null);
   const [showing, setShowing] = useState<Mode | null>(null);
   const [loading, setLoading] = useState(false);
@@ -109,7 +114,11 @@ export function SearchView({
   const [openEntry, setOpenEntry] = useState<number | null>(null);
   const seq = useRef(0);
 
-  const ask = useAskConversation(scope.projects, setOpenEntry, sources);
+  // Fetched once: a fleet does not grow mid-session, and the dropdown/badges
+  // only need "is this a multi-machine install?", not live sync health.
+  const { self, machines, multiMachine } = useMachines();
+
+  const ask = useAskConversation(scope.projects, setOpenEntry, sources, machine);
   const busy = ask.turns.some((t) => t.streaming);
 
   const runSearch = useCallback(async () => {
@@ -130,6 +139,7 @@ export function SearchView({
         source: sources.join(','),
         kind,
         docStatus,
+        machine: machine || undefined,
         limit: 30,
       });
       if (seq.current === mySeq) setResult(r);
@@ -141,7 +151,7 @@ export function SearchView({
     } finally {
       if (seq.current === mySeq) setLoading(false);
     }
-  }, [q, scope.projects, sources, kind, docStatus]);
+  }, [q, scope.projects, sources, kind, docStatus, machine]);
 
   const runAsk = useCallback(() => {
     if (!q.trim() || busy) return;
@@ -298,6 +308,26 @@ export function SearchView({
             </option>
           ))}
         </select>
+        {/* Hidden entirely below two machines: a single-machine install has
+            nothing to disambiguate, and the dropdown would be a filter with
+            one meaningful choice. */}
+        {multiMachine && (
+          <select
+            value={machine}
+            onChange={(e) => setMachine(e.target.value)}
+            className="bg-panel border border-line rounded-md px-2 py-2 text-sm text-muted font-mono"
+            aria-label="First ingested from"
+            title="Provenance, not presence: which machine first indexed this record. Shared git-synced content belongs to whichever machine synced first."
+          >
+            <option value="">any machine</option>
+            {machines.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name}
+                {m.name === self ? ' (self)' : ''}
+              </option>
+            ))}
+          </select>
+        )}
 
         {ask.turns.length > 0 && (
           <button
@@ -369,6 +399,7 @@ export function SearchView({
                   {/* Where a hit came from only matters when the scope can span
                       projects; in a single-project view it is noise on every row. */}
                   {scope.isMulti && <ProjectTag slug={h.projectSlug} />}
+                  {multiMachine && <MachineBadge machine={h.machine} />}
                   {h.component && (
                     <span className="font-mono text-[11px] text-muted">{h.component}</span>
                   )}
@@ -419,7 +450,11 @@ export function SearchView({
         />
       )}
 
-      <EntryDrawer entryId={openEntry} onClose={() => setOpenEntry(null)} />
+      <EntryDrawer
+        entryId={openEntry}
+        onClose={() => setOpenEntry(null)}
+        multiMachine={multiMachine}
+      />
     </div>
   );
 }

@@ -66,6 +66,8 @@ const job = {
   rootPath: join(root, 'Proj'),
   hasKdb: false,
   sourceType: 'doc' as const,
+  machine: 'local',
+  isSelf: true,
 };
 
 describe('scanDocs', () => {

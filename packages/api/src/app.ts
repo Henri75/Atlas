@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { authMiddleware } from './auth.js';
+import { getState, instancePayload, proofFor } from './instance.js';
 import {
   ADOPTION_REPORT_KEY,
   ROUTE_CLASSES,
@@ -11,6 +13,8 @@ import {
   lineFromSourceRef,
   loadBacklogView,
   proposeMarkerLine,
+  remoteEditorUrl,
+  resolveLocation,
   toHostPath,
 } from '@atlas/core';
 import type {
@@ -22,6 +26,7 @@ import type {
   BacklogReviewService,
   Catalog,
   EntryKind,
+  MachinesFile,
   PathMapping,
   RouteClass,
   SearchHit,
@@ -41,6 +46,13 @@ export interface ApiDeps {
   ask: AskService;
   /** Enqueue scan jobs; returns number of jobs enqueued. */
   enqueueScan: (opts: { project?: string; full?: boolean }) => Promise<number>;
+  /**
+   * Enqueue an immediate sync for one fleet machine — the same job shape
+   * (`{ sync: <machine> }`, jobId `sync--<machine>`) the scheduler's own
+   * cadence enqueues (scheduler.ts), so an admin-triggered sync collapses
+   * onto a pending scheduled one instead of racing it.
+   */
+  triggerSync: (machine: string) => Promise<void>;
   /**
    * Ask the indexer to recompute the adoption report. Separate from enqueueScan
    * because it is not a scan: it reads transcripts this container cannot see and
@@ -84,8 +96,40 @@ export interface ApiDeps {
   backlogReview: BacklogReviewService;
   /** Fuzzy-link floor for legacy DONE:/RESOLVED: markers (config SSoT). */
   backlogMatchThreshold: number;
+  /**
+   * Bearer token gating non-loopback requests (spec §7). Undefined = legacy
+   * localhost-only mode — `authMiddleware` becomes a no-op on every route.
+   */
+  atlasToken?: string;
   /** Default page size for the usage call log (config SSoT). */
   usagePageSize: number;
+  /**
+   * The committed machine fleet (config/machines.yaml) and which entry is this
+   * process, resolved once at boot — the same rule the scheduler uses (Task 4):
+   * file present → the ATLAS_SELF entry's name, absent → 'local' (legacy
+   * single-machine mode). `fleet: null` is what makes /api/machines legacy-mode.
+   */
+  machines: () => { fleet: MachinesFile | null; self: string };
+  /** Per-machine sync health, joined onto `machines().fleet` by name. */
+  listMachineSync: Catalog['listMachineSync'];
+  /**
+   * Standing cross-machine divergence warnings (spec §5). The scheduler
+   * writes them to `divergence:<projectId>` settings rows and nothing read
+   * them back — so a divergence was visible only to whoever tailed the
+   * indexer log. `/api/machines` is where the fleet's health already lives,
+   * so it is where they surface.
+   */
+  listDivergenceWarnings: Catalog['listDivergenceWarnings'];
+  /** Every machine a project has been seen on, keyed by project id. */
+  listProjectLocations: Catalog['listProjectLocations'];
+  /**
+   * The three fields `/api/instance` needs that aren't process-wide
+   * singletons (spec §8): this machine's name, the settings-row `installId`
+   * minted once at boot, and the entry count. `entries` reuses the same
+   * `catalog.stats()` call `/api/dashboard` already makes — never a second
+   * COUNT query for the same number.
+   */
+  instance: () => Promise<{ machine: string; installId: string; entries: number }>;
 }
 
 export interface BackfillProgress {
@@ -122,6 +166,35 @@ type UsageVars = {
 export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
   const app = new Hono<{ Variables: UsageVars }>();
   app.use('/api/*', cors());
+
+  /**
+   * Advertise this instance's identity/state on EVERY `/api/*` response, not
+   * only `/api/instance` (spec §8) — Task 24's resolver watches
+   * `X-Atlas-State: conflicted` on ANY call to invalidate its cache and
+   * re-probe immediately, instead of waiting out the ~5 min TTL. Mounted
+   * ahead of the auth gate so it wraps the whole chain and still runs on a
+   * 401 (set after `next()`, Hono's documented post-routing header recipe).
+   *
+   * Reads `deps.machines().self` — the same cheap, synchronous source
+   * `/api/machines` already uses — rather than `deps.instance()`, which
+   * calls `catalog.stats()` (6 queries) and would otherwise run on every
+   * single API request just to label a header.
+   */
+  app.use('/api/*', async (c, next) => {
+    await next();
+    c.header('X-Atlas-Machine', deps.machines().self);
+    c.header('X-Atlas-State', getState());
+  });
+
+  /**
+   * Bearer-token gate (spec §7), mounted right after CORS — so a real
+   * cross-origin preflight (`cors()` answers OPTIONS directly, before
+   * Authorization would ever be present on it) is never blocked — and before
+   * the usage-telemetry middleware, so a rejected request is never logged.
+   * `/api/instance` is Task 22's route (the S8 instance proof); exempted now
+   * so that task never has to touch this middleware.
+   */
+  app.use('/api/*', authMiddleware({ token: deps.atlasToken, exempt: ['/api/health', '/api/instance'] }));
 
   /**
    * Usage telemetry. EVERY `/api/*` request is recorded, polling included.
@@ -212,14 +285,57 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
    * Attach the host path and an editor link to anything carrying a source.
    * A row without a source path is returned untouched rather than failing the
    * whole request.
+   *
+   * When the source path resolves onto another machine's mirror (spec §9),
+   * the link is a vscode-remote deep link instead of a local `vscode://file`
+   * one. `item.machine` — an entry's own FIRST-INGESTED-FROM provenance,
+   * present when the row already carries it — always wins over the
+   * mapping's machine: the mapping only decides which URL scheme to use,
+   * never what the entry claims about its own origin.
    */
-  const withSource = <T extends { sourcePath?: string; sourceRef?: string }>(item: T) => {
+  const withSource = <T extends { sourcePath?: string; sourceRef?: string; machine?: string }>(
+    item: T,
+  ) => {
     if (!item.sourcePath) return item;
-    const hostPath = toHostPath(item.sourcePath, deps.pathMappings);
-    return { ...item, hostPath, editorUrl: editorUrl(hostPath, lineFromSourceRef(item.sourceRef)) };
+    const loc = resolveLocation(item.sourcePath, deps.pathMappings);
+    const line = lineFromSourceRef(item.sourceRef);
+    return {
+      ...item,
+      hostPath: loc.hostPath,
+      editorUrl: loc.machine ? remoteEditorUrl(loc, line) : editorUrl(loc.hostPath, line),
+      machine: item.machine ?? loc.machine,
+    };
   };
 
   app.get('/api/health', (c) => c.json({ ok: true, service: 'atlas-api' }));
+
+  /**
+   * Accepts an 8-64 char hex nonce — generous enough to never reject a real
+   * resolver/guard-generated one, tight enough to reject empty/garbage input
+   * outright (spec §8).
+   */
+  const NONCE_RE = /^[0-9a-fA-F]{8,64}$/;
+
+  /**
+   * Nonce-challenged identity (spec §8) — deliberately UNAUTHENTICATED
+   * (exempted in `authMiddleware` above): the client must never send the
+   * token first, so this endpoint proves the reverse — that the SERVER holds
+   * it — via an HMAC over the nonce the client just supplied plus the whole
+   * payload. `proof` is present only when a token is configured (legacy
+   * no-token mode omits the key rather than sending `null`). The endpoint
+   * knowingly discloses machine name/state/entry count to unauthenticated
+   * LAN callers — accepted and documented (spec §8).
+   */
+  app.get('/api/instance', async (c) => {
+    const nonce = c.req.query('nonce') ?? '';
+    if (!NONCE_RE.test(nonce)) {
+      return c.json({ error: 'nonce must be 8-64 hex characters' }, 400);
+    }
+    const payload = instancePayload(await deps.instance());
+    return c.json(
+      deps.atlasToken ? { ...payload, proof: proofFor(deps.atlasToken, nonce, payload) } : payload,
+    );
+  });
 
   app.get('/api/stats', async (c) => {
     const [stats, chunks, queue, backfillRaw] = await Promise.all([
@@ -309,6 +425,7 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
         ...parseSources(c.req.query('source')),
         component: c.req.query('component') || undefined,
         kind: (c.req.query('kind') as EntryKind) || undefined,
+        machine: c.req.query('machine') || undefined,
         since: c.req.query('since') || undefined,
         until: c.req.query('until') || undefined,
         docStatus: (c.req.query('docStatus') as 'active' | 'archived') || undefined,
@@ -375,7 +492,7 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
     c.set('usageQuery', question);
     const result = await deps.ask.ask(
       question,
-      { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, since: body.since, until: body.until, docStatus: body.docStatus },
+      { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, machine: body.machine || undefined, since: body.since, until: body.until, docStatus: body.docStatus },
       Math.min(Number(body.k ?? 12), 30),
       sanitizeHistory(body.history),
     );
@@ -407,7 +524,7 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
 
     const events = deps.ask.askStream(
       question,
-      { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, since: body.since, until: body.until, docStatus: body.docStatus },
+      { ...parseProjects(body.project), ...parseSources(body.source), component: body.component, kind: body.kind, machine: body.machine || undefined, since: body.since, until: body.until, docStatus: body.docStatus },
       Math.min(Number(body.k ?? 12), 30),
       sanitizeHistory(body.history),
     );
@@ -527,14 +644,79 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
   });
 
   app.get('/api/projects', async (c) => {
-    const projects = await deps.catalog.listProjects();
+    const [projects, locations] = await Promise.all([
+      deps.catalog.listProjects(),
+      deps.listProjectLocations(),
+    ]);
     // rootPath is a container path; nobody outside the stack has that folder.
     return c.json(
       projects.map((p) => ({
         ...p,
         rootPath: p.rootPath ? toHostPath(p.rootPath, deps.pathMappings) : p.rootPath,
+        // Unlike rootPath, a location's hostPath was already computed host-side
+        // at discovery time (scanners.ts toHost) — passed through, not translated.
+        locations: (locations.get(p.id) ?? []).map((l) => ({
+          machine: l.machine,
+          hostPath: l.hostPath,
+          hasKdb: l.hasKdb,
+        })),
       })),
     );
+  });
+
+  /**
+   * The fleet as configured, joined with live sync health by machine name.
+   * Legacy mode (no config/machines.yaml) answers `{ self: 'local', machines: [] }`
+   * rather than 404ing — callers (CLI, UI Machines page) can render either shape
+   * without branching on whether multi-machine is even turned on.
+   */
+  app.get('/api/machines', async (c) => {
+    const { fleet, self } = deps.machines();
+    // Legacy mode has no loaded MachinesFile to read an interval from, and
+    // the feature itself is off — omitted rather than inventing a value.
+    // (The dashboard's staleness math falls back to the same schema default
+    // itself when this field is absent — see DEFAULT_SYNC_INTERVAL_MIN.)
+    if (!fleet) return c.json({ self, machines: [] });
+    const [sync, divergences] = await Promise.all([
+      deps.listMachineSync(),
+      deps.listDivergenceWarnings(),
+    ]);
+    // Picked explicitly: the row also carries `machine`, which is redundant
+    // with the map key and not part of the documented wire shape — passing
+    // the row through whole would leak it onto every machine's `sync`.
+    const syncByName = new Map(
+      sync.map((s) => [
+        s.machine,
+        {
+          lastAttemptAt: s.lastAttemptAt,
+          lastSuccessAt: s.lastSuccessAt,
+          status: s.status,
+          bytes: s.bytes,
+          durationMs: s.durationMs,
+          error: s.error,
+        },
+      ]),
+    );
+    return c.json({
+      self,
+      // Read from the loaded fleet, not a second literal here: zod already
+      // resolved this to config/machines.yaml's value or its own schema
+      // default (DEFAULT_SYNC_INTERVAL_MIN) when the file omits `sync`.
+      syncIntervalMin: fleet.sync.intervalMin,
+      // Fleet-wide, not per-machine: a divergence is a disagreement BETWEEN
+      // machines about one project's identity, so it belongs to no single
+      // row in the list below.
+      divergences,
+      machines: fleet.machines.map((m) => ({
+        name: m.name,
+        address: m.address,
+        user: m.user,
+        codeRoots: m.codeRoots,
+        claudeProjects: m.claudeProjects,
+        enabled: m.enabled,
+        sync: syncByName.get(m.name) ?? null,
+      })),
+    });
   });
 
   const timelineOpts = (c: { req: { query: (k: string) => string | undefined } }) => ({
@@ -832,6 +1014,31 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
       full: body.full === true,
     });
     return c.json({ enqueued });
+  });
+
+  /**
+   * Immediate sync for one fleet machine (spec §4) — the scheduler already
+   * syncs every enabled non-self machine on its own cadence; this is the
+   * "don't wait for the tick" button. Unknown/disabled machines are rejected
+   * before anything is enqueued rather than left for the worker to skip
+   * silently (scheduler.ts / main.ts's `data.sync` branch).
+   */
+  app.post('/api/admin/sync', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const machine = typeof body.machine === 'string' ? body.machine : '';
+    const { fleet, self } = deps.machines();
+    const m = fleet?.machines.find((x) => x.name === machine);
+    if (!m) return c.json({ error: `unknown machine "${machine}"` }, 404);
+    // Self is a fleet entry like any other, so it passes the lookup above —
+    // but there is nothing to sync: this machine's code and transcripts are
+    // bind-mounted, not mirrored, and the scheduler skips self on its own
+    // cadence. Enqueuing it would run an rsync of a machine against itself.
+    if (m.name === self) {
+      return c.json({ error: `machine "${machine}" is this machine — nothing to sync from itself` }, 400);
+    }
+    if (!m.enabled) return c.json({ error: `machine "${machine}" is disabled` }, 400);
+    await deps.triggerSync(machine);
+    return c.json({ enqueued: true }, 202);
   });
 
   app.get('/api/admin/errors', async (c) =>

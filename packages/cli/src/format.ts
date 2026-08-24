@@ -1,3 +1,5 @@
+import type { ProbeOutcome } from '@atlas/core';
+
 /** Tiny ANSI helpers — no dependency, honors NO_COLOR. */
 
 const on = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -61,4 +63,53 @@ export function duration(totalSeconds: number | null | undefined): string {
 
 export function hr(): string {
   return dim('─'.repeat(Math.min(process.stdout.columns ?? 80, 100)));
+}
+
+/** machine_sync.status values → color. Anything else (or absent) reads as 'never'. */
+const SYNC_STATUS_COLOR: Record<string, (s: string) => string> = {
+  ok: green,
+  running: cyan,
+  unreachable: yellow,
+  error: red,
+};
+
+/** Colored sync-status badge for `atlas machines`; unknown/absent renders dim 'never'. */
+export function syncBadge(status?: string | null): string {
+  const s = status ?? 'never';
+  return (SYNC_STATUS_COLOR[s] ?? dim)(s);
+}
+
+/** One `atlas which` probe result: a configured machine plus its outcome. */
+export interface WhichRow {
+  name: string;
+  address: string;
+  outcome: ProbeOutcome;
+}
+
+/**
+ * Human label for one probe outcome. `token-mismatch` folds together the two
+ * proof-failure reasons (`bad-proof`/`no-proof`) — from the CLI operator's
+ * chair both mean the same thing: wrong token for this machine.
+ */
+export function whichOutcomeLabel(outcome: ProbeOutcome): 'active' | 'conflicted' | 'unreachable' | 'token-mismatch' {
+  if (outcome.ok) return outcome.state;
+  if (outcome.reason === 'bad-proof' || outcome.reason === 'no-proof') return 'token-mismatch';
+  return 'unreachable';
+}
+
+/**
+ * `atlas which`'s probe table, one line per configured machine — a pure
+ * function (rows in, strings out) so it is unit-testable without a live
+ * probe: the command handler wires the real `probeInstance`/`resolveActive`
+ * calls, this only turns their results into text. `winner` is the machine
+ * name `resolveActive` resolved to, if any — marked with a leading arrow.
+ */
+export function formatWhichRows(rows: WhichRow[], winner: string | undefined): string[] {
+  return rows.map((row) => {
+    const marker = row.name === winner ? '→' : ' ';
+    const label = whichOutcomeLabel(row.outcome);
+    const machine = row.outcome.ok ? row.outcome.machine : '—';
+    const entries = row.outcome.ok ? String(row.outcome.entries) : '—';
+    return `${marker} ${row.name.padEnd(20)} ${row.address.padEnd(16)} ${label.padEnd(14)} machine=${machine.padEnd(16)} entries=${entries}`;
+  });
 }

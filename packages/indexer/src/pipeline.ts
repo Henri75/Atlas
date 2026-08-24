@@ -8,6 +8,8 @@ import {
   DOCS_PARSER_VERSION,
   GIT_LOG_FORMAT,
   VectorStore,
+  applyIdentity,
+  assignOccurrenceOrdinals,
   chunk,
   deterministicUuid,
   distillClaudeJsonl,
@@ -31,6 +33,12 @@ export type ProgressFn = (info: { file: string; chunks: number }) => void | Prom
 
 const execFileAsync = promisify(execFile);
 
+// A mirror root is written by rsync, not `git`, so an optional lock file left
+// behind by a git invocation racing the next sync would sit there forever —
+// rsync's --delete only removes what the SOURCE no longer has. Harmless on a
+// self root; every `git` call this indexer makes gets it (spec §4).
+const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+
 export interface PipelineDeps {
   catalog: Catalog;
   vectors: VectorStore;
@@ -47,6 +55,11 @@ export interface ScanJobData {
   claudeDirs?: string[];
   /** Reset scan state and reprocess everything. */
   full?: boolean;
+  /** Which machine this job's data belongs to — the self machine, or a remote's. */
+  machine: string;
+  /** Whether `machine` is this container's own machine (spec §5: only a self
+   * job may write projects.root_path/has_kdb). */
+  isSelf: boolean;
 }
 
 const EMBED_BATCH = 32;
@@ -136,6 +149,11 @@ export async function indexEntries(
             // Archived docs are downranked at query time; absence means active.
             doc_status: (b.entry.meta?.docStatus as string | undefined) ?? undefined,
             occurred_at: b.entry.occurredAt,
+            // Set by `tagMachine` in the same pass as identity, above. Read
+            // off the entry (not `job.machine` directly) so this stays
+            // correct for callers like `backfillVectors` that re-embed
+            // entries loaded from Postgres rather than freshly scanned ones.
+            machine: b.entry.machine,
           },
         })),
       );
@@ -182,6 +200,18 @@ export function readTailLines(path: string, offset: number): { lines: string[]; 
   }
 }
 
+/**
+ * Stamp every entry with the machine this scan job belongs to, in the same
+ * pass as `applyIdentity` (spec §6: "first ingested from"). Every scanner
+ * calls this right after `applyIdentity` so no entry can reach
+ * `insertEntries` without it — `Catalog.insertEntries` writes it into the
+ * `machine` column, and `indexEntries` copies it onto the Qdrant payload from
+ * the same `Entry` object, keeping both search paths in lockstep.
+ */
+function tagMachine(entries: Entry[], machine: string): void {
+  for (const e of entries) e.machine = machine;
+}
+
 async function scanKdb(
   deps: PipelineDeps,
   job: ScanJobData,
@@ -224,6 +254,12 @@ async function scanKdb(
             modifiedAt: new Date(stat.mtimeMs).toISOString(),
           }).map((e) => ({ ...e, sourceType: 'kdb_report' as const }));
       }
+      // Per file, before insert: syncBacklogMeta (below) recomputes dedupKey
+      // from this SAME entries array to UPDATE existing rows BY KEY, so it
+      // must see identity too — mutating in place here covers both callers.
+      applyIdentity(entries, { rootPath: job.rootPath });
+      tagMachine(entries, job.machine);
+      assignOccurrenceOrdinals(entries);
       const inserted = await deps.catalog.insertEntries(projectId, entries);
       if (f.sourceType === 'kdb_backlog') {
         await deps.catalog.syncBacklogMeta(projectId, entries);
@@ -287,6 +323,8 @@ async function scanClaude(
         const { entries, meta } = distillClaudeJsonl(lines, {
           projectSlug: job.projectSlug, sourcePath: path, sessionId,
         });
+        applyIdentity(entries, { claudeDirName: basename(dir) });
+        tagMachine(entries, job.machine);
         const inserted = await deps.catalog.insertEntries(projectId, entries);
         indexed += await indexEntries(deps, inserted, (c) => progress?.({ file: path, chunks: c }));
 
@@ -307,7 +345,7 @@ async function scanClaude(
           actionCount: (offset > 0 ? (prev?.action_count ?? 0) : 0) + meta.actionCount,
           filesTouched: [...new Set([...(prev?.files_touched ?? []), ...meta.filesTouched])].sort(),
         };
-        await deps.catalog.upsertSession(projectId, merged, path);
+        await deps.catalog.upsertSession(projectId, merged, path, job.machine);
         await deps.catalog.setScanState(projectId, 'claude_session', path, {
           mtimeMs: Math.trunc(stat.mtimeMs), size: stat.size, byteOffset: newOffset,
         });
@@ -332,18 +370,36 @@ async function scanGit(
     const r = await execFileAsync(
       'git',
       ['-c', 'safe.directory=*', 'log', range, '--name-status', `--pretty=format:${GIT_LOG_FORMAT}`, '-n', '5000'],
-      { cwd: job.rootPath, maxBuffer: 64 * 1024 * 1024 },
+      { cwd: job.rootPath, maxBuffer: 64 * 1024 * 1024, env: GIT_ENV },
     );
     stdout = r.stdout;
   } catch (e) {
-    // Empty repos / unborn HEAD exit non-zero — not an error worth logging loudly.
     const msg = (e as Error).message;
-    if (!/does not have any commits|unknown revision|bad revision/i.test(msg)) {
+    const benign = /does not have any commits|unknown revision|bad revision|invalid revision/i.test(msg);
+    if (!benign) {
       await deps.catalog.logError(projectId, job.rootPath, 'git-log', msg);
+      return 0;
     }
-    return 0;
+    if (!state?.ref) return 0; // genuinely empty repo — unchanged behaviour
+    // Stored watermark no longer resolves (remote force-push/rebase + gc — spec §4).
+    // Silent-swallow here wedged the repo FOREVER: never logged, never reset.
+    await deps.catalog.logError(projectId, job.rootPath, 'git-log',
+      `watermark ${state.ref} invalid (force-push/gc?); falling back to bounded full log: ${msg}`);
+    try {
+      const r = await execFileAsync(
+        'git',
+        ['-c', 'safe.directory=*', 'log', 'HEAD', '--name-status', `--pretty=format:${GIT_LOG_FORMAT}`, '-n', '5000'],
+        { cwd: job.rootPath, maxBuffer: 64 * 1024 * 1024, env: GIT_ENV },
+      );
+      stdout = r.stdout; // dedup keys absorb the overlap with already-indexed commits
+    } catch (e2) {
+      await deps.catalog.logError(projectId, job.rootPath, 'git-log', (e2 as Error).message);
+      return 0;
+    }
   }
   const entries = parseGitLog(stdout, { projectSlug: job.projectSlug, repoPath: job.rootPath });
+  applyIdentity(entries, { rootPath: job.rootPath });
+  tagMachine(entries, job.machine);
   const inserted = await deps.catalog.insertEntries(projectId, entries);
   const indexed = await indexEntries(deps, inserted, (c) =>
     progress?.({ file: job.rootPath, chunks: c }),
@@ -389,6 +445,8 @@ async function scanDocs(
           modifiedAt: new Date(stat.mtimeMs).toISOString(),
           archived,
         });
+        applyIdentity(entries, { rootPath: job.rootPath });
+        tagMachine(entries, job.machine);
         const inserted = await deps.catalog.insertEntries(projectId, entries);
         indexed += await indexEntries(deps, inserted, (c) => progress?.({ file: path, chunks: c }));
         await deps.catalog.setScanState(projectId, 'doc', path, {
@@ -801,12 +859,15 @@ export async function processScanJob(
   job: ScanJobData,
   progress?: ProgressFn,
 ): Promise<{ chunksIndexed: number }> {
-  const projectId = await deps.catalog.upsertProject({
-    slug: job.projectSlug,
-    name: job.projectName,
-    rootPath: job.rootPath,
-    hasKdb: job.hasKdb,
-  });
+  const projectId = await deps.catalog.upsertProject(
+    {
+      slug: job.projectSlug,
+      name: job.projectName,
+      rootPath: job.rootPath,
+      hasKdb: job.hasKdb,
+    },
+    { isSelf: job.isSelf },
+  );
   let chunksIndexed = 0;
   switch (job.sourceType) {
     case 'kdb': chunksIndexed = await scanKdb(deps, job, projectId, progress); break;

@@ -237,6 +237,15 @@ describe('VectorStore search params', () => {
     expect(unused).toEqual([]);
     // The specific regression: it must not come back.
     expect(indexed).not.toContain('session_id');
+
+    // 'machine' is the opposite shape from session_id: filtered but
+    // DELIBERATELY not indexed. It is two-valued today (self vs one remote)
+    // and low-selectivity — exactly the per-segment null-index padding cost
+    // the 2026-08-14 payload-index work (max_segment_size KB-vs-vectors, see
+    // OPTIMIZERS above) paid down. `indexed ⊆ filtered` still holds; this is
+    // the other direction, which the guard test never enforces.
+    expect(filtered.has('machine')).toBe(true);
+    expect(indexed).not.toContain('machine');
   });
 
   it('reaps a live index that is no longer wanted, and keeps the ones that are', async () => {

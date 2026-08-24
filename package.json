@@ -10,11 +10,12 @@
     "packages/api",
     "packages/mcp",
     "packages/cli",
+    "packages/atlas-connect",
     "packages/eval",
     "packages/ui"
   ],
   "scripts": {
-    "build": "npm run build -w packages/core && npm run build -w packages/indexer -w packages/api -w packages/mcp -w packages/cli -w packages/eval",
+    "build": "npm run build -w packages/core && npm run build -w packages/indexer -w packages/api -w packages/mcp -w packages/cli -w packages/atlas-connect -w packages/eval",
     "build:ui": "npm run build -w packages/ui",
     "test": "vitest run",
     "test:watch": "vitest",

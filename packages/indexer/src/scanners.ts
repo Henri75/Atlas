@@ -13,6 +13,8 @@ const IGNORED_DIRS = new Set([
   'target', 'vendor', '__pycache__', '.next', '.turbo', 'data',
 ]);
 
+export const SCANNER_IGNORED_DIRS = [...IGNORED_DIRS] as readonly string[];
+
 function safeReaddir(dir: string): string[] {
   try {
     return readdirSync(dir);
@@ -33,6 +35,12 @@ function isDir(p: string): boolean {
 export interface CodeRoot {
   container: string;
   host?: string;
+  /** The fleet machine this root belongs to. Absent = self/legacy. */
+  machine?: string;
+  /** dir-basename -> slug, for a top-level dir whose default slug collides
+   * with an unrelated project elsewhere in the fleet (spec §5). Applies to
+   * top-level dirs only; nested projects always use the plain slug. */
+  slugOverrides?: Record<string, string>;
 }
 
 /**
@@ -46,16 +54,27 @@ export interface CodeRoot {
  */
 export function discoverProjects(codeRoots: CodeRoot[]): DiscoveredProject[] {
   const projects: DiscoveredProject[] = [];
-  const seen = new Set<string>();
+  // Keyed on (slug, machine): the same slug on two DIFFERENT machines is the
+  // same project discovered twice (both kept — the scheduler upserts one
+  // projects row + two locations); the same slug twice on ONE machine is a
+  // genuine collision (first wins, warns).
+  const seen = new Map<string, DiscoveredProject>();
 
   const add = (p: DiscoveredProject) => {
-    // Two roots could expose the same project name; keep the first.
-    if (seen.has(p.slug)) return;
-    seen.add(p.slug);
+    const key = `${p.slug} ${p.machine ?? ''}`;
+    const existing = seen.get(key);
+    if (existing) {
+      console.warn(
+        `discoverProjects: slug "${p.slug}"${p.machine ? ` on machine "${p.machine}"` : ''} ` +
+        `found at both ${existing.rootPath} and ${p.rootPath} — keeping the first, dropping the second`,
+      );
+      return;
+    }
+    seen.set(key, p);
     projects.push(p);
   };
 
-  for (const { container, host } of codeRoots) {
+  for (const { container, host, machine, slugOverrides } of codeRoots) {
     const toHost = (p: string) => (host ? join(host, p.slice(container.length + 1)) : undefined);
 
     for (const name of safeReaddir(container)) {
@@ -65,9 +84,17 @@ export function discoverProjects(codeRoots: CodeRoot[]): DiscoveredProject[] {
       const hasKdb = isDir(join(root, 'kdb'));
       const hasGit = isDir(join(root, '.git'));
       if (hasKdb || hasGit) {
-        add({ slug: slugify(name), name, rootPath: root, hostPath: toHost(root), hasKdb });
+        add({
+          slug: slugOverrides?.[name] ?? slugify(name),
+          name,
+          rootPath: root,
+          hostPath: toHost(root),
+          hasKdb,
+          machine,
+        });
       }
       // Nested projects one level down (e.g. DeepCast/Lycos, Fun/populous).
+      // slugOverrides apply to top-level dirs only.
       for (const sub of safeReaddir(root)) {
         if (sub.startsWith('.') || IGNORED_DIRS.has(sub)) continue;
         const subRoot = join(root, sub);
@@ -78,6 +105,7 @@ export function discoverProjects(codeRoots: CodeRoot[]): DiscoveredProject[] {
           rootPath: subRoot,
           hostPath: toHost(subRoot),
           hasKdb: true,
+          machine,
         });
       }
     }

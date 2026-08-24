@@ -40,6 +40,12 @@ export interface VectorPoint {
     /** 'archived' for docs under archive-style paths; absent means active. */
     doc_status?: string;
     occurred_at?: string;
+    /**
+     * Which machine this entry was first ingested from (spec §6). Absent on
+     * points written before this field existed — a `machine` filter misses
+     * those until the Task 17 backfill runs.
+     */
+    machine?: string;
   };
 }
 
@@ -253,7 +259,8 @@ const PAYLOAD_INDEXES: [string, 'keyword' | 'integer' | 'datetime'][] = [
   ['component', 'keyword'],
   ['kind', 'keyword'],
   ['doc_status', 'keyword'],
-  // Integer index so setDocStatus can address points by entry id.
+  // Integer index so setDocStatus and deleteByEntryIds can address points by
+  // entry id.
   ['entry_id', 'integer'],
   // Range filtering on occurred_at works without this — Qdrant falls back to
   // a full scan — but at a measured 3.11s vs 0.087s (36x) it was far too slow
@@ -288,6 +295,13 @@ export function buildQdrantFilter(
   else if (types.length > 1) must.push({ key: 'source_type', match: { any: types } });
   if (filters.component) must.push({ key: 'component', match: { value: filters.component } });
   if (filters.kind) must.push({ key: 'kind', match: { value: filters.kind } });
+  // 'machine' is filtered but deliberately NOT in PAYLOAD_INDEXES: it is
+  // two-valued today (self vs one remote) and low-selectivity — exactly the
+  // per-segment null-index padding cost the 2026-08-14 payload-index work
+  // (max_segment_size KB-vs-vectors, see OPTIMIZERS above) paid down. An
+  // unindexed filter here is a legitimate choice (Qdrant just full-scans),
+  // the same call PAYLOAD_INDEXES' own docs already permit.
+  if (filters.machine) must.push({ key: 'machine', match: { value: filters.machine } });
   // 'active' is expressed as NOT archived: most points carry no doc_status at
   // all, and a positive match would silently exclude every one of them.
   if (filters.docStatus === 'archived') {
@@ -642,11 +656,45 @@ export class VectorStore {
   }
 
   /**
-   * Remove every chunk of the given entries. Used when a row is merged away
-   * as a duplicate; deleting by payload filter means the caller need not
-   * re-derive point ids from the row's stored path and chunking.
+   * Merge arbitrary payload keys onto every chunk of the given entries, in
+   * place — no re-embedding. The `entry_id`-filter mechanism generalized out
+   * of `setDocStatus` for callers whose payload shape isn't `doc_status`; the
+   * Task 17 machine-payload backfill is the first of those.
+   *
+   * `wait: false`, like `setDocStatus`: this walks the whole catalog as a
+   * background reconciliation pass with nothing downstream blocking on any
+   * one write landing before the call returns — unlike `deleteByEntryIds`,
+   * whose caller (dedup migration) needs the delete durable before it
+   * proceeds. Acceptance is enough here.
+   */
+  async setPayloadByEntryIds(entryIds: number[], payload: Record<string, unknown>): Promise<void> {
+    if (!entryIds.length) return;
+    for (let i = 0; i < entryIds.length; i += 500) {
+      const filter = { must: [{ key: 'entry_id', match: { any: entryIds.slice(i, i + 500) } }] };
+      await withRetry(() =>
+        this.client.setPayload(this.collection, { payload, filter, wait: false }),
+      );
+    }
+  }
+
+  /**
+   * Delete every point belonging to these entries.
+   *
+   * By payload filter rather than by point id: an entry becomes an unknown
+   * number of chunk points, and reconstructing their ids means knowing how
+   * many chunks it produced — which is exactly the knowledge a caller
+   * discarding the entry no longer has. `entry_id` is a payload-indexed field
+   * (PAYLOAD_INDEXES), so the filter is cheap.
+   *
+   * `wait: true`, unlike the ingest paths. The only caller is the v3 dedup
+   * migration, which deletes a collision loser's points BEFORE its Postgres
+   * row (spec §6.4) — the whole safety argument rests on the points being gone
+   * by the time this returns, so it must not return on mere acceptance. The
+   * path is rare (collisions are essentially none), so the synchronous flush
+   * costs nothing measurable.
    */
   async deleteByEntryIds(entryIds: number[]): Promise<void> {
+    if (!entryIds.length) return;
     for (let i = 0; i < entryIds.length; i += 500) {
       const filter = { must: [{ key: 'entry_id', match: { any: entryIds.slice(i, i + 500) } }] };
       await withRetry(() => this.client.delete(this.collection, { filter, wait: true }));

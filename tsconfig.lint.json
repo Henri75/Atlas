@@ -16,6 +16,7 @@
     "packages/api/src/**/*.ts",
     "packages/mcp/src/**/*.ts",
     "packages/cli/src/**/*.ts",
+    "packages/atlas-connect/src/**/*.ts",
     "packages/eval/src/**/*.ts",
     "test/**/*.ts"
   ]

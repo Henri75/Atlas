@@ -4,6 +4,8 @@ import type {
   CachedAdoption,
   ComponentRow,
   Dashboard,
+  FullEntry,
+  MachinesResponse,
   ProjectRow,
   SearchResult,
   SessionRow,
@@ -25,8 +27,30 @@ import type {
  */
 const CLIENT_HEADERS = { 'x-atlas-client': 'ui' };
 
+/**
+ * The token from TokenGate, if this instance requires one (spec §7). Read
+ * fresh on every call rather than cached in a module variable: TokenGate
+ * writes it and reloads, so a stale in-memory copy is never actually
+ * observable, but re-reading also means no import-order dependency on when
+ * TokenGate ran.
+ */
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem('atlasToken');
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
+/**
+ * A 401 means the stored token is missing or wrong. Every call site funnels
+ * through here so one 401, anywhere, reliably pops the prompt — App.tsx
+ * listens for this event and renders TokenGate.
+ */
+function flagIfUnauthorized(res: Response): void {
+  if (res.status === 401) window.dispatchEvent(new CustomEvent('atlas:unauthorized'));
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path, { headers: CLIENT_HEADERS });
+  const res = await fetch(path, { headers: { ...CLIENT_HEADERS, ...authHeaders() } });
+  flagIfUnauthorized(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json() as Promise<T>;
 }
@@ -34,9 +58,10 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS },
+    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS, ...authHeaders() },
     body: JSON.stringify(body),
   });
+  flagIfUnauthorized(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json() as Promise<T>;
 }
@@ -68,10 +93,11 @@ export async function* askStream(
 ): AsyncGenerator<AskEvent, void, unknown> {
   const res = await fetch('/api/ask/stream', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS },
+    headers: { 'content-type': 'application/json', ...CLIENT_HEADERS, ...authHeaders() },
     body: JSON.stringify(body),
     signal,
   });
+  flagIfUnauthorized(res);
   if (!res.ok || !res.body) throw new Error(`${res.status}: ${await res.text()}`);
 
   const reader = res.body.getReader();
@@ -122,8 +148,21 @@ export const api = {
     get<{ entries: any[] }>(`/api/projects/${slug}/components/${encodeURIComponent(name)}`),
   sessions: (slug: string) => get<{ sessions: SessionRow[] }>(`/api/projects/${slug}/sessions`),
   session: (id: string) => get<{ session: SessionRow; entries: any[] }>(`/api/sessions/${id}`),
+  /**
+   * The full record behind a search snippet. EntryDrawer used to fetch this
+   * itself with a bare `fetch` — no auth header, no `atlas:unauthorized` on a
+   * 401 — which meant a LAN-gated instance showed a raw "401" in the drawer
+   * instead of ever raising TokenGate.
+   */
+  entry: (id: number) => get<FullEntry>(`/api/entries/${id}`),
   stats: () => get<Stats>('/api/stats'),
   dashboard: () => get<Dashboard>('/api/dashboard'),
+  /**
+   * The committed machine fleet joined with live sync health. Legacy mode
+   * (no config/machines.yaml) answers `{ self: 'local', machines: [] }`
+   * rather than 404ing — callers branch on the array length, not on a status.
+   */
+  machines: () => get<MachinesResponse>('/api/machines'),
   reindex: (body: Record<string, unknown> = {}) =>
     post<{ enqueued: number }>('/api/admin/reindex', body),
 

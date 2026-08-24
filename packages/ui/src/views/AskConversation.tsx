@@ -60,6 +60,8 @@ export function useAskConversation(
   projects: string[],
   onOpenEntry: (id: number) => void,
   sources: SourceType[] = [],
+  /** First-ingested-from filter (spec §6); '' means unconstrained. */
+  machine = '',
 ) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const abortRef = useRef<AbortController | null>(null);
@@ -73,6 +75,8 @@ export function useAskConversation(
   sourcesRef.current = sources;
   const projectsRef = useRef(projects);
   projectsRef.current = projects;
+  const machineRef = useRef(machine);
+  machineRef.current = machine;
   // Mirrors `turns` so send/retry can read the current conversation without
   // doing side effects inside a state updater (which StrictMode runs twice).
   const turnsRef = useRef<Turn[]>([]);
@@ -111,6 +115,7 @@ export function useAskConversation(
             // the API applies no project constraint at all.
             project: projectsRef.current.length ? projectsRef.current : undefined,
             source: sourcesRef.current.length ? sourcesRef.current : undefined,
+            machine: machineRef.current || undefined,
             history: history.map((t) => ({ role: t.role, content: t.content })),
           },
           controller.signal,

@@ -165,4 +165,28 @@ describe('App shell', () => {
     render(<App />);
     await waitFor(() => expect(screen.getAllByRole('alert')[0]!.textContent).toMatch(/Cannot reach the API/));
   });
+
+  /**
+   * spec §7 end-to-end: a 401 from ANY api.ts call dispatches
+   * `atlas:unauthorized` (api.ts), App listens for it and swaps the whole
+   * shell for TokenGate — pinning the dispatch → listener → render path
+   * rather than any one link in it.
+   */
+  it('renders TokenGate — not the offline banner — when an API call 401s', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 401,
+        json: async () => ({ error: 'unauthorized' }),
+        text: async () => 'unauthorized',
+      })),
+    );
+    render(<App />);
+    await waitFor(() => expect(screen.getByLabelText('Bearer token')).toBeTruthy());
+    expect(screen.getByText('Save & reload')).toBeTruthy();
+    // needsToken wins outright: the rest of the shell (and its own offline
+    // handling for this same failed call) never renders underneath it.
+    expect(screen.queryByText(/Cannot reach the API/)).toBeNull();
+  });
 });

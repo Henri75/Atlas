@@ -190,6 +190,24 @@ export function ProjectTag({ slug }: { slug?: string }) {
 }
 
 /**
+ * Which machine a record was first ingested from. The caller gates this on
+ * fleet size (`multiMachine`), not just on `machine` being set, so a
+ * single-machine install renders exactly as it did before the fleet feature
+ * existed even once entries start carrying real provenance.
+ */
+export function MachineBadge({ machine }: { machine?: string }) {
+  if (!machine) return null;
+  return (
+    <span
+      className="font-mono text-[9.5px] text-muted bg-panel-2 border border-line rounded-sm px-1.5 py-px whitespace-nowrap"
+      title="First ingested from"
+    >
+      ⌂ {machine}
+    </span>
+  );
+}
+
+/**
  * Copy `text` to the clipboard, flashing a check for confirmation. Kept tiny
  * and unstyled-by-default (className passthrough) so it drops into a reply
  * header or a source row alike.
