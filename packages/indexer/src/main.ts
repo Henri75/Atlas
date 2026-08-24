@@ -28,6 +28,7 @@ import {
   type PipelineDeps,
   type ScanJobData,
 } from './pipeline.js';
+import { rekeyTranscripts } from './rekeyTranscripts.js';
 import { SCAN_QUEUE, scheduleScans, withSchedulerLock } from './scheduler.js';
 
 /**
@@ -132,6 +133,17 @@ async function main() {
   await vectors.ensure(embedder.dim);
   await catalog.setSetting('active_embedder', `${embedder.name}/${embedder.model}/${embedder.dim}`);
   console.log(`[indexer] qdrant collection ready: ${vectors.collection}`);
+
+  // Transcript identity is host-independent (see transcriptIdentityPath); rows
+  // written under an older rule are moved onto the current key here, in place,
+  // before any scan can insert a duplicate beside them. Its own marker, its own
+  // lock — not id_scheme, which would truncate and re-embed everything.
+  await rekeyTranscripts({
+    catalog,
+    vectors,
+    claudeProjectsDir: cfg.claudeProjectsDir,
+    log: (m) => console.log(`[indexer] ${m}`),
+  });
 
   const deps: PipelineDeps = { catalog, vectors, embedder };
   const connection = new Redis(cfg.redisUrl, { maxRetriesPerRequest: null });

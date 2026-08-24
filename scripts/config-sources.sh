@@ -23,6 +23,9 @@ check() { # check <description> <expected> <actual>
 # The Makefile owns the flags; ask it rather than restating them, or this tests a
 # command line nothing actually runs.
 COMPOSE_CMD=$(make -s print-compose)
+# The env file derives CODE_ROOT_HOST from this; make exports it to its own
+# recipes, but we run compose directly, so export it here too.
+export ATLAS_REPO_PARENT="$(make -s print-repo-parent)"
 echo "compose invocation under test: $COMPOSE_CMD"
 
 cfg() { $COMPOSE_CMD config "$@" 2>&1; }

@@ -14,5 +14,11 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
     environment: 'node',
+    // Node >= 25 ships a `localStorage` global that is a getter returning
+    // undefined unless --localstorage-file is given. Vitest's jsdom environment
+    // refuses to overwrite an existing global, so every `@vitest-environment
+    // jsdom` test saw `localStorage.getItem` on undefined (43 UI tests, Node
+    // 26.7, 2026-08-24). Disabling Node's copy lets jsdom's win.
+    execArgv: ['--no-experimental-webstorage'],
   },
 });

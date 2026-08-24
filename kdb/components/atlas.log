@@ -1579,3 +1579,35 @@
 
 **Status:**
 - Completed
+---
+### [2026-08-24] - Host portability: derived roots + host-independent transcript identity
+
+**Objective:**
+- Make Atlas work unchanged from any host, user or checkout path, and make the nasta -> serge / __CODING NEW -> _CODING migration keep one identity per project and per transcript.
+
+**Summary of Work:**
+- Config: `config/atlas.defaults.env` no longer states any absolute path. `CODE_ROOT_HOST=${ATLAS_REPO_PARENT:?...}` (the Makefile exports `abspath $(CURDIR)/..` — Atlas indexes the tree it lives in) and `CLAUDE_PROJECTS_HOST=${HOME:?}/.claude/projects`; compose interpolates `${...}` inside env files, so the derivation reaches both the bind mounts and the container environment. `docker-compose.yml` fallbacks became `:?` so a bare `docker compose` fails loud instead of mounting a guessed machine's path. `scripts/config-sources.sh` exports the derived value via a new `print-repo-parent` accessor. Guard test (`test/core/configDefaults.test.ts`) fails on any `/Users|/home|/Volumes` in an active value or compose line, and asserts the two roots are interpolations; mutation-verified. The `.env` written earlier today was deleted: the stack now starts with none.
+- Identity review (delegated agent, read-only, evidence in the session log): project identity is the slug from the directory basename with `root_path=/data/code/<Name>` — same on both hosts, verified in the projects table; `refreshProjectAliases` linked 8 old-path ghost slugs (`users-nasta-coding-new-deepcast` ...) as older locations; `matchClaudeDirToProject` maps both `-Users-nasta---CODING-NEW-AskAll` and `-Users-serge--CODING-AskAll` to `askall`. The one broken piece: `Catalog.dedupKey` hashed the full container path of a transcript, and the migration RENAMED every transcript directory (the old names are gone from disk), so the new-name scans were inserting every old entry again (10,068 duplicate groups when stopped; 347k pending) and re-embedding each through Ollama.
+- Fix: `transcriptIdentityPath()` + `TRANSCRIPT_KEY_SCOPE='claude'` / `TRANSCRIPT_KEY_SCHEME='v3'` in `core/ids.ts`; `Catalog.dedupKey` uses (claude, path inside the encoded dir, ref, title, contentHash) for `claude_session`, unchanged (slug, container path, ...) for project-file sources. `packages/indexer/src/rekeyTranscripts.ts` runs at boot before any scan under advisory lock 732016 (never 732015 — the API takes that one): streams transcript rows in id order, recomputes keys, merges collisions into the lowest id, deletes the losers' Qdrant points (new `VectorStore.deleteByEntryIds`, filter on `entry_id`) BEFORE their rows (one transaction: `Catalog.applyRekey`), stamps `settings.transcript_key_scheme`. Resumable; no vector moves (point ids hash the stored path under the frozen v2 namespace).
+- Live run on the real catalog: 358,059 rows moved, 10,068 duplicates merged in ~4 min; afterwards 0 duplicate (session_id,title,body) groups, deleted ids have 0 points, kept old-era ids still have theirs. Key map `(id, dedup_key, source_path)` dumped to the session scratchpad before the run.
+- Environment: Node 26 exposes a `localStorage` global (getter returning undefined without --localstorage-file) that vitest's jsdom environment will not overwrite, so all 43 `@vitest-environment jsdom` UI tests failed on this machine. `execArgv: ['--no-experimental-webstorage']` in vitest.config.ts.
+
+**Key Decisions & Rationale:**
+- Derive the roots rather than document "edit these two lines": the user's rule is that nothing committed may depend on a host, and the Makefile is the single entry point anyway. `.env` keeps working as the per-machine override (compose: later env-file wins, shell wins over both).
+- Transcript scope is the literal `claude`, not the project slug: attribution is derived from the directory name and differs per machine for byte-identical files (spec §6 argument). The path component is the path INSIDE the encoded directory, not `<dirName>/<fileName>` as the multi-machine spec proposes — this migration proved dirName is precisely what a host move renames. Logged in backlog for the feature/multi-machine owner.
+- Own marker + in-place re-key instead of bumping ID_SCHEME: ID_SCHEME is hashed into every point id; bumping it truncates and re-embeds 485k entries (days of Ollama). The migration touches keys and losers only.
+- Lowest id wins a merge: deterministic across resumed runs, and the old-era row is the one whose vectors have been in Qdrant longest. Its `source_path` stays the vanished old name (rewriting it would move point ids and make the coverage audit re-embed everything) — deep links for those rows are stale; backlog item.
+
+**Code/Files Modified:**
+- Makefile, config/atlas.defaults.env, docker-compose.yml, scripts/config-sources.sh
+- packages/core/src/ids.ts, packages/core/src/catalog.ts, packages/core/src/qdrant.ts
+- packages/indexer/src/rekeyTranscripts.ts (new), packages/indexer/src/main.ts
+- test/core/configDefaults.test.ts, test/core/dedupKey.test.ts, test/indexer/rekeyTranscripts.test.ts (new), vitest.config.ts
+- README.md, docs/configuration.md, docs/getting-started.md, docs/architecture.md
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** compose env-file interpolation (`${VAR:?msg}` inside `--env-file` values) resolves from the Makefile export with no generator or copy step; `make config-check` 12/12; 1010/1010 tests; the re-key on 368k rows completed with the exact duplicate count predicted by the read-only review.
+- **What Failed:** first verification of the resolved compose config ran `docker compose` outside make and printed nothing — the `:?` guard had fired exactly as designed, and the grep swallowed it. Verify through the Makefile (or export the variable) and grep for the error text too.
+
+**Status:**
+- Completed

@@ -642,6 +642,18 @@ export class VectorStore {
   }
 
   /**
+   * Remove every chunk of the given entries. Used when a row is merged away
+   * as a duplicate; deleting by payload filter means the caller need not
+   * re-derive point ids from the row's stored path and chunking.
+   */
+  async deleteByEntryIds(entryIds: number[]): Promise<void> {
+    for (let i = 0; i < entryIds.length; i += 500) {
+      const filter = { must: [{ key: 'entry_id', match: { any: entryIds.slice(i, i + 500) } }] };
+      await withRetry(() => this.client.delete(this.collection, { filter, wait: true }));
+    }
+  }
+
+  /**
    * Points vs vectors: each point carries two named vectors (dense + sparse),
    * so `indexed_vectors_count` runs at roughly twice the point count. Both are
    * shown, because one of them is always the number someone expected.

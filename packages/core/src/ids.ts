@@ -46,3 +46,31 @@ export function deterministicUuid(...parts: string[]): string {
 export function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
+
+/**
+ * Where a Claude transcript lives encodes the machine that recorded it:
+ * `<claudeProjectsDir>/<encoded cwd>/<session>.jsonl`, and the encoded cwd is
+ * the host path (`-Users-nasta---CODING-NEW-DeepCast`). Move the tree, rename
+ * the user, migrate to another Mac — every directory is renamed, and a key that
+ * hashed the directory re-indexed the entire corpus as new (2026-08-24: 347k
+ * rows headed for duplication, each re-embedded through Ollama). A transcript's
+ * identity is therefore the path *inside* its encoded directory: the session
+ * UUID in the file name is globally unique, so the directory adds nothing but
+ * the machine. Transcripts are scoped by the literal `claude` rather than the
+ * project slug for the same reason — attribution is derived from the directory
+ * name and differs per machine for byte-identical files.
+ *
+ * Bump TRANSCRIPT_KEY_SCHEME when this rule changes: the indexer re-keys the
+ * stored rows in place at boot (no truncate, no re-embed) — never bump
+ * ID_SCHEME for it, that would move every vector.
+ */
+export const TRANSCRIPT_KEY_SCOPE = 'claude';
+export const TRANSCRIPT_KEY_SCHEME = 'v3';
+
+export function transcriptIdentityPath(sourcePath: string, claudeProjectsDir: string): string {
+  const root = claudeProjectsDir.replace(/\/+$/, '') + '/';
+  if (!sourcePath.startsWith(root)) return sourcePath;
+  const rest = sourcePath.slice(root.length);
+  const slash = rest.indexOf('/');
+  return slash === -1 ? rest : rest.slice(slash + 1);
+}

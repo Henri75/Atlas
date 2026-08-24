@@ -293,3 +293,14 @@
 
 **Notable:** the Assessor container had been running for 13 hours the whole time; only the client-side registration was missing. The MCP tools will only appear in sessions started after the registration, so this session cannot use them itself.
 ---
+---
+### [2026-08-24 15:08 UTC]
+
+**User Prompt Summary:**
+> Follow-up to the M4 Max MCP fix: (1) do not hardcode any path — Atlas must work from any host/path/server; (2) remove the stale kbd-mcp entry in ~/.claude/.mcp.json; (3) review Atlas code and configuration to ensure it works fully from this host and OrbStack, including project discovery and indexing, and that the host/path change does not break projects (DeepCast moved; old and new paths must be the same project).
+
+**AI Response Summary:**
+> Replaced the committed absolute paths with derived values (repo parent dir exported by the Makefile, HOME for transcripts), made compose fail loud without them, added a guard test that rejects any machine path in committed config, deleted the per-machine .env and the stale ~/.claude/.mcp.json. A delegated read-only review confirmed project identity and transcript-to-project mapping survive the rename, and found one live defect: transcript dedup keys hashed the renamed directory names, so every old transcript was being re-indexed and re-embedded as new (10,068 duplicates already). Stopped the indexer, shipped a host-independent transcript key plus an in-place, resumable boot re-key under its own advisory lock (no truncate, no re-embed, points deleted before rows), and ran it live: 358,059 rows moved, 10,068 duplicates merged, 0 duplicate groups afterwards. Also fixed 43 UI tests broken by Node 26's localStorage global. 1010/1010 tests, lint clean, config-check 12/12.
+
+**Notable:** the migration renamed the transcript directories rather than copying them, so the old names exist only in the database; their rows keep stale source_paths on purpose (rewriting would move Qdrant point ids). Four backlog items logged, including that the multi-machine spec's transcript key still includes the directory name this incident proved unstable.
+---

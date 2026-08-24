@@ -37,15 +37,16 @@ works fully; Ask returns its sources and tells you the LLM is unreachable.
 ## 2. Start it
 
 ```bash
-cd "/Users/nasta/__CODING NEW/kdb"
-make up       # builds images, starts 7 containers
+cd <your projects root>/kdb
+make start    # builds images, starts 7 containers
 ```
 
 Configuration is already committed in `config/atlas.defaults.env`; there is
-nothing to copy. Check the two host paths at the top of it if your projects do
-not live under `/Users/nasta/__CODING NEW`. To change a value on just this
-machine, put that one line in a `.env` — it overrides the committed file and is
-gitignored.
+nothing to copy and no path to edit. Atlas indexes the tree it lives in — the
+repo's parent directory — plus `~/.claude/projects`; both are derived when the
+stack starts, so the same checkout works on any host, user or path. To index a
+different tree on just this machine, put `CODE_ROOT_HOST=/that/tree` in a
+`.env` — it overrides the committed file and is gitignored.
 
 That's it. Three surfaces are now live:
 
@@ -223,12 +224,13 @@ curl -X DELETE "http://127.0.0.1:6363/collections/<stale-collection-name>"
 
 ## 5. Indexing more than one project folder
 
-By default Atlas indexes one tree: whatever `CODE_ROOT_HOST` points at
-(`__CODING NEW`). You can add up to **four more**. Uncomment a slot in `.env`:
+By default Atlas indexes one tree: whatever `CODE_ROOT_HOST` points at (the
+repo's parent directory unless overridden). You can add up to **four more**.
+Uncomment a slot in `.env`:
 
 ```bash
-CODE_ROOT_HOST=/Users/nasta/__CODING NEW      # slot 1 (always used)
-CODE_ROOT_HOST_2=/Users/nasta/Documents/CODING
+CODE_ROOT_HOST=$HOME/Projects                 # slot 1 (always used)
+CODE_ROOT_HOST_2=$HOME/Documents/CODING
 CODE_ROOT_HOST_3=/Volumes/CloudBox/Projects
 ```
 
@@ -276,7 +278,7 @@ Edit `.env`, then `docker compose up -d` to apply.
 | `EMBEDDINGS_MODEL` | `nomic-embed-text` | Any Ollama embedding model. Changing it triggers a rebuild. |
 | `LLM_PROVIDER` / `LLM_BASE_URL` | `g2p` / `:8181/v1` | Point Ask at any OpenAI-compatible endpoint. Set `LLM_API_KEY` if it needs one. |
 | `LLM_MODEL` | `gemini-2.5-flash` | The model that writes Ask answers. |
-| `CODE_ROOT_HOST` | `__CODING NEW` | The main projects tree to index. Also used for editor deep links and to attach Claude sessions to projects. |
+| `CODE_ROOT_HOST` | repo parent dir (derived) | The main projects tree to index. Also used for editor deep links and to attach Claude sessions to projects. |
 | `CODE_ROOT_HOST_2` … `_5` | unset | Extra project trees. See [section 5](#5-indexing-more-than-one-project-folder). |
 | `CLAUDE_PROJECTS_HOST` | `~/.claude/projects` | Where Claude Code stores transcripts. |
 | `UI_PORT` / `API_PORT` / `MCP_PORT` | 8712 / 8710 / 8711 | Only if something else owns the port. |

@@ -11,7 +11,13 @@ import {
   type SourceType,
   type TimelineItem,
 } from './types.js';
-import { contentHash, deterministicUuid } from './ids.js';
+import {
+  contentHash,
+  deterministicUuid,
+  TRANSCRIPT_KEY_SCOPE,
+  transcriptIdentityPath,
+} from './ids.js';
+import { getConfig } from './config.js';
 import { resolveProjectAlias } from './discovery.js';
 import { tokenize } from './sparse.js';
 import {
@@ -294,6 +300,16 @@ function rowToEntry(row: any): Entry & { id: number } {
     // Without meta a collection rebuild would drop kind/doc_status payloads.
     meta: row.meta ?? undefined,
   };
+}
+
+/** The stored columns a transcript key is derived from. */
+export interface TranscriptKeyRow {
+  id: number;
+  sourcePath: string;
+  sourceRef: string | null;
+  title: string;
+  body: string;
+  dedupKey: string;
 }
 
 export class Catalog {
@@ -991,7 +1007,22 @@ export class Catalog {
     );
   }
 
-  static dedupKey(e: Entry): string {
+  /**
+   * Identity of an entry. Project-file sources (kdb logs, docs, commits) hash
+   * the project and the container path, which is the same on every host
+   * (`/data/code/<Project>/...`). Claude transcripts hash only what survives a
+   * host or path change — see `transcriptIdentityPath`.
+   */
+  static dedupKey(e: Entry, claudeProjectsDir: string = getConfig().claudeProjectsDir): string {
+    if (e.sourceType === 'claude_session') {
+      return deterministicUuid(
+        TRANSCRIPT_KEY_SCOPE,
+        transcriptIdentityPath(e.sourcePath, claudeProjectsDir),
+        e.sourceRef ?? '',
+        e.title,
+        contentHash(e.body),
+      );
+    }
     return deterministicUuid(
       e.projectSlug,
       e.sourcePath,
@@ -999,6 +1030,82 @@ export class Catalog {
       e.title,
       contentHash(e.body),
     );
+  }
+
+  /**
+   * Run `fn` while holding a session-level advisory lock on a dedicated
+   * connection. `migrate()` uses 732015 for schema DDL and the API takes the
+   * same one at boot — a long-running data migration must use its own key or
+   * it wedges every service restart behind it.
+   */
+  async withAdvisoryLock<T>(key: number, fn: () => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('SELECT pg_advisory_lock($1)', [key]);
+      try {
+        return await fn();
+      } finally {
+        await client.query('SELECT pg_advisory_unlock($1)', [key]).catch(() => {});
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Transcript rows in id order, for streaming a re-key; bodies included because the key hashes them. */
+  async transcriptRowsAfter(afterId: number, limit: number): Promise<TranscriptKeyRow[]> {
+    const r = await this.pool.query(
+      `SELECT id, source_path, source_ref, title, body, dedup_key
+       FROM entries WHERE source_type='claude_session' AND id > $1 ORDER BY id LIMIT $2`,
+      [afterId, limit],
+    );
+    return r.rows.map((row) => ({
+      id: Number(row.id),
+      sourcePath: row.source_path,
+      sourceRef: row.source_ref,
+      title: row.title,
+      body: row.body,
+      dedupKey: row.dedup_key,
+    }));
+  }
+
+  /** Which of these keys are already taken, and by which entry. */
+  async entryIdsByKeys(keys: string[]): Promise<Map<string, number>> {
+    if (!keys.length) return new Map();
+    const r = await this.pool.query('SELECT id, dedup_key FROM entries WHERE dedup_key = ANY($1)', [
+      keys,
+    ]);
+    return new Map(r.rows.map((row) => [row.dedup_key as string, Number(row.id)]));
+  }
+
+  /**
+   * One transaction: drop the losers, then move the winners onto their new
+   * keys — in that order, because a loser may still hold the key a winner is
+   * about to take and `dedup_key` is UNIQUE. Callers delete the losers' vector
+   * points BEFORE this; a crash in between leaves rows a resumed run
+   * re-processes, whereas the reverse order leaves orphaned points nothing
+   * reclaims.
+   */
+  async applyRekey(plan: { drop: number[]; updates: { id: number; key: string }[] }): Promise<void> {
+    if (!plan.drop.length && !plan.updates.length) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      if (plan.drop.length) await client.query('DELETE FROM entries WHERE id = ANY($1)', [plan.drop]);
+      if (plan.updates.length) {
+        await client.query(
+          `UPDATE entries e SET dedup_key = u.key
+           FROM unnest($1::bigint[], $2::text[]) AS u(id, key) WHERE e.id = u.id`,
+          [plan.updates.map((u) => u.id), plan.updates.map((u) => u.key)],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 
   /**

@@ -285,8 +285,8 @@ project, and logs a per-project warning when the cap drops anything.
 
 ## Host paths vs container paths
 
-Project trees are bind-mounted read-only: `/Users/nasta/__CODING NEW` appears
-inside the containers as `/data/code` (and extra roots as `/data/code2` …
+Project trees are bind-mounted read-only: the host projects root (e.g.
+`~/_CODING`) appears inside the containers as `/data/code` (and extra roots as `/data/code2` …
 `/data/code5`). Every discovered project therefore carries **both** paths:
 
 - `rootPath` — where the indexer reads files.
@@ -306,11 +306,28 @@ encodes each discovered project's **hostPath** the same way and picks the
 deepest prefix match.
 
 Matching against `rootPath` matches nothing — the dir name encodes
-`/Users/nasta/__CODING NEW/DeepCast`, never `/data/code/DeepCast` — and every
+`<projects root>/DeepCast`, never `/data/code/DeepCast` — and every
 project silently splits in two: one built from its files, one from its
 transcripts under a path-shaped slug. `PROJECT_GROUPING` in
 `packages/core/src/discovery.ts` is bumped whenever this rule changes, which
 makes the indexer rebuild the derived index at the next boot.
+
+### Transcript identity survives a host or path change
+
+A transcript directory name *is* a host path. Migrating to another machine
+(2026-08-24: `nasta` → `serge`, `__CODING NEW` → `_CODING`) renamed every
+directory under `~/.claude/projects`, and a `dedup_key` that hashed the stored
+path saw 347k existing rows as brand-new content — each one re-embedded, each
+one a duplicate in search. Transcript keys therefore hash only what survives:
+the literal scope `claude`, the path *inside* the encoded directory (the session
+UUID is globally unique), the title and the body — never the directory, never
+the project slug, which is itself derived from the directory. Project-file
+sources keep project + container path, which is identical on every host.
+`settings.transcript_key_scheme` records the rule in force; when it changes,
+the indexer re-keys stored rows **in place** at boot (`rekeyTranscripts`, own
+advisory lock) — duplicates merge into the lowest id, their vector points are
+deleted before their rows, and no vector moves or is re-embedded. This is
+deliberately not `id_scheme`, which truncates the catalog.
 
 Dirs that match no project (sessions from a folder outside every configured
 root) become standalone projects named after the path, so no history is

@@ -31,10 +31,12 @@ make cli-link && atlas status      # CLI
 claude mcp add --transport http atlas http://127.0.0.1:8711/mcp   # Claude Code
 ```
 
-Configuration is committed in `config/atlas.defaults.env` — nothing to copy.
-Check the two host paths at the top if your projects do not live under
-`/Users/nasta/__CODING NEW`. A gitignored `.env` overrides it per machine and is
-absent by default; secrets come from Doppler when a session is configured.
+Configuration is committed in `config/atlas.defaults.env` — nothing to copy,
+and nothing machine-specific in it: Atlas indexes the tree it lives in (this
+repo's parent directory) and `~/.claude/projects`, both derived at start. Point
+it elsewhere with `CODE_ROOT_HOST` in a gitignored `.env`, which overrides the
+committed file per machine and is absent by default; secrets come from Doppler
+when a session is configured.
 
 **Run Ollama.** The `auto` embedder prefers it and pulls `nomic-embed-text` on
 first boot; without it Atlas falls back to a bundled CPU model that is several
@@ -48,7 +50,7 @@ bar while the rest fills in.
 
 ```
 ~/.claude  ──ro──►┌─────────┐   BullMQ    ┌────────┐
-__CODING NEW ─ro─►│ indexer │◄──(redis)──►│  api   │◄── ui (nginx :8712)
+projects root ─ro─►│ indexer │◄──(redis)──►│  api   │◄── ui (nginx :8712)
                   └────┬────┘             └───┬────┘◄── atlas CLI (host)
                        │ embed+upsert         │      ◄── mcp :8711 (Claude Code)
                   ┌────▼────┐            ┌────▼─────┐

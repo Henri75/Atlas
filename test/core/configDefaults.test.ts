@@ -110,3 +110,33 @@ describe('config/atlas.defaults.env', () => {
     expect(values).not.toMatch(/`/);
   });
 });
+
+/**
+ * Nothing committed may carry an absolute path from one machine. Host paths are
+ * derived (`${ATLAS_REPO_PARENT}` from the Makefile, `${HOME}` from the shell)
+ * so the same checkout works on any host, user or path; the 2026-08-24 host
+ * migration found `/Users/nasta/...` baked into both files and the indexer
+ * refusing to boot on the new machine.
+ */
+describe('committed config carries no machine path', () => {
+  const composeFile = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
+  const machinePath = /\/(Users|home|Volumes)\//;
+  const activeValues = defaultsFile
+    .split('\n')
+    .filter((l) => /^[A-Z][A-Z0-9_]*=/.test(l.trim()));
+
+  it('config/atlas.defaults.env has no absolute home path in any active value', () => {
+    expect(activeValues.filter((l) => machinePath.test(l))).toEqual([]);
+  });
+
+  it('derives the two host roots instead of stating them', () => {
+    const value = (k: string) => activeValues.find((l) => l.startsWith(`${k}=`))?.split('=').slice(1).join('=');
+    expect(value('CODE_ROOT_HOST')).toMatch(/^\$\{ATLAS_REPO_PARENT\b/);
+    expect(value('CLAUDE_PROJECTS_HOST')).toMatch(/^\$\{HOME\b.*\}\/\.claude\/projects$/);
+  });
+
+  it('docker-compose.yml has no machine path, not even as a fallback', () => {
+    const offenders = composeFile.split('\n').filter((l) => !l.trim().startsWith('#') && machinePath.test(l));
+    expect(offenders).toEqual([]);
+  });
+});

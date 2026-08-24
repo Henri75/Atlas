@@ -3,6 +3,7 @@
 # Configuration
 
 ## Revision History
+- 2026-08-24 15:10 UTC — Host paths derived (`${ATLAS_REPO_PARENT}`, `${HOME}`) instead of committed absolute paths; compose fallbacks fail loud; guard test.
 - 2026-07-30 00:45 UTC — Qdrant memory layout documented: dense originals and the sparse index moved to disk, why `always_ram` is not the flag that does that, and why `rescore` must be set explicitly once they are.
 - 2026-07-29 18:40 UTC — Configuration sources restructured: `config/atlas.defaults.env` is committed and authoritative, Doppler supplies secrets, `.env` is an optional override that is absent by default. `make env` removed.
 - 2026-07-29 17:50 UTC — `KDB_ALLOW_EMBEDDER_DOWNGRADE` and *Why `auto` will refuse to start*: the probe retries, and a fallback can no longer silently migrate the index.
@@ -74,9 +75,16 @@ say `KDB_`. Both are intentional; do not "tidy" them.
 
 | Var | Default | Meaning |
 |---|---|---|
-| `CODE_ROOT_HOST` | `/Users/nasta/__CODING NEW` | main projects root, mounted **read-only** at `/data/code` |
+| `CODE_ROOT_HOST` | `${ATLAS_REPO_PARENT}` — this repo's parent directory, exported by the Makefile | main projects root, mounted **read-only** at `/data/code` |
 | `CODE_ROOT_HOST_2` … `_5` | unset | up to four more project roots, mounted at `/data/code2` … `/data/code5` |
-| `CLAUDE_PROJECTS_HOST` | `/Users/nasta/.claude/projects` | transcripts, mounted **read-only** at `/data/claude/projects` |
+| `CLAUDE_PROJECTS_HOST` | `${HOME}/.claude/projects` | transcripts, mounted **read-only** at `/data/claude/projects` |
+
+Both defaults are **derived, never written down** — no committed file carries an
+absolute path from one machine (`test/core/configDefaults.test.ts` fails on one),
+so a checkout works unchanged on any host, user or path. Compose interpolates
+`${...}` inside env files, which is how the derivation reaches both the mounts
+and the container environment. Running `docker compose` outside `make` fails
+loud (`ATLAS_REPO_PARENT is missing`) rather than mounting a guessed path.
 
 A `CODE_ROOT_HOST_n` slot is active only when it is set; compose cannot express
 an optional mount, so unset slots re-mount root 1 harmlessly and the indexer

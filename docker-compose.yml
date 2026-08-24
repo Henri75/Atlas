@@ -57,15 +57,15 @@ services:
       args: { SERVICE: indexer }
     <<: *node-common
     volumes:
-      - '${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}:/data/code:ro'
+      - '${CODE_ROOT_HOST:?set by config/atlas.defaults.env — run compose through make}:/data/code:ro'
       # Extra project trees. Each defaults to re-mounting root 1, which is inert:
       # the indexer only scans a slot when its CODE_ROOT_HOST_n is set. Compose
       # cannot express an optional mount, and an empty value is a syntax error.
-      - '${CODE_ROOT_HOST_2:-${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}}:/data/code2:ro'
-      - '${CODE_ROOT_HOST_3:-${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}}:/data/code3:ro'
-      - '${CODE_ROOT_HOST_4:-${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}}:/data/code4:ro'
-      - '${CODE_ROOT_HOST_5:-${CODE_ROOT_HOST:-/Users/nasta/__CODING NEW}}:/data/code5:ro'
-      - '${CLAUDE_PROJECTS_HOST:-/Users/nasta/.claude/projects}:/data/claude/projects:ro'
+      - '${CODE_ROOT_HOST_2:-${CODE_ROOT_HOST:?set by config/atlas.defaults.env — run compose through make}}:/data/code2:ro'
+      - '${CODE_ROOT_HOST_3:-${CODE_ROOT_HOST:?set by config/atlas.defaults.env — run compose through make}}:/data/code3:ro'
+      - '${CODE_ROOT_HOST_4:-${CODE_ROOT_HOST:?set by config/atlas.defaults.env — run compose through make}}:/data/code4:ro'
+      - '${CODE_ROOT_HOST_5:-${CODE_ROOT_HOST:?set by config/atlas.defaults.env — run compose through make}}:/data/code5:ro'
+      - '${CLAUDE_PROJECTS_HOST:?set by config/atlas.defaults.env — run compose through make}:/data/claude/projects:ro'
       - hf_cache:/app/.cache
     depends_on:
       postgres: { condition: service_healthy }

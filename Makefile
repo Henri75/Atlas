@@ -20,6 +20,14 @@ SHELL := /bin/bash
 DOTENV := $(wildcard .env)
 COMPOSE := docker compose --env-file config/atlas.defaults.env $(if $(DOTENV),--env-file .env,)
 
+# Host paths are DERIVED, never written down: no committed file may carry an
+# absolute path from one machine (test/core/configDefaults.test.ts guards it).
+# By default Atlas indexes the tree it lives in — this repo's parent directory —
+# and the current user's Claude transcripts under $HOME. Exported so that
+# config/atlas.defaults.env can interpolate them; a machine that wants other
+# roots sets CODE_ROOT_HOST / CLAUDE_PROJECTS_HOST in its gitignored .env.
+export ATLAS_REPO_PARENT := $(abspath $(CURDIR)/..)
+
 # Secrets come from Doppler when a session actually works, and from the files
 # otherwise. Any failure — not installed, not logged in, no project selected —
 # leaves this empty and the stack runs exactly as before: the only secrets are
@@ -170,10 +178,14 @@ smoke: ## poke health + search endpoints of a running stack
 config-check: ## assert compose resolves configuration the way the design assumes
 	bash scripts/config-sources.sh
 
-# Not in help: an accessor so scripts can test the *real* compose invocation
+# Not in help: accessors so scripts can test the *real* compose invocation
+# (print-repo-parent: the derived root the env file interpolates — a script
+# running compose outside make must export ATLAS_REPO_PARENT itself)
 # rather than restating its flags and drifting from it.
 print-compose:
 	@echo '$(COMPOSE)'
+print-repo-parent:
+	@echo '$(ATLAS_REPO_PARENT)'
 
 cli-link: ## make the `atlas` command available on this machine
 	npm run build -w packages/cli && npm link --workspace packages/cli
