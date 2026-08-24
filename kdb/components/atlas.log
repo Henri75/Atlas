@@ -1555,3 +1555,27 @@
 
 **Status:**
 - Completed (config + reaper + guards + the marker that makes them reach live data). Applies on the next indexer boot, which the operator controls.
+---
+### [2026-08-24] - M4 Max migration: restore Atlas/Assessor MCP + machine-local roots
+
+**Objective:**
+- Get Claude Code on the new M4 Max (user serge, projects in ~/_CODING) using the Atlas and Assessor MCP servers again, with the stacks running in OrbStack.
+
+**Summary of Work:**
+- Root cause 1: user-scope MCP registrations are stored in ~/.claude.json, a SIBLING of the ~/.claude folder, so copying the folder from the M3 Max lost them (claude mcp list: none configured). Root cause 2: Atlas was not running, and make start failed at the indexer because config/atlas.defaults.env bakes the old machine's roots (/Users/nasta/__CODING NEW, /Users/nasta/.claude/projects), which OrbStack cannot mount here.
+- Fix: created the gitignored .env override with this machine's CODE_ROOT_HOST / CLAUDE_PROJECTS_HOST, ran make start, re-registered atlas (HTTP :8711, user scope) and Assessor (make claude-docker, HTTP :8770). Corrected the repo path in ~/.claude/CLAUDE.md section 6.
+
+**Key Decisions & Rationale:**
+- .env override rather than editing the committed defaults: that is what the Makefile's two-file design is for, and the defaults still describe the M3 Max should it come back as a second machine (see the 2026-08-19 multi-machine work).
+- Assessor in docker/HTTP mode (the documented default): the container was already up in OrbStack and one shared container beats one uv process per session.
+
+**Code/Files Modified:**
+- .env (new, gitignored, machine-local)
+- ~/.claude/CLAUDE.md (repo path ~/__CODING NEW/kdb -> ~/_CODING/kdb; make up -> make start)
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** claude mcp list shows both servers Connected; indexer boot: 8 project(s) linked as older locations, 157 scan jobs enqueued, so discovery's lossy transcript-dir matching survived the /Users/nasta -> /Users/serge rename without intervention.
+- **What Failed:** nothing after diagnosis. Trap for next migration: copy ~/.claude.json alongside ~/.claude, or re-run the two claude mcp add commands (docs/getting-started.md, Assessor make claude-docker).
+
+**Status:**
+- Completed

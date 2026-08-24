@@ -284,3 +284,14 @@
 
 **AI Response Summary:**
 > Measured the live store read-only (560,694 points / 23 segments / 1.41 GB / ~642 MB load-time-resident) and found max_segment_size set in the wrong unit — KB-of-256-dim-vectors, so 64_000 bought ~21k vectors at 768 dims rather than the 64k its comment claimed. The cost is fixed-size per-segment padding: two 1 MiB flags_a.dat mmaps per indexed field per segment, 385.9 MB of 600.2 MB payload index, >99% empty. Fixed to 192_000, added mem_limit 4g / memswap_limit 6g / stop_grace_period 60s (none existed), and deliberately did NOT copy DeepCast's low_memory_mode here because it would undo this collection's intentional always_ram int8 pin. Guard asserts the derivation rather than the literal; mutation-verified. Nothing applied — the container stays stopped.
+---
+### [2026-08-24 14:44 UTC]
+
+**User Prompt Summary:**
+> After migrating the .claude folder from an M3 Max to a new M4 Max, Claude Code no longer used the Atlas (kdb/) and Assessor MCP servers; asked to fix it, with the services running in local OrbStack.
+
+**AI Response Summary:**
+> Found two independent causes: user-scope MCP registrations live in ~/.claude.json next to the folder (not inside it) so they never migrated, and the Atlas stack was down and could not start because the committed defaults mount the old machine's /Users/nasta roots. Wrote the gitignored .env with this machine's roots, brought the stack up with make start, re-registered atlas and assessor at user scope (Assessor in its default docker/HTTP mode against the already-running container), verified both Connected via claude mcp list and the indexer re-linking 8 renamed projects. Also fixed the stale repo path and start target in ~/.claude/CLAUDE.md section 6.
+
+**Notable:** the Assessor container had been running for 13 hours the whole time; only the client-side registration was missing. The MCP tools will only appear in sessions started after the registration, so this session cannot use them itself.
+---
