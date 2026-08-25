@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { repairTruncated } from '@atlas/shared';
 
 /**
  * Render markdown as sanitized HTML.
@@ -39,39 +40,9 @@ function escapeHtml(s: string): string {
 }
 
 /**
- * Repair markdown truncated mid-syntax, before it reaches the parser.
- *
- * Search snippets are a blind `body.slice(0, 280)`, so they routinely end inside
- * a construct: `…**Objective` or `…\`\`\`ts\nconst x`. marked is tolerant but not
- * repairing — an unclosed `**` renders as literal asterisks, and an unclosed
- * fence swallows the remainder into a code block. Closing the delimiters we
- * opened costs nothing and is the difference between formatted text and visible
- * syntax. Only used for `compact`; a full body is never cut.
+ * Repair lives in @atlas/shared (`repairTruncated`) — the native renderer needs
+ * the identical fix for its snippets.
  */
-function repairTruncated(text: string): string {
-  let out = text;
-
-  // A trailing partial word after the last space is a cut mid-token; an ellipsis
-  // reads better than half a word. Only when the tail looks truncated (no
-  // terminal punctuation) and there is enough text that trimming is safe.
-  const fence = (out.match(/```/g) ?? []).length;
-  if (fence % 2 === 1) out += '\n```';
-
-  // Inline delimiters, longest first: `**` must be counted before `*`, or every
-  // bold marker reads as two stray emphasis markers.
-  for (const [delim, re] of [
-    ['`', /`/g],
-    ['**', /\*\*/g],
-    ['~~', /~~/g],
-  ] as const) {
-    // Skip anything inside a fenced block — backticks there are the fence.
-    if (delim === '`' && fence > 0) continue;
-    const n = (out.match(re) ?? []).length;
-    if (n % 2 === 1) out += delim;
-  }
-
-  return out;
-}
 
 /**
  * `[3]` or `[3, 7]` → superscript citation spans. Runs on sanitized HTML.

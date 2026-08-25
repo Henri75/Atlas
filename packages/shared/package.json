@@ -1,0 +1,30 @@
+{
+  "name": "@atlas/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Platform-neutral Atlas logic shared by the web UI and the native Expo app: API payload types, the design-token palette, formatting, date ranges, query description, navigation model, markdown repair, reply export serialization and the Ask conversation engine.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput"
+  },
+  "peerDependencies": {
+    "react": "*"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "7.0.2"
+  },
+  "license": "MIT"
+}

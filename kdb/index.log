@@ -1,2 +1,4 @@
 - [2026-07-08] kdbscope — the whole tool (monorepo: core/indexer/api/mcp/cli/ui). Log: kdb/components/kdbscope.log
 - [2026-07-12] atlas — the whole tool (monorepo: core/indexer/api/mcp/cli/ui). Renamed from the kdbscope component on 2026-07-12; entries before that date were logged under [kdbscope] and stay that way (append-only). Log: kdb/components/atlas.log
+- [2026-08-25] atlas-shared — platform-neutral core shared by web UI and native app: types, palette, formatting, date ranges, query description, nav registry, scope semantics, markdown repair, export serialization, Ask engine. Log: kdb/components/atlas-shared.log
+- [2026-08-25] atlas-mobile — native Expo app (mobile/): 1:1 web/PWA parity + native-exclusive features, consuming @atlas/shared. Log: kdb/components/atlas-mobile.log

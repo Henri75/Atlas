@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
+import { ENTRY_KIND_META as KIND } from '@atlas/shared';
 import type { ProjectRow, SessionEntryKind, SessionRow } from '../types';
 import { Markdown } from '../components/Markdown';
 import {
@@ -13,16 +14,6 @@ import {
   matches,
 } from '../components/ui';
 import { compact, duration, exact, plural } from '../format';
-
-/** Colour and label per message kind. Actions are the "what was done" trail. */
-const KIND: Record<SessionEntryKind, { label: string; color: string }> = {
-  prompt: { label: 'YOU', color: 'var(--color-git)' },
-  plan: { label: 'PLAN', color: 'var(--color-doc)' },
-  insight: { label: 'INSIGHT', color: 'var(--color-kdb)' },
-  summary: { label: 'SUMMARY', color: 'var(--color-report)' },
-  action: { label: 'DID', color: 'var(--color-muted)' },
-  response: { label: 'CLAUDE', color: 'var(--color-claude)' },
-};
 
 const kindOf = (e: any): SessionEntryKind => (e.meta?.kind as SessionEntryKind) ?? 'response';
 

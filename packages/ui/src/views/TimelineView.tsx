@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import type { ProjectRow, TimelineItem } from '../types';
-import type { Scope } from '../useScope';
+import type { ScopeHandle } from '../useScope';
 import {
   Badge,
   Empty,
@@ -30,7 +30,7 @@ export function TimelineView({
   projects,
   onOpenSession,
 }: {
-  scope: Scope;
+  scope: ScopeHandle;
   projects: ProjectRow[];
   onOpenSession: (id: string) => void;
 }) {

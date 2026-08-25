@@ -29,6 +29,7 @@ make start         # builds images, starts the 7-service stack
 open http://127.0.0.1:8712        # web UI
 make cli-link && atlas status      # CLI
 claude mcp add --transport http atlas http://127.0.0.1:8711/mcp   # Claude Code
+make mobile-start                 # native iOS/Android app (Expo; docs/mobile.md)
 ```
 
 Configuration is committed in `config/atlas.defaults.env` — nothing to copy,

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { compact, exact, millis } from '../format';
+import { CLIENT_COLORS, clientColor, compact, exact, millis } from '@atlas/shared';
 
 /**
  * Chart primitives, hand-rolled from flex/SVG and CSS custom properties.
@@ -15,17 +15,11 @@ import { compact, exact, millis } from '../format';
  * all, a single point, and one non-zero value among many zeroes. A monitoring
  * chart that looks broken when nothing has happened teaches you to distrust it
  * when something has.
+ *
+ * The client→color mapping lives in @atlas/shared so the native charts label
+ * identical clients with identical hues.
  */
-
-/** Colour per client. Semantic, and stable across every chart in the view. */
-export const CLIENT_COLORS: Record<string, string> = {
-  mcp: 'var(--color-claude)',
-  cli: 'var(--color-git)',
-  ui: 'var(--color-doc)',
-  unknown: 'var(--color-faint)',
-};
-
-export const clientColor = (client: string) => CLIENT_COLORS[client] ?? 'var(--color-kdb)';
+export { CLIENT_COLORS, clientColor };
 
 /** A zero-height rule, so an empty bucket is visibly empty rather than missing. */
 function EmptyRule() {

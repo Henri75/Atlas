@@ -1,0 +1,26 @@
+---
+### [2026-08-25] - [mobile-1: native Expo app, 1:1 parity + native features]
+
+**Objective:**
+- A state-of-the-art native iOS/Android Atlas app in mobile/: every web/PWA view and feature, the same visual identity, and a full native experience.
+
+**Summary of Work:**
+- Expo SDK 57 / RN 0.86 / React 19.2.3 (create-expo-app template versions, pinned exact); react-navigation (bottom-tabs + native-stack); no gesture/reanimated/chart libraries — custom spring bottom sheets, view/SVG charts, marked-lexer markdown renderer (tokens→RN elements, so untrusted HTML never renders; citations tappable, needle highlight, compact mode with shared repairTruncated).
+- Screens: Search&Ask (segmented modes, amber armed composer, all five filters, streaming conversation with per-turn retry/delete/copy, sources, metrics, degraded/scope-fallback banners, StaleBadge), Overview (stats/fleet/services+embedder warnings/storage+collections+stale vectors/30-day activity/source breakdown/runs), Timeline (feed+table persisted, day rulers, load older), Sessions (list + pushed detail with kind chips and in-markdown highlight), Components (pick→history), Monitor (Overview/Calls/Stats/Adoption; cursor+generation+dedupe infinite call feed; call detail sheet), Machines (fleet cards), Settings (server address+probe, Keychain token, start-view radio, reindex, diagnostics copy).
+- Native layer: animated boot splash (orbiting-satellite mark) over a matching static splash; global TopProgressBar driven by an api loading bus; pull-to-refresh; haptics; toast host; EntryHost shared record sheet; atlas:// deep links (session/:id via linking config, entry/:id via Linking listener); SecureStore token; AsyncStorage prefs under the web's key names; client id "mobile" in usage monitor.
+- Assets generated programmatically (scripts/mobile_assets.py, pure-python PNG writer) from the same palette: icon, adaptive-icon, splash.
+
+**Key Decisions & Rationale:**
+- 5 tabs + More (Components/Monitor/Machines/Settings): 7 destinations don't fit a thumb-reachable tab bar; the three browse surfaces stay one tap away, grouping is the only IA change — every view remains 1:1.
+- expo/fetch for SSE because RN fetch lacks a readable body; hand-rolled incremental UTF-8 decoder because Hermes ships no TextDecoder.
+- No bottom-sheet/reanimated deps: fewer native version-alignment risks; a PanResponder spring sheet matches the design language.
+
+**Code/Files Modified:**
+- mobile/** (app), scripts/mobile_assets.py, Makefile (mobile-start/-typecheck/-assets), docs/mobile.md, README.md, package.json (workspace), docs/mobile.md + mobile/README.md docs.
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** mobile tsc (strict) clean on first full pass after the fix round; expo config parses; make help-audit green with the three new targets.
+- **What Failed:** RN has no registerRootComponent (it's in 'expo'); marked v18 types moved (Token is a root type export; TableCell needs .text); expo-haptics has no lightAsync (impactAsync+style).
+
+**Status:**
+- Completed

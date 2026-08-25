@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Conversation, useAskConversation, type Turn } from '../../packages/ui/src/views/AskConversation';
+import { Conversation } from '../../packages/ui/src/views/AskConversation';
+import { useAskConversation, type Turn } from '@atlas/shared';
+import { api } from '../../packages/ui/src/api';
+
+/** The real web transport, so the stubbed global fetch is still what answers. */
+const stream = (body: Record<string, unknown>, signal?: AbortSignal) => api.askStream(body, signal);
 
 afterEach(cleanup);
 
@@ -28,7 +33,7 @@ const sentHistory = (spy: any, call = 0) => JSON.parse(spy.mock.calls[call][1].b
 describe('useAskConversation', () => {
   it('appends a question and streams its answer', async () => {
     stubStream(sse({ type: 'sources', sources: [] }, { type: 'delta', text: 'Hi' }, { type: 'done', model: 'm', degraded: false }));
-    const { result } = renderHook(() => useAskConversation('deepcast', () => {}));
+    const { result } = renderHook(() => useAskConversation('deepcast', () => {}, [], '', stream));
 
     act(() => result.current.send('what broke?'));
     await waitFor(() => expect(result.current.turns[1]!.streaming).toBe(false));
@@ -40,7 +45,7 @@ describe('useAskConversation', () => {
   it('passes the selected source subset to the ask endpoint', async () => {
     const spy = stubStream(sse({ type: 'done', model: 'm', degraded: false }));
     const { result } = renderHook(() =>
-      useAskConversation('deepcast', () => {}, ['doc', 'kdb_component']),
+      useAskConversation('deepcast', () => {}, ['doc', 'kdb_component'], '', stream),
     );
     act(() => result.current.send('q'));
     await waitFor(() => expect(result.current.turns[1]!.streaming).toBe(false));
@@ -49,7 +54,7 @@ describe('useAskConversation', () => {
 
   it('omits source when nothing is selected (all sources)', async () => {
     const spy = stubStream(sse({ type: 'done', model: 'm', degraded: false }));
-    const { result } = renderHook(() => useAskConversation('', () => {}, []));
+    const { result } = renderHook(() => useAskConversation('', () => {}, [], '', stream));
     act(() => result.current.send('q'));
     await waitFor(() => expect(result.current.turns[1]!.streaming).toBe(false));
     expect(JSON.parse(spy.mock.calls[0][1].body).source).toBeUndefined();
@@ -62,7 +67,7 @@ describe('useAskConversation', () => {
         { type: 'done', model: 'm', degraded: false },
       ),
     );
-    const { result } = renderHook(() => useAskConversation('deepcast', () => {}));
+    const { result } = renderHook(() => useAskConversation('deepcast', () => {}, [], '', stream));
     act(() => result.current.send('q'));
     await waitFor(() => expect(result.current.turns[1]!.streaming).toBe(false));
     expect(result.current.turns[1]!.scopeFallback).toEqual({
@@ -73,7 +78,7 @@ describe('useAskConversation', () => {
 
   it('sends the prior conversation with a follow-up', async () => {
     const spy = stubStream(sse({ type: 'delta', text: 'a' }, { type: 'done', model: 'm', degraded: false }));
-    const { result } = renderHook(() => useAskConversation('', () => {}));
+    const { result } = renderHook(() => useAskConversation('', () => {}, [], '', stream));
 
     act(() => result.current.send('first'));
     await waitFor(() => expect(result.current.turns[1]!.streaming).toBe(false));
@@ -93,7 +98,7 @@ describe('useAskConversation', () => {
    */
   it('retries a reply without sending that reply back as context', async () => {
     const spy = stubStream(sse({ type: 'delta', text: 'x' }, { type: 'done', model: 'm', degraded: false }));
-    const { result } = renderHook(() => useAskConversation('', () => {}));
+    const { result } = renderHook(() => useAskConversation('', () => {}, [], '', stream));
 
     act(() => result.current.send('first'));
     await waitFor(() => expect(result.current.turns[1]!.streaming).toBe(false));
@@ -115,7 +120,7 @@ describe('useAskConversation', () => {
 
   it('deleting a question removes its orphaned reply too', async () => {
     stubStream(sse({ type: 'delta', text: 'a' }, { type: 'done', model: 'm', degraded: false }));
-    const { result } = renderHook(() => useAskConversation('', () => {}));
+    const { result } = renderHook(() => useAskConversation('', () => {}, [], '', stream));
 
     act(() => result.current.send('first'));
     await waitFor(() => expect(result.current.turns[1]!.streaming).toBe(false));
@@ -126,7 +131,7 @@ describe('useAskConversation', () => {
 
   it('deleting a reply keeps its question', async () => {
     stubStream(sse({ type: 'delta', text: 'a' }, { type: 'done', model: 'm', degraded: false }));
-    const { result } = renderHook(() => useAskConversation('', () => {}));
+    const { result } = renderHook(() => useAskConversation('', () => {}, [], '', stream));
 
     act(() => result.current.send('first'));
     await waitFor(() => expect(result.current.turns[1]!.streaming).toBe(false));
@@ -137,7 +142,7 @@ describe('useAskConversation', () => {
 
   it('surfaces a transport failure on the answer it belongs to', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('Failed to fetch'); }));
-    const { result } = renderHook(() => useAskConversation('', () => {}));
+    const { result } = renderHook(() => useAskConversation('', () => {}, [], '', stream));
 
     act(() => result.current.send('q'));
     await waitFor(() => expect(result.current.turns[1]!.streaming).toBe(false));
@@ -210,7 +215,7 @@ describe('useAskConversation — retry clears the previous attempt', () => {
       })),
     );
 
-    const { result } = renderHook(() => useAskConversation('p', () => {}));
+    const { result } = renderHook(() => useAskConversation('p', () => {}, [], '', stream));
     act(() => result.current.send('q'));
     await waitFor(() => expect(result.current.turns[1]!.streaming).toBe(false));
 
@@ -245,7 +250,7 @@ describe('useAskConversation — retry clears the previous attempt', () => {
       })),
     );
 
-    const { result } = renderHook(() => useAskConversation('p', () => {}));
+    const { result } = renderHook(() => useAskConversation('p', () => {}, [], '', stream));
     act(() => result.current.send('q'));
     await waitFor(() => expect(result.current.turns[1]!.metrics).toBeTruthy());
 

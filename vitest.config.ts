@@ -5,6 +5,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@atlas/core': fileURLToPath(new URL('./packages/core/src/index.ts', import.meta.url)),
+      // Shared web/native logic is tested from source, so the suite does not
+      // depend on a prior `tsc` emit of packages/shared/dist.
+      '@atlas/shared': fileURLToPath(new URL('./packages/shared/src/index.ts', import.meta.url)),
       // Subpath alias, not a barrel: the eval package has no index and its
       // modules are imported individually (`@atlas/eval/metrics.js`), matching
       // how they import each other.

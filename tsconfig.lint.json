@@ -7,10 +7,13 @@
     "types": ["node"],
     "paths": {
       "@atlas/core": ["./packages/core/src/index.ts"],
+      "@atlas/shared": ["./packages/shared/src/index.ts"],
       "@atlas/eval/*": ["./packages/eval/src/*"]
     }
   },
   "include": [
+    "packages/shared/src/**/*.ts",
+    "packages/shared/src/**/*.tsx",
     "packages/core/src/**/*.ts",
     "packages/indexer/src/**/*.ts",
     "packages/api/src/**/*.ts",

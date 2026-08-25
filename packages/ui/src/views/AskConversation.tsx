@@ -1,217 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '../api';
-import type { AskMetrics, AskSource, ScopeFallback, SourceType } from '../types';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ms, questionFor, sourceRef, useAskConversation } from '@atlas/shared';
+import type { AskMetrics, AskSource, Turn } from '@atlas/shared';
 import { Badge, CopyButton, ProjectTag, Pulse, Stamp, submitOnEnter } from '../components/ui';
 import { Markdown } from '../components/Markdown';
-import { ExportButtons, type Exportable } from '../components/ExportReply';
+import { ExportButtons } from '../components/ExportReply';
+
+export type { Turn };
+export { useAskConversation };
 
 /**
- * Multi-turn Ask. Each turn is addressable, so a reply can be retried and any
- * turn deleted. The history sent to the LLM is derived by slicing the
- * conversation *above* the question being answered — a retry must not see the
- * answer it is replacing, and a deletion must not leave a dangling reference.
+ * Multi-turn Ask presentation. The conversation ENGINE (turn sequencing,
+ * retry/delete semantics, history slicing) lives in @atlas/shared so the
+ * native app behaves identically; this file is the web rendering of it.
+ * The transport is injected here as `api.askStream` (fetch/SSE).
  */
-
-export interface Turn {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  /** Assistant turns only. */
-  sources?: AskSource[];
-  streaming?: boolean;
-  error?: string;
-  degraded?: boolean;
-  /**
-   * Set when *every* asked-for project was empty and the search widened to all.
-   * Imported rather than redeclared: an inline copy of the shape here let the UI
-   * keep typechecking against a stale contract after core changed it.
-   */
-  scopeFallback?: ScopeFallback;
-  /** What it cost to produce this reply. Absent when the LLM never answered. */
-  metrics?: AskMetrics;
-}
-
-/**
- * Everything `run()` derives for a single attempt. Retrying an answer must reset
- * *all* of it: leaving `degraded` behind from a failed attempt made the
- * "LLM unavailable" banner reappear on a successful retry, because the banner
- * renders on `degraded && !error` and the retry had just cleared `error`.
- */
-const EMPTY_RESULT = {
-  content: '',
-  sources: [],
-  error: undefined,
-  degraded: false,
-  scopeFallback: undefined,
-  metrics: undefined,
-} satisfies Partial<Turn>;
-
-let seq = 0;
-const newId = () => `t${++seq}`;
-
-/** A one-line, paste-ready reference for a cited source. */
-function sourceRef(s: AskSource): string {
-  const date = s.occurredAt ? ` (${s.occurredAt.slice(0, 10)})` : '';
-  return `[${s.n}] ${s.title} — ${s.projectSlug}/${s.sourceType}${date}\n${s.sourcePath}`;
-}
-
-export function useAskConversation(
-  /** The scoped projects. Empty means all — the API treats it as unconstrained. */
-  projects: string[],
-  onOpenEntry: (id: number) => void,
-  sources: SourceType[] = [],
-  /** First-ingested-from filter (spec §6); '' means unconstrained. */
-  machine = '',
-) {
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const abortRef = useRef<AbortController | null>(null);
-  const runRef = useRef(0);
-  // Read at send time so the callbacks don't churn on every filter change and
-  // don't capture a stale source list. `projects` is an array — a new identity
-  // on every parent render — so depending on it directly would rebuild `run`
-  // (and every callback derived from it) constantly. Reading through a ref also
-  // means an in-flight answer keeps the scope it *started* with.
-  const sourcesRef = useRef(sources);
-  sourcesRef.current = sources;
-  const projectsRef = useRef(projects);
-  projectsRef.current = projects;
-  const machineRef = useRef(machine);
-  machineRef.current = machine;
-  // Mirrors `turns` so send/retry can read the current conversation without
-  // doing side effects inside a state updater (which StrictMode runs twice).
-  const turnsRef = useRef<Turn[]>([]);
-
-  const commit = useCallback((next: Turn[] | ((prev: Turn[]) => Turn[])) => {
-    setTurns((prev) => {
-      const value = typeof next === 'function' ? next(prev) : next;
-      turnsRef.current = value;
-      return value;
-    });
-  }, []);
-
-  const patch = useCallback(
-    (id: string, up: Partial<Turn>) =>
-      commit((prev) => prev.map((t) => (t.id === id ? { ...t, ...up } : t))),
-    [commit],
-  );
-
-  /** Ask `question`, appending its answer after `history` (exclusive). */
-  const run = useCallback(
-    async (question: string, history: Turn[], answerId: string) => {
-      const myRun = ++runRef.current;
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
-
-      // Clear every trace of the previous attempt, not just the visible text —
-      // a stale `degraded` used to resurrect the "LLM unavailable" banner here.
-      patch(answerId, { ...EMPTY_RESULT, streaming: true });
-
-      try {
-        const stream = api.askStream(
-          {
-            question,
-            // A list on the wire; omitted entirely when the scope is "all", so
-            // the API applies no project constraint at all.
-            project: projectsRef.current.length ? projectsRef.current : undefined,
-            source: sourcesRef.current.length ? sourcesRef.current : undefined,
-            machine: machineRef.current || undefined,
-            history: history.map((t) => ({ role: t.role, content: t.content })),
-          },
-          controller.signal,
-        );
-        for await (const ev of stream) {
-          if (runRef.current !== myRun) break;
-          if (ev.type === 'sources')
-            patch(answerId, { sources: ev.sources, scopeFallback: ev.scopeFallback });
-          else if (ev.type === 'delta') {
-            commit((prev) =>
-              prev.map((t) => (t.id === answerId ? { ...t, content: t.content + ev.text } : t)),
-            );
-          } else if (ev.type === 'done')
-            patch(answerId, { degraded: ev.degraded, metrics: ev.metrics });
-          else if (ev.type === 'error') patch(answerId, { error: ev.message });
-        }
-      } catch (e) {
-        const err = e as Error;
-        if (runRef.current === myRun && err.name !== 'AbortError') {
-          patch(answerId, { error: describeError(err) });
-        }
-      } finally {
-        if (runRef.current === myRun) patch(answerId, { streaming: false });
-      }
-    },
-    // Everything mutable is read through a ref at send time, so `run` is stable
-    // for the life of the hook. `patch`/`commit` are themselves stable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [patch, commit],
-  );
-
-  const send = useCallback(
-    (question: string) => {
-      const history = turnsRef.current;
-      const q: Turn = { id: newId(), role: 'user', content: question };
-      const a: Turn = { id: newId(), role: 'assistant', content: '', streaming: true };
-      commit([...history, q, a]);
-      void run(question, history, a.id);
-    },
-    [commit, run],
-  );
-
-  /** Re-answer the question above this reply, using only what preceded it. */
-  const retry = useCallback(
-    (answerId: string) => {
-      const prev = turnsRef.current;
-      const at = prev.findIndex((t) => t.id === answerId);
-      if (at < 1) return;
-      const question = prev[at - 1]!;
-      if (question.role !== 'user') return;
-      // History stops *before* the question, so the retry never sees the reply
-      // it is replacing.
-      void run(question.content, prev.slice(0, at - 1), answerId);
-    },
-    [run],
-  );
-
-  /** Delete one turn. A user turn takes its orphaned reply with it. */
-  const remove = useCallback(
-    (id: string) => {
-      commit((prev) => {
-        const at = prev.findIndex((t) => t.id === id);
-        if (at === -1) return prev;
-        const drop = new Set([id]);
-        const next = prev[at + 1];
-        if (prev[at]!.role === 'user' && next?.role === 'assistant') drop.add(next.id);
-        return prev.filter((t) => !drop.has(t.id));
-      });
-    },
-    [commit],
-  );
-
-  const reset = useCallback(() => {
-    abortRef.current?.abort();
-    runRef.current++;
-    commit([]);
-  }, [commit]);
-
-  return { turns, send, retry, remove, reset, onOpenEntry };
-}
-
-function describeError(e: unknown): string {
-  const msg = (e as Error)?.message ?? String(e);
-  if (/^50[0-9]/.test(msg) || /bad gateway/i.test(msg)) {
-    return 'The API is not reachable. Is the stack running?';
-  }
-  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
-    return 'Could not reach the server. Is the stack running?';
-  }
-  return msg.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
-}
 
 /** Millisecond durations read better at human scale: 412ms, 1.4s. */
-function ms(v: number): string {
-  return v < 1000 ? `${Math.round(v)}ms` : `${(v / 1000).toFixed(1)}s`;
-}
+const fmtMs = ms;
 
 /**
  * What produced this answer, stated as fact.
@@ -226,12 +31,12 @@ function ms(v: number): string {
 function Metrics({ m }: { m: AskMetrics }) {
   const bits: string[] = [];
   if (m.totalTokens !== undefined) bits.push(`${m.totalTokens} tok`);
-  if (m.ttftMs !== undefined) bits.push(`${ms(m.ttftMs)} to first token`);
+  if (m.ttftMs !== undefined) bits.push(`${fmtMs(m.ttftMs)} to first token`);
   if (m.tokensPerSec !== undefined) bits.push(`${m.tokensPerSec} tok/s`);
 
   const detail = [
     m.promptTokens !== undefined && `prompt ${m.promptTokens} · completion ${m.completionTokens}`,
-    m.totalMs !== undefined && `total ${ms(m.totalMs)}`,
+    m.totalMs !== undefined && `total ${fmtMs(m.totalMs)}`,
     m.attempts !== undefined && m.attempts > 1 && `${m.attempts} gateway attempts`,
     m.requestId && `request ${m.requestId}`,
   ]
@@ -461,13 +266,6 @@ function useCitationSets(turns: Turn[]): Map<string, ReadonlySet<number>> {
   }, [turns]);
 }
 
-/** The user turn immediately above an answer — its question, for the export. */
-function questionFor(turns: Turn[], answerId: string): string | undefined {
-  const at = turns.findIndex((t) => t.id === answerId);
-  const prev = at > 0 ? turns[at - 1] : undefined;
-  return prev?.role === 'user' ? prev.content : undefined;
-}
-
 /**
  * The reply's own toolbar, sitting in its footer next to the metrics.
  *
@@ -483,7 +281,7 @@ function ReplyToolbar({
 }: {
   onRetry?: () => void;
   copyText?: string;
-  exportable?: Exportable;
+  exportable?: Parameters<typeof ExportButtons>[0]['reply'];
 }) {
   return (
     <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">

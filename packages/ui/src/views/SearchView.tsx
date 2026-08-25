@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { describeError } from '@atlas/shared';
 import type { EntryKind, SearchResult, SourceType } from '../types';
-import type { Scope } from '../useScope';
+import type { ScopeHandle } from '../useScope';
 import { scopeParam } from '../useScope';
 import {
   Badge,
@@ -71,28 +72,12 @@ function StaleBadge({ hit }: { hit: { docStatus?: 'aging' | 'archived'; ageMonth
   );
 }
 
-/**
- * Turn a fetch/HTTP failure into something the user can act on. A dead API
- * returns a full nginx HTML error page, which is useless as a message.
- */
-function describeError(e: unknown): string {
-  const msg = (e as Error)?.message ?? String(e);
-  if (/^50[0-9]/.test(msg) || /bad gateway/i.test(msg)) {
-    return 'The API is not reachable. Is the stack running? Try `make ps` and `make logs`.';
-  }
-  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
-    return 'Could not reach the server. Is the stack running?';
-  }
-  // Strip an HTML body if one leaked through.
-  return msg.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
-}
-
 export function SearchView({
   scope,
   inputRef,
   onOpenSession,
 }: {
-  scope: Scope;
+  scope: ScopeHandle;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   onOpenSession: (id: string) => void;
 }) {
@@ -118,7 +103,7 @@ export function SearchView({
   // only need "is this a multi-machine install?", not live sync health.
   const { self, machines, multiMachine } = useMachines();
 
-  const ask = useAskConversation(scope.projects, setOpenEntry, sources, machine);
+  const ask = useAskConversation(scope.projects, setOpenEntry, sources, machine, api.askStream);
   const busy = ask.turns.some((t) => t.streaming);
 
   const runSearch = useCallback(async () => {

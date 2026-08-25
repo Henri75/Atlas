@@ -1,59 +1,20 @@
 import { useState } from 'react';
-import type { AskSource } from '../types';
+import { toMarkdown, exportFilename, exportDay as day, type Exportable } from '@atlas/shared';
+
+export { toMarkdown };
+export type { Exportable };
 
 /**
  * Take a reply out of the app: markdown, PDF, or the clipboard.
  *
  * Both formats are generated from the *source data* — the markdown text plus the
- * structured `sources` array — never by screenshotting the DOM. That choice buys
- * three things a DOM capture cannot: selectable text, live links, and a light
- * page. (Rasterising this UI would export its dark theme into a document meant
- * for paper, and flatten the citations we just made clickable into dead pixels.)
+ * structured `sources` array — never by screenshotting the DOM. The canonical
+ * serializer (`toMarkdown`) and the filename slug live in @atlas/shared, so the
+ * native share-sheet export renders byte-identical output.
  */
-
-/** A reply plus its citations: everything an export needs, in one place. */
-export interface Exportable {
-  question?: string;
-  content: string;
-  sources?: AskSource[];
-}
-
-/** `2026-07-12T09:31:00Z` → `2026-07-12`. Undefined stays undefined. */
-const day = (iso?: string) => iso?.slice(0, 10);
-
-/**
- * The canonical serialization. The PDF renderer consumes the same shape, so the
- * two exports can never drift out of sync.
- */
-export function toMarkdown(reply: Exportable): string {
-  const parts: string[] = [];
-  if (reply.question) parts.push(`# ${reply.question}\n`);
-  parts.push(reply.content.trim());
-
-  if (reply.sources?.length) {
-    parts.push('\n## Sources\n');
-    for (const s of reply.sources) {
-      const when = day(s.occurredAt);
-      // Keep the [n] markers meaningful: they are what the answer body cites.
-      parts.push(
-        `[${s.n}] **${s.title}** — \`${s.projectSlug}\` · ${s.sourceType}${when ? ` · ${when}` : ''}  \n` +
-          `    ${s.sourcePath}`,
-      );
-    }
-  }
-  return parts.join('\n') + '\n';
-}
 
 /** Filename-safe slug from the question, so downloads don't all collide. */
-function filename(reply: Exportable, ext: string): string {
-  const base =
-    reply.question
-      ?.toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 50) || 'atlas-answer';
-  return `${base}.${ext}`;
-}
+const filename = exportFilename;
 
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);

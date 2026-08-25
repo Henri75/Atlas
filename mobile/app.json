@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "Atlas",
+    "slug": "atlas",
+    "version": "1.0.0",
+    "scheme": "atlas",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0e1116",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0e1116"
+    },
+    "assetBundlePatterns": ["assets/fonts/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "sh.atlas.mobile",
+      "infoPlist": {
+        "UIBackgroundModes": []
+      }
+    },
+    "android": {
+      "package": "sh.atlas.mobile",
+      "edgeToEdgeEnabled": true,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0e1116"
+      }
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-logo.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#0e1116"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": ""
+      }
+    }
+  }
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import type { ActivityPoint, Dashboard, MachineRow, RunRow, SourceDetailRow, SourceType } from '../types';
-import { SOURCE_META } from '../types';
+import { SOURCE_META, ACTIVITY_FAMILIES } from '@atlas/shared';
 import { Empty, Eyebrow, Spinner } from '../components/ui';
 import { bytes, compact, duration, exact, plural, relativeTime } from '../format';
 import { useMachines } from '../useMachines';
@@ -381,14 +381,6 @@ function SourceBreakdown({
  * exact per-source counts ride in each bar's title. All-zero days still render
  * a hairline so gaps read as "idle", not "missing data".
  */
-const ACTIVITY_FAMILIES: { key: string; label: string; color: string; types: SourceType[] }[] = [
-  { key: 'kdb', label: 'KDB', color: 'var(--color-kdb)', types: ['kdb_changelog', 'kdb_session', 'kdb_component', 'kdb_backlog'] },
-  { key: 'report', label: 'REPORT', color: 'var(--color-report)', types: ['kdb_report'] },
-  { key: 'claude', label: 'CLAUDE', color: 'var(--color-claude)', types: ['claude_session'] },
-  { key: 'git', label: 'COMMIT', color: 'var(--color-git)', types: ['git_commit'] },
-  { key: 'doc', label: 'DOC', color: 'var(--color-doc)', types: ['doc'] },
-];
-
 function ActivityChart({ activity }: { activity: ActivityPoint[] }) {
   // Fill the last 30 calendar days so idle days show as gaps, not silence.
   const days: string[] = [];

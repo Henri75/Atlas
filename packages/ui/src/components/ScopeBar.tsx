@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectRow } from '../types';
-import type { Scope } from '../useScope';
+import type { ScopeHandle } from '../useScope';
 import { FilterInput, Highlight, matches } from './ui';
 import { compact, exact } from '../format';
 
@@ -22,7 +22,7 @@ export function ScopeBar({
   /** What a multi-selection means in the current view. Absent when it just works. */
   note,
 }: {
-  scope: Scope;
+  scope: ScopeHandle;
   projects: ProjectRow[];
   favorites: string[];
   onToggleFavorite: (slug: string) => void;
@@ -141,7 +141,7 @@ function AddProject({
   favorites,
   onToggleFavorite,
 }: {
-  scope: Scope;
+  scope: ScopeHandle;
   projects: ProjectRow[];
   favorites: string[];
   onToggleFavorite: (slug: string) => void;

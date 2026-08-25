@@ -44,7 +44,7 @@ export ATLAS_REPO_PARENT := $(abspath $(CURDIR)/..)
 # probe — otherwise every `make ps` would make a Doppler API round-trip.
 DOPPLER = $(shell doppler run --command 'true' >/dev/null 2>&1 && echo 'doppler run --')
 
-.PHONY: help install build test lint start stop restart restart-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose print-repo-parent cli-link connect-link kdb-rebuild clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal help-audit
+.PHONY: help install build test lint start stop restart restart-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose print-repo-parent cli-link connect-link kdb-rebuild mobile-start mobile-typecheck mobile-assets clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal help-audit
 
 # The harness runs on the host, not in a container: a variant has to be a config
 # object rather than an image rebuild for an A/B to be possible at all. Ports come
@@ -206,6 +206,21 @@ connect-link: ## Install the atlas-connect MCP shim on this machine's PATH (npm 
 
 kdb-rebuild: ## regenerate kdb/*.md views from kdb/*.log (never touches logs)
 	node bin/kdb_rebuild.mjs
+
+# --- native app (mobile/) ----------------------------------------------------
+# The Expo app is a workspace like any other: `npm install` wires it, and the
+# shared logic it needs (@atlas/shared) must be BUILT before Metro first
+# resolves it — mobile-start chains that so a fresh clone just works.
+
+mobile-start: ## run the native Expo app dev server (mobile/) — press i/a or scan the QR; builds @atlas/shared first
+	npm run build -w packages/shared
+	npm run start -w mobile
+
+mobile-typecheck: ## typecheck the Expo app (mobile/tsconfig.json, strict)
+	npx tsc --noEmit -p mobile/tsconfig.json
+
+mobile-assets: ## regenerate mobile/assets PNGs (icon, adaptive icon, splash) from scripts/mobile_assets.py
+	python3 scripts/mobile_assets.py
 
 # --- usage telemetry ---------------------------------------------------------
 # Deliberately manual and unscheduled. At observed volume the whole table is
