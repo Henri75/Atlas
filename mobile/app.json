@@ -13,13 +13,9 @@
       "resizeMode": "contain",
       "backgroundColor": "#0e1116"
     },
-    "assetBundlePatterns": ["assets/fonts/*"],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "sh.atlas.mobile",
-      "infoPlist": {
-        "UIBackgroundModes": []
-      }
+      "bundleIdentifier": "sh.atlas.mobile"
     },
     "android": {
       "package": "sh.atlas.mobile",
@@ -40,10 +36,6 @@
         }
       ]
     ],
-    "extra": {
-      "eas": {
-        "projectId": ""
-      }
-    }
+    "extra": {}
   }
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { resolveRange, type RouteClass, type UsageCallPage, type UsageCallRow, type UsageCursor, type UsageFacet } from '@atlas/shared';
 import { api } from '../../api/endpoints';
+import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import type { FilterState } from './Filters';
 
 /**
@@ -43,10 +44,14 @@ export function useCallFeed(
   const generation = useRef(0);
   const inFlight = useRef(false);
 
+  // Debounced so typing in the search box does not fire a request per
+  // keystroke, each of which resets the list under the reader's cursor.
+  const debouncedQ = useDebouncedValue(filters.q, 250);
+
   // The identity of a result set. Anything here invalidates the list and
   // rewinds the cursor; anything outside it does not.
   const key = JSON.stringify([
-    filters.q.trim(),
+    debouncedQ.trim(),
     filters.client ?? '',
     filters.tool ?? '',
     filters.status ?? '',
@@ -71,7 +76,7 @@ export function useCallFeed(
           client: filters.client,
           tool: filters.tool,
           status: filters.status,
-          q: filters.q.trim() || undefined,
+          q: debouncedQ.trim() || undefined,
           hideNoise: filters.hideNoise,
           limit: pageSize,
           cursorAt: append ? cursor.current?.at : undefined,

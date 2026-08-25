@@ -152,15 +152,18 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
     };
   }, [sessionId]);
 
-  if (loading) return <Spinner label="loading session" />;
-  if (!detail) return <Empty title="Session not found." />;
-  const { session, entries } = detail;
-
+  // Hooks stay unconditional: the loading→loaded transition changes state,
+  // never the hook order (React throws on a hook-count change mid-mount).
+  const entries = detail?.entries ?? [];
   const present = useMemo(() => {
     const s = new Set<EntryKind>();
     for (const e of entries) s.add(kindOf(e));
     return [...s];
   }, [entries]);
+
+  if (loading) return <Spinner label="loading session" />;
+  if (!detail) return <Empty title="Session not found." />;
+  const { session } = detail;
 
   const shown = entries.filter(
     (e) => (kinds.size === 0 || kinds.has(kindOf(e))) && matches(e.body, q),

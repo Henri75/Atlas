@@ -278,7 +278,7 @@ export function Dots({ size = 4, color = colors.kdb }: { size?: number; color?: 
   const anim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     const loop = Animated.loop(
-      Animated.timing(anim, { toValue: 3, duration: 1200, easing: Easing.linear, useNativeDriver: true }),
+      Animated.timing(anim, { toValue: 1, duration: 1200, easing: Easing.linear, useNativeDriver: true }),
     );
     loop.start();
     return () => loop.stop();
@@ -287,15 +287,17 @@ export function Dots({ size = 4, color = colors.kdb }: { size?: number; color?: 
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
       {[0, 1, 2].map((i) => {
-        const phase = Animated.modulo(Animated.add(anim, 3 - i), 3);
+        // Staggered phase in [0,1): each dot runs the same pulse offset by 1/3,
+        // mirroring the CSS `dot-pulse` delays (0 / .16s / .32s).
+        const phase = Animated.modulo(Animated.add(anim, 1 - i / 3), 1);
         const scale = phase.interpolate({
-          inputRange: [0, 0.4, 0.8, 1],
-          outputRange: [1, 0.8, 0.8, 1],
+          inputRange: [0, 0.25, 0.75, 1],
+          outputRange: [0.8, 1, 0.8, 0.8],
           extrapolate: 'clamp',
         });
         const opacity = phase.interpolate({
-          inputRange: [0, 0.4, 0.8, 1],
-          outputRange: [1, 0.25, 0.25, 1],
+          inputRange: [0, 0.25, 0.75, 1],
+          outputRange: [0.25, 1, 0.25, 0.25],
           extrapolate: 'clamp',
         });
         return (

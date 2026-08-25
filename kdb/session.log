@@ -331,3 +331,19 @@
 
 **Notable:** `ask-quality-and-filters` was already fully merged (0 ahead, 72 behind) — deleted as a stale branch. The git warning "refs/notes/commits is invalid" comes from a notes ref that does not exist on this machine; harmless, not touched.
 ---
+---
+### [2026-08-25 18:17 UTC]
+
+**User Prompt Summary:**
+> Implement a state-of-the-art native Expo app for Atlas in mobile/: a 1:1 of the web/PWA (same design identity, all features and screens) plus exclusive native features, with a beautiful animated splash, an always-on loading indicator, maximal code factorization with the web, and docs; report everything needed to build/run/test.
+
+**AI Response Summary:**
+> Shipped the Expo app (mobile/, SDK 57) with all seven web views 1:1 plus native-only capabilities (animated boot, global top progress bar, server+Keychain token, haptics, sheets, share/PDF, deep links), and factorized the platform-neutral logic into a new packages/shared consumed by both clients (ui re-exports keep its tests untouched); 1325/1325 tests, lint and mobile strict-tsc green, committed once as c375a3e and pushed.
+---
+### [2026-08-25 19:05 UTC]
+
+**User Prompt Summary:**
+> Make a critical review of the mobile-app work and fix/improve what is needed.
+
+**AI Response Summary:**
+> Found and fixed five real defects the typechecker could not catch (conditional-hook crash in SessionDetail, Sheet exit-animation/unmount leak, Dots clamp math, unwired call-feed debounce, UTF-8 chunk-spread risk), deduped matches into shared, cleaned app.json/imports; all suites re-verified green and committed fix-forward.

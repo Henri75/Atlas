@@ -1,4 +1,5 @@
 import type { AskEvent } from '@atlas/shared';
+import { flagUnauthorized } from './client';
 import { loadingBus } from './loadingBus';
 
 /**
@@ -13,8 +14,8 @@ import { loadingBus } from './loadingBus';
  * stream — multi-byte characters split across chunk boundaries must survive.
  */
 
-// Lazy-required so the module graph keeps expo/fetch where it belongs and the
-// shared package stays environment-agnostic.
+// expo/fetch is the SDK's streaming-capable fetch; required lazily so the
+// module graph keeps it out of any non-RN consumer of this module's siblings.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { fetch: expoFetch } = require('expo/fetch') as typeof import('expo/fetch');
 
@@ -57,14 +58,23 @@ class Utf8Flow {
           cp = (cp << 6) | (b & 0x3f);
         }
         if (ok) {
-          out.push(...Array.from(String.fromCodePoint(cp), (c) => c.charCodeAt(0)));
+          // Code points above the BMP decode to surrogate pairs; charCodeAt
+          // preserves them for String.fromCharCode below.
+          const units = String.fromCodePoint(cp);
+          for (let k = 0; k < units.length; k++) out.push(units.charCodeAt(k));
           i += need + 1;
           continue;
         }
       }
       i += need + 1;
     }
-    return String.fromCharCode(...out);
+    // Chunked conversion: a single spread of 64k+ args can exceed engine
+    // argument limits on a large SSE burst.
+    let out2 = '';
+    for (let c = 0; c < out.length; c += 0x2000) {
+      out2 += String.fromCharCode(...out.slice(c, c + 0x2000));
+    }
+    return out2;
   }
 }
 
@@ -88,10 +98,7 @@ export async function* askStream(
       body: JSON.stringify(body),
     });
 
-    if (res.status === 401) {
-      const { flagUnauthorized } = await import('./client');
-      flagUnauthorized();
-    }
+    if (res.status === 401) flagUnauthorized();
     if (!res.ok || !res.body) {
       throw new Error(`${res.status}: ${await res.text()}`);
     }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Animated,
   BackHandler,
@@ -17,45 +17,53 @@ import { colors } from '../theme';
  * Slides up on a spring with a dimmed scrim, drags to dismiss, and Android's
  * back button closes it. The list underneath stays mounted as context — the
  * reason the web overlays rather than navigates, kept intact.
+ *
+ * Mount discipline: `mounted` state gates rendering so the EXIT animation
+ * plays in full and only then unmounts — gating on the `open` prop alone
+ * would either kill the animation mid-flight or leak the view off-screen.
  */
 export function Sheet({
   open,
   onClose,
-  title,
   children,
 }: {
   open: boolean;
   onClose: () => void;
-  title?: string;
+  /** Receives `close` so inner controls dismiss with the same animation. */
   children: ReactNode | ((close: () => void) => ReactNode);
 }) {
   const { height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const y = useRef(new Animated.Value(height)).current;
   const scrim = useRef(new Animated.Value(0)).current;
-  const visible = useRef(false);
+  const [mounted, setMounted] = useState(open);
 
   useEffect(() => {
-    if (open && !visible.current) {
-      visible.current = true;
+    if (open) {
+      setMounted(true);
       y.setValue(height);
       Animated.parallel([
-        Animated.spring(y, {
-          toValue: 0,
-          bounciness: 6,
-          speed: 20,
+        Animated.spring(y, { toValue: 0, bounciness: 6, speed: 20, useNativeDriver: true }),
+        Animated.timing(scrim, {
+          toValue: 1,
+          duration: 180,
+          easing: Easing.out(Easing.ease),
           useNativeDriver: true,
         }),
-        Animated.timing(scrim, { toValue: 1, duration: 180, easing: Easing.out(Easing.ease), useNativeDriver: true }),
       ]).start();
-    } else if (!open && visible.current) {
-      visible.current = false;
+    } else if (mounted) {
       Animated.parallel([
-        Animated.timing(y, { toValue: height, duration: 200, easing: Easing.in(Easing.ease), useNativeDriver: true }),
+        Animated.timing(y, {
+          toValue: height,
+          duration: 200,
+          easing: Easing.in(Easing.ease),
+          useNativeDriver: true,
+        }),
         Animated.timing(scrim, { toValue: 0, duration: 160, useNativeDriver: true }),
-      ]).start();
+      ]).start(() => setMounted(false));
     }
-  }, [open, height, y, scrim]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // Android hardware back closes the sheet first.
   useEffect(() => {
@@ -76,7 +84,6 @@ export function Sheet({
       },
       onPanResponderRelease: (_e, g) => {
         if (g.dy > height * 0.18 || g.vy > 0.9) {
-          visible.current = false;
           Animated.timing(y, { toValue: height, duration: 190, useNativeDriver: true }).start(() =>
             onClose(),
           );
@@ -88,7 +95,7 @@ export function Sheet({
     }),
   ).current;
 
-  if (!open && !visible.current) return null;
+  if (!mounted) return null;
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
@@ -117,27 +124,10 @@ export function Sheet({
           elevation: 24,
         }}
       >
-        <View {...pan.panHandlers} style={{ alignItems: 'center', paddingTop: 8, paddingBottom: 2 }}>
+        <View style={{ alignItems: 'center', paddingTop: 8, paddingBottom: 2 }}>
           <View style={{ width: 40, height: 4.5, borderRadius: 3, backgroundColor: colors.line }} />
         </View>
-        {title ? (
-          <View
-            style={{
-              paddingHorizontal: 20,
-              paddingTop: 8,
-              paddingBottom: 10,
-              borderBottomWidth: StyleSheet.hairlineWidth,
-              borderBottomColor: colors.line,
-            }}
-          >
-            <View accessible accessibilityRole="header">
-              {title}
-            </View>
-          </View>
-        ) : null}
-        <View style={{ flexShrink: 1 }}>
-          {typeof children === 'function' ? children(onClose) : children}
-        </View>
+        <View style={{ flexShrink: 1 }}>{typeof children === 'function' ? children(onClose) : children}</View>
       </Animated.View>
     </View>
   );

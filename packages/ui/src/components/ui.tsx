@@ -422,11 +422,8 @@ export function FilterInput({
   );
 }
 
-/** Case-insensitive substring match, safe for empty needles. */
-export function matches(haystack: string | undefined, needle: string): boolean {
-  if (!needle) return true;
-  return (haystack ?? '').toLowerCase().includes(needle.toLowerCase());
-}
+/** Case-insensitive substring match — shared with native via @atlas/shared. */
+export { matches } from '@atlas/shared';
 
 /** Highlight every occurrence of `needle` without interpreting it as regex. */
 export function Highlight({ text, needle }: { text: string; needle: string }) {
