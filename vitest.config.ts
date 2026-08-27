@@ -12,6 +12,11 @@ export default defineConfig({
       // modules are imported individually (`@atlas/eval/metrics.js`), matching
       // how they import each other.
       '@atlas/eval': fileURLToPath(new URL('./packages/eval/src', import.meta.url)),
+      // vite-plugin-pwa injects this virtual module at build time; under plain
+      // vitest it does not exist, and every test that renders App imports it.
+      'virtual:pwa-register': fileURLToPath(
+        new URL('./test/fixtures/pwaRegisterStub.ts', import.meta.url),
+      ),
     },
   },
   test: {

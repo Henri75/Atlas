@@ -248,3 +248,33 @@ html {
     background: color-mix(in srgb, var(--color-kdb) 18%, transparent);
   }
 }
+
+/*
+ * Installed-app chrome.
+ *
+ * index.html sets viewport-fit=cover so the app can paint edge to edge behind
+ * the status bar and home indicator — which then makes the insets our problem
+ * rather than the browser's. In a tab every env() below resolves to 0, so this
+ * costs nothing there.
+ */
+@media (display-mode: standalone) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* Fixed elements are positioned against the viewport, not the padded body,
+     so they have to clear the insets themselves. */
+  .fixed.bottom-4 {
+    bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+
+  /* No text selection or callout on a long-press: in a standalone app that
+     reads as a broken native control rather than a web page. */
+  body {
+    -webkit-touch-callout: none;
+    overscroll-behavior-y: none;
+  }
+}

@@ -2,10 +2,101 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover so the installed app can paint into the notch area;
+         the shell then pads with env(safe-area-inset-*). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Atlas</title>
+    <meta name="description" content="Atlas — project memory, searchable: kdb logs, Claude Code sessions, git history and docs across every project." />
+
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0e1116" />
+    <meta name="color-scheme" content="dark" />
+
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+
+    <!-- iOS still installs PWAs through these rather than the manifest. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Atlas" />
+    <!--__ATLAS_IOS_SPLASH__-->
+
+    <!--
+      The boot splash is INLINE on purpose: it has to paint on the first frame,
+      before the module bundle is fetched, parsed and mounted. Anything loaded
+      from a separate file arrives too late to be a splash at all.
+
+      It mirrors the native app's SplashOverlay exactly — same dark field, same
+      amber lens with an orbiting satellite (2600ms linear), same wordmark fade
+      (150ms delay, 500ms), same 320ms exit — so installing the PWA and opening
+      the native app are the same moment of brand.
+    -->
+    <style>
+      html, body { margin: 0; padding: 0; background: #0e1116; }
+      #atlas-boot {
+        position: fixed;
+        inset: 0;
+        z-index: 2000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #0e1116;
+        opacity: 1;
+        transition: opacity 320ms ease-out;
+        font-family: "IBM Plex Sans Condensed", ui-sans-serif, system-ui, sans-serif;
+      }
+      #atlas-boot[data-leaving="true"] { opacity: 0; pointer-events: none; }
+      #atlas-boot .mark { width: 116px; height: 116px; display: block; }
+      #atlas-boot .orbit { transform-origin: 50% 50%; animation: atlas-spin 2600ms linear infinite; }
+      #atlas-boot .word {
+        margin-top: 22px;
+        text-align: center;
+        opacity: 0;
+        animation: atlas-rise 500ms ease-out 150ms forwards;
+      }
+      #atlas-boot .name {
+        color: #e6edf3;
+        font-size: 26px;
+        font-weight: 700;
+        letter-spacing: 3px;
+      }
+      #atlas-boot .tag {
+        margin-top: 4px;
+        color: #58626d;
+        font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10.5px;
+        letter-spacing: 1.5px;
+      }
+      @keyframes atlas-spin { to { transform: rotate(360deg); } }
+      @keyframes atlas-rise {
+        from { opacity: 0; transform: translateY(6px); }
+        to   { opacity: 1; transform: none; }
+      }
+      /* Respect the OS setting: keep the splash, drop the motion. */
+      @media (prefers-reduced-motion: reduce) {
+        #atlas-boot .orbit { animation: none; }
+        #atlas-boot .word { animation: none; opacity: 1; }
+        #atlas-boot { transition: none; }
+      }
+    </style>
   </head>
   <body>
+    <div id="atlas-boot" role="status" aria-live="polite" aria-label="Loading Atlas">
+      <svg class="mark" viewBox="0 0 100 100" aria-hidden="true">
+        <circle cx="50" cy="50" r="36" fill="none" stroke="#e3b341" stroke-opacity="0.55" stroke-width="2.8" />
+        <circle cx="50" cy="50" r="15.5" fill="none" stroke="#e3b341" stroke-width="3.4" />
+        <g class="orbit">
+          <circle cx="50" cy="14" r="5.2" fill="#e3b341" />
+        </g>
+      </svg>
+      <div class="word">
+        <div class="name">Atlas</div>
+        <div class="tag">project memory, searchable</div>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

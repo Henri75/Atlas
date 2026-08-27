@@ -14,6 +14,12 @@ import { SessionsView } from './views/SessionsView';
 import { MonitorView } from './views/MonitorView';
 import { MachinesView } from './views/MachinesView';
 import { TokenGate } from './components/TokenGate';
+import {
+  dismissBootSplash,
+  useInstallPrompt,
+  useOnline,
+  useServiceWorker,
+} from './pwa';
 
 /**
  * Shell. Two axes, deliberately kept apart:
@@ -52,7 +58,14 @@ export default function App() {
   const [startView, setStartView] = usePersistentState<View>('atlas.startView', 'search');
   // Read once, at mount. Rewriting `view` whenever the preference changes would
   // teleport you out of whatever you were reading the moment you set it.
-  const [view, setView] = useState<View>(() => (isView(startView) ? startView : 'search'));
+  const [view, setView] = useState<View>(() => {
+    // A manifest shortcut launches /?view=<key>. It is a deliberate act for
+    // this launch only, so it outranks the persisted preference — but it is
+    // also outside the type system, hence isView rather than a cast.
+    const requested = new URLSearchParams(window.location.search).get('view');
+    if (isView(requested)) return requested;
+    return isView(startView) ? startView : 'search';
+  });
 
   const [openSessionId, setOpenSessionId] = useState('');
   const [offline, setOffline] = useState(false);
@@ -68,6 +81,14 @@ export default function App() {
     window.addEventListener('atlas:unauthorized', onUnauthorized);
     return () => window.removeEventListener('atlas:unauthorized', onUnauthorized);
   }, []);
+
+  // Installed-app plumbing. The boot splash lives in index.html so it can
+  // paint before this bundle exists; React has to be the one to retire it.
+  const { updateReady, applyUpdate } = useServiceWorker();
+  const { canInstall, install } = useInstallPrompt();
+  const online = useOnline();
+  const [installDismissed, setInstallDismissed] = useState(false);
+  useEffect(() => dismissBootSplash(), []);
 
   const toggleFavorite = useCallback(
     (slug: string) =>
@@ -181,11 +202,23 @@ export default function App() {
                 background: 'color-mix(in srgb, var(--color-report) 8%, transparent)',
               }}
             >
-              <span style={{ color: 'var(--color-report)' }}>Cannot reach the API.</span>{' '}
-              <span className="text-muted">
-                The stack may still be starting. Check <code className="font-mono">make ps</code>{' '}
-                and <code className="font-mono">make logs</code>.
-              </span>
+              {online ? (
+                <>
+                  <span style={{ color: 'var(--color-report)' }}>Cannot reach the API.</span>{' '}
+                  <span className="text-muted">
+                    The stack may still be starting. Check <code className="font-mono">make ps</code>{' '}
+                    and <code className="font-mono">make logs</code>.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span style={{ color: 'var(--color-report)' }}>You are offline.</span>{' '}
+                  <span className="text-muted">
+                    Showing the last data Atlas cached; it will refresh by itself when the
+                    connection returns.
+                  </span>
+                </>
+              )}
             </div>
           )}
           {view === 'dashboard' && <DashboardView onGoTo={setView} />}
@@ -221,6 +254,53 @@ export default function App() {
           className="fixed bottom-4 right-4 bg-panel-2 border border-line rounded-md px-4 py-2.5 text-sm rise"
         >
           {toast}
+        </div>
+      )}
+
+      {/*
+        An update installs in the background but never takes over on its own:
+        reloading underneath a streaming answer would throw it away. The
+        reader decides when.
+      */}
+      {updateReady && (
+        <div
+          role="status"
+          className="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-panel-2 border border-line rounded-md px-4 py-2.5 text-sm rise"
+        >
+          <span>A new version of Atlas is ready.</span>
+          <button
+            type="button"
+            onClick={applyUpdate}
+            className="rounded px-2.5 py-1 text-[13px] font-medium"
+            style={{ background: 'var(--color-kdb)', color: 'var(--color-bg)' }}
+          >
+            Reload
+          </button>
+        </div>
+      )}
+
+      {canInstall && !installDismissed && (
+        <div
+          role="status"
+          className="fixed bottom-4 right-4 flex items-center gap-3 bg-panel-2 border border-line rounded-md px-4 py-2.5 text-sm rise"
+        >
+          <span>Install Atlas for offline access.</span>
+          <button
+            type="button"
+            onClick={install}
+            className="rounded px-2.5 py-1 text-[13px] font-medium"
+            style={{ background: 'var(--color-kdb)', color: 'var(--color-bg)' }}
+          >
+            Install
+          </button>
+          <button
+            type="button"
+            onClick={() => setInstallDismissed(true)}
+            aria-label="Dismiss install prompt"
+            className="text-muted px-1"
+          >
+            ✕
+          </button>
         </div>
       )}
     </div>

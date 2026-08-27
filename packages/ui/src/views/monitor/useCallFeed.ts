@@ -76,7 +76,12 @@ export function useCallFeed(
 
   const fetchPage = useCallback(
     async (append: boolean) => {
-      if (inFlight.current) return;
+      // Only an APPEND can meaningfully collide: two page-N requests would
+      // fetch the same cursor twice. A reset must never be dropped — bailing
+      // out here left the list empty with nothing in flight whenever a filter
+      // changed while a page was still in the air, and the stale response was
+      // then discarded by the generation check below.
+      if (inFlight.current && append) return;
       inFlight.current = true;
       const gen = generation.current;
       append ? setLoadingMore(true) : setLoading(true);
@@ -112,9 +117,13 @@ export function useCallFeed(
       } catch (e) {
         if (gen === generation.current) setError((e as Error).message);
       } finally {
-        inFlight.current = false;
-        setLoadingMore(false);
-        setLoading(false);
+        // A newer generation owns these flags now; clearing them here would
+        // announce "idle" while its request is still running.
+        if (gen === generation.current) {
+          inFlight.current = false;
+          setLoadingMore(false);
+          setLoading(false);
+        }
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
