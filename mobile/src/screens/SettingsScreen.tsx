@@ -23,10 +23,12 @@ import { colors, fonts, tint } from '../theme';
  * lives, and the bearer token for a LAN-exposed instance.
  */
 export function SettingsScreen() {
-  const { baseUrl, setBaseUrl, token, setToken, refresh } = useServer();
+  const { baseUrl, setBaseUrl, token, setToken, access, setAccess, refresh } = useServer();
   const [startView, setStartView] = usePersistentState<AtlasView>('atlas.startView', 'search');
   const [urlDraft, setUrlDraft] = useState(baseUrl);
   const [tokenDraft, setTokenDraft] = useState('');
+  const [accessIdDraft, setAccessIdDraft] = useState('');
+  const [accessSecretDraft, setAccessSecretDraft] = useState('');
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState('');
 
@@ -51,10 +53,30 @@ export function SettingsScreen() {
     setTimeout(refresh, 200);
   };
 
+  const saveAccess = () => {
+    const id = accessIdDraft.trim();
+    const secret = accessSecretDraft.trim();
+    if (!id && !secret) {
+      setAccess(null);
+      toast('Cloudflare Access credentials cleared.');
+    } else if (!id || !secret) {
+      // One header without the other is refused at the edge with the same 403
+      // as a wrong token, which is a confusing way to find out.
+      toast('Both the Client Id and the Client Secret are needed.');
+      return;
+    } else {
+      setAccess({ clientId: id, clientSecret: secret });
+      toast('Cloudflare Access credentials saved.');
+    }
+    setAccessIdDraft('');
+    setAccessSecretDraft('');
+    setTimeout(refresh, 200);
+  };
+
   const runProbe = async () => {
     saveUrlIfChanged();
     setProbing(true);
-    const r = await probe(urlDraft.trim() || baseUrl, token);
+    const r = await probe(urlDraft.trim() || baseUrl, token, access);
     setProbing(false);
     setProbeResult(`${r.ok ? '✓' : '✕'} ${r.detail}`);
   };
@@ -75,7 +97,8 @@ export function SettingsScreen() {
 
   const copyDiagnostics = () => {
     void Clipboard.setStringAsync(
-      `Atlas mobile diagnostics\nserver: ${baseUrl}\ntoken: ${token ? 'set' : 'none'}\n`,
+      `Atlas mobile diagnostics\nserver: ${baseUrl}\ntoken: ${token ? 'set' : 'none'}\n` +
+        `cloudflare access: ${access ? `${access.clientId} (secret stored)` : 'none'}\n`,
     ).then(() => toast('Diagnostics copied'));
   };
 
@@ -131,6 +154,45 @@ export function SettingsScreen() {
           <SmallButton label="Save token" onPress={saveToken} />
           {token ? (
             <SmallButton label="Remove token" onPress={() => setToken(null)} danger />
+          ) : null}
+        </View>
+      </View>
+
+      {/* Cloudflare Access */}
+      <View style={{ marginTop: 26 }}>
+        <Eyebrow>Cloudflare Access</Eyebrow>
+        <Text style={help}>
+          Needed only when Atlas is reached over its public address. Access signs people in
+          through a browser, which an app cannot do — a service token is the way in instead.
+          <Text style={{ fontFamily: fonts.mono }}> make tunnel-setup </Text>
+          prints one. Stored in the device Keychain/Keystore.{'\n'}
+          {access ? '\u2713 A service token is stored on this device.' : 'No service token stored.'}
+        </Text>
+        <TextInput
+          value={accessIdDraft}
+          onChangeText={setAccessIdDraft}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder={access ? `${access.clientId.slice(0, 10)}\u2026 (stored)` : 'CF-Access-Client-Id'}
+          placeholderTextColor={colors.faint}
+          accessibilityLabel="Cloudflare Access client id"
+          style={input}
+        />
+        <TextInput
+          value={accessSecretDraft}
+          onChangeText={setAccessSecretDraft}
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder={access ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (stored)' : 'CF-Access-Client-Secret'}
+          placeholderTextColor={colors.faint}
+          accessibilityLabel="Cloudflare Access client secret"
+          style={[input, { marginTop: 8 }]}
+        />
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+          <SmallButton label="Save credentials" onPress={saveAccess} />
+          {access ? (
+            <SmallButton label="Remove" onPress={() => setAccess(null)} danger />
           ) : null}
         </View>
       </View>

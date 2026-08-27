@@ -17,6 +17,7 @@ import type {
 } from '@atlas/shared';
 import { qs, transport } from './client';
 import { askStream } from './stream';
+import type { AccessCredentials } from './client';
 
 /**
  * The typed Atlas API, mirroring packages/ui/src/api.ts route for route so the
@@ -62,9 +63,9 @@ export const api = {
   /** Streaming ask — resolves the connection settings at call time. */
   ask(
     body: Record<string, unknown>,
-    opts: { baseUrl: string; token: string | null },
+    opts: { baseUrl: string; token: string | null; access?: AccessCredentials | null },
     signal?: AbortSignal,
   ) {
-    return askStream(opts.baseUrl, opts.token, body, signal);
+    return askStream(opts.baseUrl, opts.token, body, signal, opts.access ?? null);
   },
 };

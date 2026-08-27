@@ -59,6 +59,17 @@ const CONSUMED_BY_COMPOSE = new Set([
   // Interpolated straight into the indexer's `/keys` bind-mount source
   // (docker-compose.yml) — nothing in packages/core reads it directly.
   'ATLAS_KEYS_DIR',
+  // Public access. Compose interpolates the token into the cloudflared
+  // service; the rest is read by scripts/cloudflare_tunnel.py, which talks to
+  // Cloudflare's API rather than to Atlas. None of it reaches packages/core:
+  // the application is unaware it is being tunnelled, which is the point.
+  'CLOUDFLARE_TUNNEL_TOKEN',
+  'ATLAS_PUBLIC_HOSTNAME',
+  'ATLAS_ACCESS_EMAILS',
+  'ATLAS_TUNNEL_NAME',
+  'ATLAS_TUNNEL_ORIGIN',
+  'ATLAS_ACCESS_SESSION',
+  'ATLAS_ACCESS_TOKEN_NAME',
 ]);
 
 /**
@@ -100,7 +111,12 @@ describe('config/atlas.defaults.env', () => {
   it('leaves every secret empty, because secrets come from Doppler', () => {
     // A key committed here would be a key in git history. The slots exist so the
     // shape is documented; the values come from the shell at container creation.
-    for (const secret of ['EMBEDDINGS_API_KEY', 'LLM_API_KEY', 'ATLAS_TOKEN']) {
+    for (const secret of [
+      'EMBEDDINGS_API_KEY',
+      'LLM_API_KEY',
+      'ATLAS_TOKEN',
+      'CLOUDFLARE_TUNNEL_TOKEN',
+    ]) {
       const m = new RegExp(`^${secret}=(.*)$`, 'm').exec(defaultsFile);
       expect(m, `${secret} should be present as an empty slot`).not.toBeNull();
       expect(m![1]!.trim()).toBe('');
@@ -118,6 +134,35 @@ describe('config/atlas.defaults.env', () => {
       .join('\n');
     expect(values).not.toMatch(/\$\(/);
     expect(values).not.toMatch(/`/);
+  });
+});
+
+/**
+ * This repository is PUBLIC, so committed config must not name the deployment.
+ *
+ * A machine path was the 2026-08-24 failure; a hostname or an operator's email
+ * address is the same mistake with a different blast radius — it does not break
+ * anyone's boot, it just publishes who runs Atlas and where, permanently, in
+ * git history. Both belong in the gitignored .env beside the tunnel token.
+ */
+describe('committed config identifies no deployment', () => {
+  const activeValues = defaultsFile
+    .split('\n')
+    .filter((l) => /^[A-Z][A-Z0-9_]*=/.test(l.trim()));
+
+  it('carries no email address in any active value', () => {
+    // Deliberately narrow: DATABASE_URL's `kdbscope@postgres` has no dotted
+    // TLD and is a service name, not a person.
+    const email = /[\w.+-]+@[\w-]+\.[a-z]{2,}/i;
+    expect(activeValues.filter((l) => email.test(l))).toEqual([]);
+  });
+
+  it('leaves the deployment-identifying slots empty', () => {
+    for (const key of ['ATLAS_PUBLIC_HOSTNAME', 'ATLAS_ACCESS_EMAILS']) {
+      const m = new RegExp(`^${key}=(.*)$`, 'm').exec(defaultsFile);
+      expect(m, `${key} should be present as an empty slot`).not.toBeNull();
+      expect(m![1]!.trim()).toBe('');
+    }
   });
 });
 

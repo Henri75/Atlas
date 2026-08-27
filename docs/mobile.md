@@ -118,8 +118,10 @@ split-on-`\n\n` SSE parser as the web, byte-for-byte.
   comparable, though the stores are obviously per-device.
 - The app reports itself to the usage monitor as client **`mobile`** — it will
   appear in Monitor's client charts alongside `ui`, `cli`, `mcp`.
-- Assets are generated, not hand-drawn: `make mobile-assets` re-renders
-  icon/adaptive-icon/splash from `scripts/mobile_assets.py` (same palette).
+- Assets are generated, not hand-drawn: `make app-assets` re-renders the native
+  icon/adaptive-icon/splash *and* the web PWA icons and iOS startup images from
+  `scripts/app_assets.py`, all from the same palette, so the two surfaces cannot
+  drift apart.
 - Native builds for distribution: `npx expo prebuild` + Xcode/Studio, or
   `eas build` (no eas config is committed).
 

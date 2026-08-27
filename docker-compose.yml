@@ -143,6 +143,34 @@ services:
     depends_on:
       api: { condition: service_healthy }
 
+  # Public access. Behind the `public` profile, so a local install never starts
+  # it and `make start` is unchanged; `make public-up` adds the profile.
+  #
+  # It dials `ui` over this compose network, which is why nothing new is
+  # published on the host and ATLAS_BIND can stay on loopback: the tunnel is an
+  # outbound connection, not an open port. Note that reaching the api THROUGH
+  # nginx means the api sees nginx's bridge address rather than loopback, so
+  # ATLAS_TOKEN is enforced on every tunnelled request once it is set.
+  #
+  # Ingress lives in Cloudflare (config_src=cloudflare), not in a local file —
+  # scripts/cloudflare_tunnel.py owns it. The container gets one credential.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.8.2@sha256:0aa26e284f05e6c77ae375b8c9c11d9eb6a448fb7bcd8d40f31cb6176189eb38
+    restart: unless-stopped
+    profiles: ['public']
+    command: ['tunnel', '--no-autoupdate', 'run']
+    environment:
+      # NOT `${VAR:?msg}`: compose interpolates the whole file before it
+      # applies profiles, so a required-variable form here would fail every
+      # `make ps` / `make start` on an install that never wanted a tunnel.
+      # `make public-up` checks it instead, where a good message is possible.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+      # Structured logs, so `make public-logs` shows why a connection failed
+      # rather than only that it did.
+      TUNNEL_LOGLEVEL: info
+    depends_on:
+      ui: { condition: service_started }
+
   qdrant:
     image: qdrant/qdrant:v1.18.2@sha256:75eab8c4ba42096724fdcfde8b4de0b5713d529dde32f285a1f86fdcb2c9e50c
     restart: unless-stopped

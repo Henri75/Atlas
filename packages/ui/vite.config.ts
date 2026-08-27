@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { VitePWA } from 'vite-plugin-pwa';
+import { VitePWA, type ManifestOptions } from 'vite-plugin-pwa';
 import { PALETTE, VIEWS } from '@atlas/shared';
 
 const SPLASH_DIR = fileURLToPath(new URL('./public/splash', import.meta.url));
@@ -44,7 +44,7 @@ function iosSplashLinks(): Plugin {
  * anonymous literal buried in build config — test/ui/pwaManifest.test.ts
  * checks every icon it names exists and every shortcut points at a real view.
  */
-export const atlasManifest = {
+export const atlasManifest: Partial<ManifestOptions> = {
   name: 'Atlas — project memory, searchable',
   short_name: 'Atlas',
   description:
@@ -70,7 +70,7 @@ export const atlasManifest = {
     url: `/?view=${v.key}`,
     icons: [{ src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' }],
   })),
-} as const;
+};
 
 export default defineConfig({
   plugins: [

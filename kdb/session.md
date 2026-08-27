@@ -349,3 +349,15 @@
 
 **AI Response Summary:**
 > Found and fixed five real defects the typechecker could not catch (conditional-hook crash in SessionDetail, Sheet exit-animation/unmount leak, Dots clamp math, unwired call-feed debounce, UTF-8 chunk-spread risk), deduped matches into shared, cleaned app.json/imports; all suites re-verified green and committed fix-forward.
+---
+### [2026-08-27 16:16 UTC]
+
+**User Prompt Summary:**
+> Pull the Expo app pushed from the other laptop without losing any code locally or remotely; review and improve the native app; give the web version full PWA support including an animated loading splash; and make both the PWA and the native app reachable outside the local network via Cloudflare with Cloudflare authentication, updating the tunnel/nginx on this host without breaking anything (an OrbStack tuning session was running in parallel).
+
+**AI Response Summary:**
+> Fast-forwarded main (clean tree, no stash, no local-only commits, main the only remote branch). Reviewed the Expo app and found two real defects — an unbuildable web image (packages/ui imports @atlas/shared, which ui.Dockerfile never copied or built; proven with a real docker build) and a call feed that goes permanently blank when filters change mid-request, in both clients — both fixed with mutation-verified guards. Shipped the PWA (generated manifest/icons/iOS splashes from the shared palette, hand-written service worker, inline animated boot splash matching the native app, install/update prompts). Gave Atlas its own Cloudflare tunnel behind a compose profile rather than routing through DeepCast's, provisioned by a new idempotent script, with Access email-OTP for the browser and a service token for the native app; verified both layers independently against the live hostname.
+
+**Notable:** Three traps, all measured rather than reasoned about. An nginx `types` block REPLACES the inherited mime map — the two obvious lines for .webmanifest served html/js/css/png as application/octet-stream. `${VAR:?msg}` in compose is evaluated before profiles, so it breaks every `make ps` on installs that never wanted the profile. And the deployed kdb-mcp image contained no bearer-token code despite a build timestamp days after the commit that added it, so setting ATLAS_TOKEN 401'd every MCP tool call until the image was rebuilt — a container's age says nothing about its contents.
+
+**Deviation:** `make public-up` followed depends_on and recreated kdb-api, beyond the ui+cloudflared the user had approved; that activated ATLAS_TOKEN, which then exposed the stale mcp image. kdb-mcp was rebuilt and recreated to restore it, and the user's user-scope Claude Code MCP registration now carries the bearer header. indexer/qdrant/postgres/redis and every DeepCast and Lycos container were never touched.

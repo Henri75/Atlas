@@ -70,15 +70,15 @@ export function SearchAskScreen({ scope }: { scope: ScopeHandle }) {
   const [openEntry, setOpenEntry] = useState<number | null>(null);
   const seq = useRef(0);
 
-  const { baseUrl, token } = useServer();
+  const { baseUrl, token, access } = useServer();
   const { self, machines, multiMachine } = useMachines();
 
   // The shared conversation engine; the transport resolves connection settings
   // at call time so an in-flight answer keeps the scope it started with.
   const askStreamTransport = useCallback(
     (body: Record<string, unknown>, signal?: AbortSignal) =>
-      api.ask(body, { baseUrl, token }, signal),
-    [baseUrl, token],
+      api.ask(body, { baseUrl, token, access }, signal),
+    [baseUrl, token, access],
   );
   const ask = useAskConversation(scope.projects, setOpenEntry, sources, machine, askStreamTransport);
   const busy = ask.turns.some((t) => t.streaming);

@@ -44,7 +44,7 @@ export ATLAS_REPO_PARENT := $(abspath $(CURDIR)/..)
 # probe — otherwise every `make ps` would make a Doppler API round-trip.
 DOPPLER = $(shell doppler run --command 'true' >/dev/null 2>&1 && echo 'doppler run --')
 
-.PHONY: help install build test lint start stop restart restart-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose print-repo-parent cli-link connect-link kdb-rebuild mobile-start mobile-typecheck mobile-assets clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal help-audit
+.PHONY: help install build test lint start stop restart restart-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose print-repo-parent cli-link connect-link kdb-rebuild mobile-start mobile-typecheck app-assets clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal help-audit
 
 # The harness runs on the host, not in a container: a variant has to be a config
 # object rather than an image rebuild for an A/B to be possible at all. Ports come
@@ -184,6 +184,33 @@ smoke: ## poke health + search endpoints of a running stack
 config-check: ## assert compose resolves configuration the way the design assumes
 	bash scripts/config-sources.sh
 
+# --- Public access (Cloudflare tunnel + Access) -------------------------------
+# The tunnel tooling talks to Cloudflare's API rather than running under
+# compose, so it needs the same two env files sourced into its own environment.
+# Cloudflare CREDENTIALS are never read from those files: export them, or run
+# these through a Doppler session that has them
+# (`doppler run -p <project> -c <config> -- make tunnel-setup`).
+TUNNEL_ENV := set -a; . config/atlas.defaults.env; $(if $(DOTENV),. .env;,) set +a;
+
+tunnel-status: ## show the Cloudflare tunnel, DNS record, Access app and policies for this deployment
+	@$(TUNNEL_ENV) python3 scripts/cloudflare_tunnel.py status
+
+tunnel-setup: ## create or repair the tunnel, DNS, Access app and service token (idempotent; prints secrets to put in .env)
+	@$(TUNNEL_ENV) python3 scripts/cloudflare_tunnel.py setup
+
+tunnel-teardown: ## DESTRUCTIVE — delete the tunnel, its DNS record and the Access application
+	@$(TUNNEL_ENV) python3 scripts/cloudflare_tunnel.py teardown
+
+public-up: ## start the tunnel container, putting Atlas on the internet behind Cloudflare Access
+	@$(TUNNEL_ENV) test -n "$$CLOUDFLARE_TUNNEL_TOKEN" || { echo "CLOUDFLARE_TUNNEL_TOKEN is empty — run 'make tunnel-setup' and save it in .env"; exit 1; }
+	$(COMPOSE) --profile public up -d cloudflared
+
+public-down: ## stop the tunnel container — Atlas keeps running, it just stops being reachable from outside
+	$(COMPOSE) --profile public stop cloudflared
+
+public-logs: ## follow the tunnel container's logs (connection errors show up here, not in `make logs`)
+	$(COMPOSE) --profile public logs -f --tail 100 cloudflared
+
 help-audit: ## Fail when a Make target's description is missing (mark deliberate exceptions @internal) — §3 guard
 	npx vitest run test/makefile_help.test.ts
 
@@ -219,8 +246,8 @@ mobile-start: ## run the native Expo app dev server (mobile/) — press i/a or s
 mobile-typecheck: ## typecheck the Expo app (mobile/tsconfig.json, strict)
 	npx tsc --noEmit -p mobile/tsconfig.json
 
-mobile-assets: ## regenerate mobile/assets PNGs (icon, adaptive icon, splash) from scripts/mobile_assets.py
-	python3 scripts/mobile_assets.py
+app-assets: ## regenerate every drawn asset — native icons/splash AND the PWA icons and iOS startup images
+	python3 scripts/app_assets.py
 
 # --- usage telemetry ---------------------------------------------------------
 # Deliberately manual and unscheduled. At observed volume the whole table is

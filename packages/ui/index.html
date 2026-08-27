@@ -8,7 +8,15 @@
     <title>Atlas</title>
     <meta name="description" content="Atlas — project memory, searchable: kdb logs, Claude Code sessions, git history and docs across every project." />
 
-    <link rel="manifest" href="/manifest.webmanifest" />
+    <!--
+      use-credentials is required, not decorative: a manifest is fetched in
+      "omit" credentials mode by default, so behind Cloudflare Access the
+      request arrives without the Access cookie and comes back as the login
+      page. The browser then silently treats the app as non-installable.
+      The alternative — an Access bypass rule on the manifest path — punches a
+      hole in the perimeter to solve a request-mode problem.
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
     <meta name="theme-color" content="#0e1116" />
     <meta name="color-scheme" content="dark" />
 

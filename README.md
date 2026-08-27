@@ -138,3 +138,10 @@ model is a trusted home LAN over cleartext HTTP, not a hostile network —
 see [`docs/multi-machine.md`](docs/multi-machine.md#lan-access-setup) for
 setup and the documented Tailscale/TLS upgrade path. Project mounts are
 read-only; the stack cannot modify indexed repositories.
+
+Reaching Atlas from **outside** the LAN is a separate, opt-in path: an
+outbound Cloudflare tunnel with Cloudflare Access in front, so no port is
+opened on the host and unauthenticated requests never reach the origin at
+all. `ATLAS_TOKEN` still applies on top, because a tunnelled request arrives
+through nginx and is therefore never loopback — two independent layers. See
+[`docs/public-access.md`](docs/public-access.md).

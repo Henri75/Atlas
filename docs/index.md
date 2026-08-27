@@ -15,6 +15,7 @@
 - [CLI](cli.md) — `atlas` commands.
 - [Operations](operations.md) — running, reindexing, troubleshooting.
 - [Multi-Machine](multi-machine.md) — enrolling a machine, moving the stack, the dedup migration rollout, LAN access.
+- [Public access](public-access.md) — reaching Atlas from outside the LAN over a Cloudflare tunnel, with Cloudflare Access in front.
 - Design spec: [`superpowers/specs/2026-07-09-kdbscope-design.md`](superpowers/specs/2026-07-09-kdbscope-design.md)
 - Multi-machine spec: [`superpowers/specs/2026-08-19-multi-machine-design.md`](superpowers/specs/2026-08-19-multi-machine-design.md)
 - ADR: [`adr/20260709-microservices-architecture.md`](adr/20260709-microservices-architecture.md)

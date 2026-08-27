@@ -26,3 +26,27 @@
 
 **Status:**
 - Completed
+### [2026-08-27] - [mobile-3: Cloudflare Access service token, call-feed fix, transport wiring]
+
+**Objective:**
+- Let the native app reach Atlas from outside the LAN, where Cloudflare Access sits in front, and fix what a review of the app turned up.
+
+**Summary of Work:**
+- **Cloudflare Access support**: Access authenticates people through a browser, which an app cannot complete, so the app now sends a service token (CF-Access-Client-Id / CF-Access-Client-Secret) on every call including the SSE stream. Credentials live in SecureStore beside the bearer token, are entered under Settings > Cloudflare Access, and are stored only as a complete pair — half a service token is refused at the edge with the same 403 as a wrong one.
+- **An edge rejection is not an Atlas 401**: isAccessRejection() separates the two (Access answers 401/403 from the edge with HTML and cf-mitigated; Atlas answers JSON from Hono). Without the split, a service-token problem raised the bearer-token gate and sent the reader off to re-enter a token that was already correct. `probe()` names which layer refused, for the same reason.
+- **Call feed could go permanently blank** (present in the web copy too): changing a filter while a page request was in flight hit the shared `inFlight` guard in fetchPage, so no request was ever issued for the new filters, and the response already in the air was then discarded by the generation check — empty list, nothing loading, no error. The guard now applies only to appends (the only calls that can duplicate a cursor), and the finally block leaves the flags alone when a newer generation owns them. Regression test mutation-verified: it fails on the old code while the anti-over-correction test (concurrent loadMore still collapses to one request) passes on both.
+- **Transport wiring**: configureTransport ran inside a useEffect, but a child screen's effect runs BEFORE its parent's, so a screen fetching on mount could fire against an unconfigured transport. It now writes through a ref during render. Also dropped an unused `transport` import that strict tsc could not see (noUnusedLocals is not set).
+
+**Key Decisions & Rationale:**
+- Service token rather than an embedded web view for the Access login: no session to keep alive, no periodic re-login interrupting the app, and SSE survives it — a cookie session through a web view is exactly where streaming answers break.
+- Headers built in one place (atlasHeaders) consumed by the plain and SSE paths, because the two layers are independent and every request needs both: Cloudflare decides whether it reaches the origin, Atlas decides what it may do.
+
+**Code/Files Modified:**
+- mobile/src/api/{client.ts,stream.ts,endpoints.ts}, mobile/src/state/server.tsx, mobile/src/screens/{SettingsScreen.tsx,SearchAskScreen.tsx}, mobile/src/screens/monitor/useCallFeed.ts, test/ui/useCallFeed.test.tsx.
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** mobile strict tsc clean; the two-layer path verified against the live hostname with curl before the app was asked to do it.
+- **What Failed:** the first regression test polluted the next one — a `...Once` queued by a failing test survives vi.clearAllMocks() and answers the following test's first request, which made an unrelated assertion fail for the wrong reason. mockReset(), not clearAllMocks(), when a test queues one-shot responses.
+
+**Status:**
+- Completed

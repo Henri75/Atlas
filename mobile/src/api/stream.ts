@@ -1,5 +1,11 @@
 import type { AskEvent } from '@atlas/shared';
-import { flagUnauthorized } from './client';
+import {
+  ACCESS_REJECTED,
+  atlasHeaders,
+  flagUnauthorized,
+  isAccessRejection,
+  type AccessCredentials,
+} from './client';
 import { loadingBus } from './loadingBus';
 
 /**
@@ -83,6 +89,7 @@ export async function* askStream(
   token: string | null,
   body: Record<string, unknown>,
   signal?: AbortSignal,
+  access: AccessCredentials | null = null,
 ): AsyncGenerator<AskEvent, void, unknown> {
   const url = `${base.replace(/\/$/, '')}/api/ask/stream`;
   loadingBus.begin();
@@ -92,15 +99,20 @@ export async function* askStream(
       signal,
       headers: {
         'content-type': 'application/json',
-        'x-atlas-client': 'mobile',
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...atlasHeaders(token, access),
       },
       body: JSON.stringify(body),
     });
 
-    if (res.status === 401) flagUnauthorized();
     if (!res.ok || !res.body) {
-      throw new Error(`${res.status}: ${await res.text()}`);
+      const text = await res.text();
+      // Same split as the plain transport: Cloudflare turning the request away
+      // at the edge is not Atlas rejecting the bearer token.
+      if (isAccessRejection(res.status, res.headers as unknown as Headers, text)) {
+        throw new Error(ACCESS_REJECTED);
+      }
+      if (res.status === 401) flagUnauthorized();
+      throw new Error(`${res.status}: ${text}`);
     }
 
     const reader = res.body.getReader();

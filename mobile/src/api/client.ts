@@ -12,31 +12,78 @@ import { loadingBus } from './loadingBus';
 
 export type UnauthorizedListener = () => void;
 
+/**
+ * Cloudflare Access service-token credentials.
+ *
+ * Access is a browser-shaped login: it answers an unauthenticated request with
+ * a redirect to an identity provider, which an app with no browser cannot
+ * complete. A service token is Cloudflare's answer for exactly this — two
+ * headers, checked at the edge, no session to keep alive.
+ */
+export interface AccessCredentials {
+  clientId: string;
+  clientSecret: string;
+}
+
 let getBaseUrl: () => string = () => '';
 let getToken: () => string | null = () => null;
+let getAccess: () => AccessCredentials | null = () => null;
 const unauthorizedListeners = new Set<UnauthorizedListener>();
 
 export function configureTransport(opts: {
   getBaseUrl: () => string;
   getToken: () => string | null;
+  getAccess: () => AccessCredentials | null;
 }) {
   getBaseUrl = opts.getBaseUrl;
   getToken = opts.getToken;
+  getAccess = opts.getAccess;
+}
+
+/**
+ * Every header Atlas sends, in one place, so the plain and SSE paths cannot
+ * drift — the two layers are independent and a request needs both: Cloudflare
+ * decides whether it reaches the origin at all, Atlas decides what it may do.
+ */
+export function atlasHeaders(
+  token: string | null,
+  access: AccessCredentials | null,
+): Record<string, string> {
+  return {
+    'x-atlas-client': 'mobile',
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+    ...(access
+      ? {
+          'CF-Access-Client-Id': access.clientId,
+          'CF-Access-Client-Secret': access.clientSecret,
+        }
+      : {}),
+  };
+}
+
+/** Message for a rejection that came from the edge, not from Atlas. */
+export const ACCESS_REJECTED =
+  'Cloudflare Access refused this request. Check the service token under ' +
+  'Settings › Cloudflare Access, or that this device is allowed in.';
+
+/**
+ * Did Cloudflare reject this, or did Atlas?
+ *
+ * It matters: Atlas's own 401 means "your bearer token is wrong" and should
+ * raise the token gate, while Access's means "you never reached Atlas" and
+ * raising the gate would send someone to re-enter a token that was fine.
+ * Access answers from the edge with HTML; Atlas answers JSON from Hono.
+ */
+export function isAccessRejection(status: number, headers: Headers, body: string): boolean {
+  if (status !== 401 && status !== 403) return false;
+  if (headers.get('cf-mitigated')) return true;
+  return /cloudflare\s+access|cf-access|<title>[^<]*Access/i.test(body);
 }
 
 /** Fired on any 401: this instance is LAN-exposed and the token is bad. */
 export function onUnauthorized(l: UnauthorizedListener): () => void {
   unauthorizedListeners.add(l);
   return () => unauthorizedListeners.delete(l);
-}
-
-function authHeaders(): Record<string, string> {
-  const token = getToken();
-  return token ? { authorization: `Bearer ${token}` } : {};
-}
-
-function flagIfUnauthorized(status: number): void {
-  if (status === 401) flagUnauthorized();
 }
 
 /** Raise the token gate everywhere at once (used by the plain and SSE paths). */
@@ -65,10 +112,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     const res = await fetch(`${base}${path}`, {
       ...init,
-      headers: { ...(init?.headers as Record<string, string>), ...authHeaders() },
+      headers: {
+        ...(init?.headers as Record<string, string>),
+        ...atlasHeaders(getToken(), getAccess()),
+      },
     });
-    flagIfUnauthorized(res.status);
-    if (!res.ok) throw new TransportError(`${res.status}: ${await res.text()}`);
+    if (!res.ok) {
+      const body = await res.text();
+      // Order matters: an edge rejection is not an Atlas 401, and treating it
+      // as one would raise the bearer-token gate over a service-token problem.
+      if (isAccessRejection(res.status, res.headers, body)) {
+        throw new TransportError(ACCESS_REJECTED);
+      }
+      if (res.status === 401) flagUnauthorized();
+      throw new TransportError(`${res.status}: ${body}`);
+    }
     return (await res.json()) as T;
   } finally {
     loadingBus.end();
@@ -76,15 +134,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function get<T>(path: string): Promise<T> {
-  return request<T>(path, {
-    headers: { 'x-atlas-client': 'mobile' },
-  });
+  return request<T>(path);
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-atlas-client': 'mobile' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
 }
