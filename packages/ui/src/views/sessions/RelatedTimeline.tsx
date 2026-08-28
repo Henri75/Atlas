@@ -47,7 +47,9 @@ export function RelatedTimeline({
   onSelect: (id: string | undefined) => void;
 }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [focusIdx, setFocusIdx] = useState(0);
+  // -1, not 0: initialising to a real index painted a focus ring on the first
+  // node permanently, which reads as a selection nobody made.
+  const [focusIdx, setFocusIdx] = useState(-1);
 
   const layout = useMemo(() => {
     const items: TimelineInput[] = [
@@ -100,8 +102,11 @@ export function RelatedTimeline({
       if (n && n.kind !== 'event') onOpenSession(n.id);
       return;
     }
+    // From "nothing focused", either arrow enters the chart at its start
+    // rather than doing nothing.
+    const from = focusIdx < 0 ? (e.key === 'ArrowRight' ? -1 : nodes.length) : focusIdx;
     const next = Math.min(
-      Math.max(focusIdx + (e.key === 'ArrowRight' ? 1 : -1), 0),
+      Math.max(from + (e.key === 'ArrowRight' ? 1 : -1), 0),
       nodes.length - 1,
     );
     setFocusIdx(next);

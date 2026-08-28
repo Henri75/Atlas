@@ -139,20 +139,41 @@ export function parseActionLine(line: string): ParsedAction | null {
  * transcript parser truncates targets at 80 characters, so a long one-liner
  * can genuinely have no readable verb left in it.
  */
+/**
+ * Shell keywords and wrappers that are never the tool being run.
+ *
+ * `for`/`do`/`done` show up because a one-liner is split on `;` and truncated
+ * at 80 characters by the transcript parser, so a loop's fragment can end up
+ * as the last segment. Reporting them alongside `docker` and `git` is the same
+ * mistake as reporting a directory: the histogram should name what ran.
+ */
+const NOT_A_COMMAND = new Set([
+  'sudo', 'time', 'command', 'exec', 'env', 'nohup', 'xargs',
+  'do', 'done', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'if', 'case', 'esac',
+]);
+
 export function commandName(cmd: string): string {
-  const last = (cmd ?? '').split(/&&|\|\||;|\|/).pop() ?? cmd ?? '';
-  const words = last.trim().split(/\s+/).filter(Boolean);
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i]!;
-    if (word.includes('=')) continue; // FOO=bar prefix
-    if (word === 'cd' || word === 'pushd') {
-      i++; // and the directory it navigates to
-      continue;
+  // Segments are scanned from the RIGHT, and the first one yielding a real
+  // command wins. Taking only the last segment was almost right — it is what
+  // turns `cd x && make test` into `make` — but it fails on a loop, where the
+  // last segment is `done`: `for f in a b; do rg "$f"; done` has to report
+  // `rg`. Walking right-to-left keeps the navigation-then-verb case and fixes
+  // the loop case with the same rule.
+  const segments = (cmd ?? '').split(/&&|\|\||;|\|/);
+  for (let s = segments.length - 1; s >= 0; s--) {
+    const words = segments[s]!.trim().split(/\s+/).filter(Boolean);
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i]!;
+      if (word.includes('=')) continue; // FOO=bar prefix
+      if (word === 'cd' || word === 'pushd') {
+        i++; // and the directory it navigates to
+        continue;
+      }
+      if (NOT_A_COMMAND.has(word)) continue;
+      if (word.startsWith('-')) continue;
+      const name = word.replace(/^["']/, '').split('/').pop() ?? '';
+      if (name) return name;
     }
-    if (word === 'sudo' || word === 'time' || word === 'command' || word === 'exec') continue;
-    if (word.startsWith('-')) continue;
-    const name = word.replace(/^["']/, '').split('/').pop() ?? '';
-    if (name) return name;
   }
   return '';
 }
@@ -363,12 +384,12 @@ export class SessionInsightsService {
     wantsLlm: boolean,
     key: string,
   ): Promise<SessionInsightReport> {
-    const facts = await this.buildFacts(row, sections);
+    const { facts, evidence: gathered } = await this.buildFacts(row, sections);
 
     let narrative: SessionNarrative | undefined;
     let llm: SessionInsightReport['llm'] = { status: 'off' };
     if (wantsLlm) {
-      const evidence = buildNarrativeInput(facts);
+      const evidence = buildNarrativeInput(gathered);
       if (!evidence.trim()) {
         // A session with no prompts and no prose has nothing for a model to
         // read. Saying so is honest; sending an empty prompt and printing
@@ -411,7 +432,21 @@ export class SessionInsightsService {
     return report;
   }
 
-  private async buildFacts(row: SessionRowFull, sections: string[]): Promise<SessionInsightFacts> {
+  /**
+   * Gather everything, then present only what was asked for.
+   *
+   * The two are deliberately separate objects. The narrative layer reads the
+   * EVIDENCE, and the caller sees the FACTS — and a caller who asks only for
+   * `decisions` still needs the prompts and prose to be gathered, because that
+   * is what the model reasons over. An earlier version gated the gathering and
+   * the presentation on the same condition, so `sections=decisions` handed the
+   * model an empty evidence block and reported "session holds no prose to
+   * summarise" on a session full of it.
+   */
+  private async buildFacts(
+    row: SessionRowFull,
+    sections: string[],
+  ): Promise<{ facts: SessionInsightFacts; evidence: SessionInsightFacts }> {
     const want = new Set(sections);
     const kindCounts = await this.catalog.sessionKindCounts(row.sessionId).catch(() => ({}));
     const facts: SessionInsightFacts = {
@@ -436,30 +471,25 @@ export class SessionInsightsService {
       want.has('did') ? this.catalog.sessionEntriesByKind(row.sessionId, ['action'], 400).catch(() => []) : [],
     ]);
 
-    if (want.has('goals')) {
-      facts.goals = prompts.map((p) => ({
-        entryId: p.id,
-        occurredAt: p.occurredAt,
-        text: p.body.slice(0, PROMPT_CHARS),
-      }));
-    }
-    if (want.has('highlights')) {
-      facts.highlights = highlights.map((h) => ({
-        entryId: h.id,
-        kind: (h.kind ?? 'response') as EntryKind,
-        occurredAt: h.occurredAt,
-        text: h.body.slice(0, HIGHLIGHT_CHARS),
-      }));
-    }
+    facts.goals = prompts.map((p) => ({
+      entryId: p.id,
+      occurredAt: p.occurredAt,
+      text: p.body.slice(0, PROMPT_CHARS),
+    }));
+    facts.highlights = highlights.map((h) => ({
+      entryId: h.id,
+      kind: (h.kind ?? 'response') as EntryKind,
+      occurredAt: h.occurredAt,
+      text: h.body.slice(0, HIGHLIGHT_CHARS),
+    }));
     if (want.has('did')) facts.did = rollupActions(actions.map((a) => a.body));
 
-    if (want.has('followups')) {
-      // Scanned over the prose the session produced, not the action trail:
-      // a marker inside a file path is a filename, not a loose end.
-      facts.followupMarkers = scanFollowups([...prompts, ...highlights]);
-    }
+    // Scanned over the prose the session produced, not the action trail: a
+    // marker inside a file path is a filename, not a loose end.
+    facts.followupMarkers = scanFollowups([...prompts, ...highlights]);
 
-    if (want.has('trail') && row.startedAt) {
+    const needsTrail = want.has('trail') || sections.some((x) => LLM_SECTIONS.has(x));
+    if (needsTrail && row.startedAt) {
       const from = row.startedAt;
       // A session's work is usually recorded shortly AFTER it ends — the commit
       // and the changelog line land last. A window that stopped at endedAt
@@ -501,7 +531,18 @@ export class SessionInsightsService {
       facts.backlog = await this.relatedBacklog(row, [...prompts, ...highlights]).catch(() => []);
     }
 
-    return facts;
+    // `facts` above is the complete picture; the presented view drops the
+    // sections the caller did not ask for, without ever having withheld them
+    // from the model.
+    const presented: SessionInsightFacts = { overview: facts.overview };
+    if (want.has('goals')) presented.goals = facts.goals;
+    if (want.has('highlights')) presented.highlights = facts.highlights;
+    if (want.has('did')) presented.did = facts.did;
+    if (want.has('followups')) presented.followupMarkers = facts.followupMarkers;
+    if (want.has('backlog')) presented.backlog = facts.backlog;
+    if (want.has('trail')) presented.trail = facts.trail;
+
+    return { facts: presented, evidence: facts };
   }
 
   /**

@@ -23,6 +23,44 @@ claude mcp add --transport http atlas http://127.0.0.1:8711/mcp
 This repo also ships `.mcp.json`, so Claude Code sessions started inside the
 repo pick the server up automatically.
 
+## Connecting (and the token)
+
+Once `ATLAS_TOKEN` is set — which it is on any LAN-exposed or tunnelled
+install — **every MCP call needs the bearer header**, including the initial
+handshake. A registration without it fails at connect time with
+`Dynamic Client Registration rejected (HTTP 401)`, which reads like a protocol
+problem and is really a missing credential.
+
+The committed `.mcp.json` therefore expands the token from the environment
+rather than embedding it (this repository is public):
+
+```json
+{ "mcpServers": { "atlas": {
+  "type": "http",
+  "url": "http://127.0.0.1:8711/mcp",
+  "headers": { "Authorization": "Bearer ${ATLAS_TOKEN:-}" } } } }
+```
+
+Export `ATLAS_TOKEN` in the shell that launches your agent, or register the
+server once at user scope with the header baked in:
+
+```bash
+claude mcp add --scope user --transport http atlas http://127.0.0.1:8711/mcp \
+  --header "Authorization: Bearer $ATLAS_TOKEN"
+```
+
+A project-scope `.mcp.json` **shadows** a user-scope entry of the same name, so
+a token-less project file will break an otherwise-working user registration.
+
+**Deploying a code change to this server needs a rebuild.** `make restart-mcp`
+recreates the container from the existing image and cannot apply a change to
+`packages/mcp`; use `make restart-mcp-build`. Then verify the RUNNING artefact
+carries it — a container's age says nothing about its contents:
+
+```bash
+docker exec kdb-mcp-1 grep -rc atlas_session_search /app/packages/mcp/dist
+```
+
 ## Tools
 
 | Tool | Use it for |

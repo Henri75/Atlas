@@ -163,7 +163,10 @@ export interface SessionMetaMatch {
   byTitle: boolean;
   byCwd: boolean;
   byProject: boolean;
+  /** A path-shaped fragment of the query matched a file — strong evidence. */
   byFile: boolean;
+  /** A bare word appeared INSIDE a path (`pool` in `poolhealth.go`) — weak. */
+  byFileWord: boolean;
 }
 
 /**

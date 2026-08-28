@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ENTRY_KIND_META as KIND,
   SESSION_SECTIONS,
@@ -109,7 +109,12 @@ export function SessionInsightsPanel({ sessionId }: { sessionId: string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Toggling sections re-requests, and a report with the AI layer on can take
+  // many seconds while one without it returns immediately — so an earlier
+  // request can easily land after a later one and overwrite it.
+  const seq = useRef(0);
   const load = (refresh = false) => {
+    const mine = ++seq.current;
     setLoading(true);
     setError('');
     api
@@ -118,9 +123,15 @@ export function SessionInsightsPanel({ sessionId }: { sessionId: string }) {
         llm: useLlm ? undefined : 'false',
         ...(refresh ? { refresh: '1' } : {}),
       })
-      .then(setReport)
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
+      .then((r) => {
+        if (mine === seq.current) setReport(r);
+      })
+      .catch((e: Error) => {
+        if (mine === seq.current) setError(e.message);
+      })
+      .finally(() => {
+        if (mine === seq.current) setLoading(false);
+      });
   };
 
   // Generated on demand — never prefetched. The LLM layer costs a completion,

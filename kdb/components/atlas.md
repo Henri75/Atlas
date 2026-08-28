@@ -1779,3 +1779,29 @@ Reference: docs/adr/20260819-multi-machine-one-active-instance.md; docs/superpow
 
 **Status:**
 - Completed
+---
+### [2026-08-29 00:35 UTC] Session intelligence — self-review round two
+
+**Objective:**
+- Review the shipped implementation as a senior developer, fix what the review found, and prove the deployed containers, the MCP server and the CLI all carry and serve the new code.
+
+**Summary of Work:**
+- Six defects fixed (see below), each with a test; two of them were only visible in live output.
+- New `make restart-mcp-build`: `restart-mcp` recreates from the existing image and CANNOT apply a packages/mcp code change, which is the exact trap that shipped a tokenless MCP image once before. `restart-mcp`'s own description now says it is config-only.
+- `.mcp.json` (committed, public repo) now expands `Bearer ${ATLAS_TOKEN:-}` from the environment instead of carrying no header at all; docs/mcp.md gained a Connecting section explaining that a token-less project file SHADOWS a working user-scope registration.
+
+**Key Decisions & Rationale:**
+- Gathering evidence and presenting it are now separate objects. They shared one condition, so asking for `decisions` alone handed the model an empty evidence block; the model must always see the evidence, and only the reader's view is filtered.
+- A bare word found INSIDE a path is not a path. Splitting the file signal into path-shaped (0.35) and word-in-path (0.06) is the difference between "you typed this file" and "this word appears in a filename".
+- Document frequency is asked for BY SESSION, not by path: the candidate set is bounded, the paths it touches are not.
+
+**Code/Files Modified:**
+- packages/core/src/{sessionInsights,sessionSearch,catalog,types}.ts; packages/ui/src/views/sessions/{RelatedTimeline,SessionInsightsPanel}.tsx; Makefile; .mcp.json; docs/mcp.md; test/core/{sessionInsights,sessionSearch,sessionRelated}.test.ts.
+
+**Outcomes & Lessons Learned:**
+- **What Failed (all six):** (1) requesting only an LLM section returned "session holds no prose to summarise" on a session full of it — gathering was gated on the same flag as presentation; mutation-verified. (2) Up to 200 concurrent `normalizeFiles` calls each fired their own identical context query on a cold cache — no single-flight. (3) The metadata leg ordered by `started_at DESC` before LIMIT, so a common token (1,171 matches measured) discarded the old session whose title matched exactly; it now orders by match quality. (4) A bare token matched `pkg/stats/poolhealth.go` and put that session top for "supervisor pool wedge". (5) `commandName` reported shell keywords `do` and `for` as commands — the last-segment heuristic breaks on a loop, so segments are now scanned right-to-left. (6) The timeline painted a permanent focus ring on node 0 because focusIdx started at a real index.
+- **Measured:** df by session vs by path array, 577 ms -> 80 ms for 5,000 paths.
+- **Verified live, not inferred:** `sections=decisions` now returns llm=ok with real decisions and facts filtered to overview alone; all three MCP tools called over the wire; the CLI's `atlas sessions deepcast` still lists (backward compatible) alongside find/insights/related; both artefacts grepped inside the running containers rather than trusted from a build exit code.
+
+**Status:**
+- Completed

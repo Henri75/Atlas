@@ -73,11 +73,23 @@ describe('commandName', () => {
     expect(commandName('a | b')).toBe('b');
   });
 
+  /**
+   * Also measured live: `do` and `for` appeared in a real command histogram
+   * beside `docker` and `git`. A loop fragment left over from splitting a
+   * truncated one-liner is not a tool that ran.
+   */
+  it('does not report shell keywords as commands', () => {
+    expect(commandName('for f in a b; do rg "$f"; done')).toBe('rg');
+    expect(commandName('while read l; do wc -c; done')).toBe('wc');
+    expect(commandName('env FOO=1 make test')).toBe('make');
+  });
+
   it('returns nothing usable rather than a junk token', () => {
     // Targets are truncated at 80 chars by the transcript parser, so a long
     // one-liner can be left with no verb at all.
     expect(commandName('f=/private/tmp/claude-501/-Users-serge--CODING-DeepCast/ee096e22-324b')).toBe('');
     expect(commandName('')).toBe('');
+    expect(commandName('; ; ;')).toBe('');
   });
 
   it('strips a path so the same tool aggregates', () => {
@@ -361,6 +373,38 @@ describe('SessionInsightsService', () => {
     });
     expect(r!.facts.trail![0]).toMatchObject({ entryId: 2, sharedFiles: ['/repo/a.ts'] });
     expect(r!.facts.trail![1]!.sharedFiles).toBeUndefined();
+  });
+
+  /**
+   * Regression. Gathering and PRESENTING used to share one condition, so asking
+   * for `decisions` alone gave the model an empty evidence block and the report
+   * came back "session holds no prose to summarise" — on a session full of it.
+   * The model must always see the evidence; only the reader's view is filtered.
+   */
+  it('still feeds the model when only an LLM section was requested', async () => {
+    const { catalog } = makeService();
+    const seen: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: any) => {
+        seen.push(JSON.parse(init.body).messages.map((m: any) => m.content).join('\n'));
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: '{"headline":"did a thing"}' } }] }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }),
+    );
+    const r = await new SessionInsightsService(catalog, llmCfg).insights('s1', {
+      sections: ['decisions'],
+    });
+    expect(r!.llm.status).toBe('ok');
+    expect(r!.narrative?.headline).toBe('did a thing');
+    // The prompt carried the session's actual prose…
+    expect(seen.join('\n')).toContain('collector');
+    // …while the reader still sees only the section they asked for.
+    expect(r!.facts.goals).toBeUndefined();
+    expect(r!.facts.highlights).toBeUndefined();
+    vi.unstubAllGlobals();
   });
 
   it('does not call the LLM when no LLM section was requested', async () => {

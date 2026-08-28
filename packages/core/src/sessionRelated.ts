@@ -209,12 +209,12 @@ export class SessionRelatedService {
 
     // Candidate paths need their own document frequencies: a file the anchor
     // never touched still needs a weight when it appears on the candidate side
-    // of the cosine denominator.
-    const candidatePaths = [...new Set([...filesByCandidate.values()].flat())];
-    const { df: dfAll } = await this.catalog.fileDocumentFrequency([
-      ...candidatePaths,
-      ...anchorFiles,
-    ]);
+    // of the cosine denominator. Asked for by SESSION rather than by path —
+    // the candidate set is bounded, the paths it touches are not.
+    const { df: dfAll } = await this.catalog.fileDocumentFrequencyForSessions(
+      candidateIds,
+      anchorFiles,
+    );
     const idfAll = (p: string) => fileIdf(dfAll.get(p) ?? df.get(p) ?? 1, Math.max(filesCorpus, 1));
 
     // Normalising semantic scores against the best one in this candidate set

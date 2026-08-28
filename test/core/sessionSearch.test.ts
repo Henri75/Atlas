@@ -134,6 +134,31 @@ describe('SessionSearchService', () => {
     expect(r.sessions[0]!.score).toBeGreaterThan(0);
   });
 
+  /**
+   * Measured live. "supervisor pool wedge" put a session that merely touched
+   * `pkg/stats/poolhealth.go` at the top, above the sessions actually about
+   * supervisor pool wedges: a bare word found INSIDE a path was scored as
+   * though the user had typed that path.
+   */
+  it('scores a word found inside a path far below a real path match', async () => {
+    const real = row({ sessionId: 'real' });
+    const incidental = row({ sessionId: 'incidental' });
+    const { svc } = makeService({
+      rows: [real, incidental],
+      meta: [
+        { sessionId: 'real', byId: false, byTitle: false, byCwd: false, byProject: false, byFile: true, byFileWord: false },
+        { sessionId: 'incidental', byId: false, byTitle: false, byCwd: false, byProject: false, byFile: false, byFileWord: true },
+      ],
+      hits: [],
+    });
+    const r = await svc.searchSessions('supervisor pool wedge', {}, { thread: false });
+    expect(r.sessions[0]!.sessionId).toBe('real');
+    expect(r.sessions[0]!.score).toBeGreaterThan(r.sessions[1]!.score * 4);
+    // …and it says which kind of match it was, so a weak reason cannot read
+    // as a strong one.
+    expect(r.sessions[1]!.why[0]!.detail).toBe('a file name mentions it');
+  });
+
   it('weights an insight above an action for the same raw score', async () => {
     const a = row({ sessionId: 'a' });
     const b = row({ sessionId: 'b' });

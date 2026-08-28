@@ -44,7 +44,7 @@ export ATLAS_REPO_PARENT := $(abspath $(CURDIR)/..)
 # probe — otherwise every `make ps` would make a Doppler API round-trip.
 DOPPLER = $(shell doppler run --command 'true' >/dev/null 2>&1 && echo 'doppler run --')
 
-.PHONY: help install build test lint start stop restart restart-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose print-repo-parent cli-link connect-link kdb-rebuild mobile-start mobile-typecheck app-assets clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal help-audit
+.PHONY: help install build test lint start stop restart restart-build restart-mcp restart-mcp-build embedder-warm logs ps reindex reindex-full sync-now smoke config-check print-compose print-repo-parent cli-link connect-link kdb-rebuild mobile-start mobile-typecheck app-assets clean eval eval-mine eval-generate eval-judge eval-baseline eval-signals db-dump dedup-rehearsal help-audit
 
 # The harness runs on the host, not in a container: a variant has to be a config
 # object rather than an image rebuild for an A/B to be possible at all. Ports come
@@ -84,7 +84,8 @@ stop: ## stop the stack (data volumes are kept)
 # every running Claude Code session and they never come back (the server is
 # stateless, so it cannot push tools/list_changed — see packages/mcp/src/main.ts).
 # The mcp service is a thin stateless proxy to `api`, so it only needs a restart
-# when packages/mcp itself changes: use `make restart-mcp` for that.
+# when packages/mcp itself changes: use `make restart-mcp-build` for that
+# (restart-mcp recreates without building, so it cannot apply a code change).
 restart: ## bounce app services only — does NOT pick up code or .env (see restart-build)
 	$(COMPOSE) restart indexer api ui
 
@@ -110,7 +111,8 @@ restart: ## bounce app services only — does NOT pick up code or .env (see rest
 # --no-deps keeps --force-recreate off postgres/redis/qdrant, which are stateful
 # and have no reason to bounce. They must already be running: `make start` is the
 # cold start. `mcp` is excluded for the reason `restart` excludes it — use
-# `make restart-mcp` when packages/mcp itself changed.
+# `make restart-mcp-build` when packages/mcp itself changed (restart-mcp does
+# not build, so it cannot apply a code change).
 #
 # The build and the recreate are separate steps so `embedder-warm` can sit
 # between them — see that target for why. `up --build` does the same two things
@@ -156,7 +158,16 @@ embedder-warm: ## pre-load the embedding model so container boot probes don't ra
 	echo "     to migrate the index and the API refuses to query with it — search stays on the"; \
 	echo "     collection it has. Fix Ollama and 'make restart-build' again."
 
-restart-mcp: ## restart the MCP server (WARNING: drops atlas_* tools from live agent sessions)
+restart-mcp-build: ## rebuild + recreate the MCP server — the one that applies packages/mcp CODE (restart-mcp does NOT build); drops atlas_* tools from live agent sessions
+	@echo "⚠️  This drops the atlas_* tools from every running Claude Code session."
+	@echo "   They do NOT return without restarting the session. Ctrl-C to abort."
+	@sleep 3
+	$(DOPPLER) $(COMPOSE) build mcp
+	$(DOPPLER) $(COMPOSE) up -d --no-deps --force-recreate mcp
+	@echo "verify the RUNNING artefact carries your change, never the build's exit code:"
+	@echo "  docker exec kdb-mcp-1 grep -rc atlas_session_search /app/packages/mcp/dist"
+
+restart-mcp: ## restart the MCP server WITHOUT rebuilding (config only — use restart-mcp-build for code); drops atlas_* tools from live agent sessions
 	@echo "⚠️  This drops the atlas_* tools from every running Claude Code session."
 	@echo "   They do NOT return without restarting the session. Ctrl-C to abort."
 	@sleep 3

@@ -64,6 +64,11 @@ const META_WEIGHTS: Record<keyof Omit<import('./types.js').SessionMetaMatch, 'se
   byId: 100,
   byFile: 0.35,
   byTitle: 0.3,
+  // A bare word found INSIDE a path is a substring, not a path the user typed.
+  // At the same weight as a real path match it put a session that touched
+  // `pkg/stats/poolhealth.go` at the top of "supervisor pool wedge", above the
+  // sessions actually about that. It is still worth something, but barely.
+  byFileWord: 0.06,
   byCwd: 0.05,
   byProject: 0.05,
 };
@@ -182,6 +187,15 @@ export class SessionSearchService {
         if (meta.byFile) {
           metaBoost += META_WEIGHTS.byFile;
           why.push({ kind: 'file', detail: 'touched a matching file', weight: META_WEIGHTS.byFile });
+        }
+        if (meta.byFileWord) {
+          metaBoost += META_WEIGHTS.byFileWord;
+          why.push({
+            kind: 'file',
+            // Named for what it is, so a weak reason cannot read as a strong one.
+            detail: 'a file name mentions it',
+            weight: META_WEIGHTS.byFileWord,
+          });
         }
         if (meta.byTitle) {
           metaBoost += META_WEIGHTS.byTitle;

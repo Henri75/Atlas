@@ -54,6 +54,14 @@ function makeService(opts: {
       df: new Map(paths.map((p) => [p, opts.df?.[p] ?? 1])),
       total: opts.dfTotal ?? 2322,
     }),
+    fileDocumentFrequencyForSessions: async (ids: string[], extra: string[]) => {
+      const paths = new Set<string>(extra);
+      for (const id of ids) for (const p of opts.files?.[id] ?? []) paths.add(p);
+      return {
+        df: new Map([...paths].map((p) => [p, opts.df?.[p] ?? 1])),
+        total: opts.dfTotal ?? 2322,
+      };
+    },
     sessionsSharingFiles: async (paths: string[]) => {
       captured.sharingPaths = paths;
       return opts.sharing ?? [];

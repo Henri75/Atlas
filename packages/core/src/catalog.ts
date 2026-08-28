@@ -415,6 +415,8 @@ export class Catalog {
   /** Cached checkout roots/repo names for path normalisation (see normalizeFiles). */
   private normCtx?: { roots: string[]; repoNames: string[] };
   private normCtxAt = 0;
+  /** In-flight context refresh, shared by concurrent callers (see below). */
+  private normCtxPending?: Promise<{ roots: string[]; repoNames: string[] }>;
 
   constructor(databaseUrl: string) {
     // BIGSERIAL/int8 come back as strings by default; our ids fit safely in a
@@ -1542,12 +1544,40 @@ export class Catalog {
    */
   async normalizeFiles(paths: string[]): Promise<string[]> {
     if (!paths?.length) return [];
+    return normalizeSessionPaths(paths, await this.normalizationContext());
+  }
+
+  /**
+   * The cached context, refreshed at most once per TTL and — critically —
+   * fetched at most once at a time.
+   *
+   * The single-flight promise is not belt-and-braces. Callers normalize a whole
+   * page of rows with `Promise.all`, so on a cold cache every one of them
+   * reaches the `if` before any of them has assigned the result: up to 200
+   * concurrent copies of the same two-table query, per request. Holding the
+   * in-flight promise means the first caller does the work and the rest await
+   * it.
+   */
+  private async normalizationContext(): Promise<{ roots: string[]; repoNames: string[] }> {
     const now = Date.now();
-    if (!this.normCtx || now - this.normCtxAt > NORMALIZE_CTX_TTL_MS) {
-      this.normCtx = await this.pathNormalizationContext();
-      this.normCtxAt = now;
+    if (this.normCtx && now - this.normCtxAt <= NORMALIZE_CTX_TTL_MS) return this.normCtx;
+    this.normCtxPending ??= this.pathNormalizationContext()
+      .then((ctx) => {
+        this.normCtx = ctx;
+        this.normCtxAt = Date.now();
+        return ctx;
+      })
+      .finally(() => {
+        this.normCtxPending = undefined;
+      });
+    try {
+      return await this.normCtxPending;
+    } catch {
+      // A failed refresh must not blank a context we already had: a slightly
+      // stale set of roots still normalizes correctly, an empty one silently
+      // degrades every path to its last three segments.
+      return this.normCtx ?? { roots: [], repoNames: [] };
     }
-    return normalizeSessionPaths(paths, this.normCtx);
   }
 
   /**
@@ -1740,6 +1770,43 @@ export class Catalog {
   }
 
   /**
+   * Document frequency for every path touched by a set of sessions, plus the
+   * anchor's own paths.
+   *
+   * A semi-join, NOT a literal array of every candidate path. The array form is
+   * the shape this codebase already warns about for bulk scans: measured on
+   * this index, 5,000 paths as `= ANY(array)` costs 577 ms, while the same
+   * answer via a subquery over the indexed `session_id` set costs 80 ms. The
+   * candidate set is bounded; the paths it touches are not.
+   */
+  async fileDocumentFrequencyForSessions(
+    sessionIds: string[],
+    extraPaths: string[] = [],
+  ): Promise<{ df: Map<string, number>; total: number }> {
+    const df = new Map<string, number>();
+    const totalR = await this.pool.query(
+      'SELECT count(DISTINCT session_id)::int AS n FROM session_files',
+    );
+    const total: number = totalR.rows[0]?.n ?? 0;
+    const ids = [...new Set(sessionIds.filter(Boolean))];
+    const extra = [...new Set(extraPaths.filter(Boolean))];
+    if (!ids.length && !extra.length) return { df, total };
+    const r = await this.pool.query(
+      `SELECT sf.path, count(*)::int AS n
+       FROM session_files sf
+       WHERE sf.path IN (
+               SELECT path FROM session_files WHERE session_id = ANY($1)
+               UNION
+               SELECT unnest($2::text[])
+             )
+       GROUP BY sf.path`,
+      [ids, extra],
+    );
+    for (const row of r.rows) df.set(row.path, row.n);
+    return { df, total };
+  }
+
+  /**
    * Candidate sessions that share at least one of these paths.
    *
    * `maxDf` is applied INSIDE the query: a path in hundreds of sessions would
@@ -1919,13 +1986,24 @@ export class Catalog {
     // The whole phrase AND each significant token. Phrase-only would match
     // almost nothing (a session title is rarely the sentence you typed);
     // token-only would lose the exactness of a quoted path or a full title.
-    const patterns = [...new Set([esc(term), ...tokens.filter((t) => t.length >= 3).map(esc)])];
-    const lowered = patterns.map((p) => p.toLowerCase());
+    const phrase = esc(term);
+    const words = tokens.filter((t) => t.length >= 3);
+    const patterns = [...new Set([phrase, ...words.map(esc)])];
+    // Two classes of file match, because they are not equally good evidence.
+    // A PATH-SHAPED fragment — the whole phrase, or a token carrying a `/` or a
+    // `.` — is something the user actually typed as a path. A bare word is just
+    // a substring: measured live, the query "supervisor pool wedge" matched
+    // `pkg/stats/poolhealth.go` on `pool` and that session outranked the ones
+    // genuinely about supervisor pool wedges. Same query, very different
+    // evidence, so they cannot share a weight.
+    const pathLike = [phrase, ...words.filter((t) => t.includes('/') || t.includes('.')).map(esc)];
+    const loweredPaths = [...new Set(pathLike)].map((x) => x.toLowerCase());
+    const loweredWords = [...new Set(words.map(esc))].map((x) => x.toLowerCase());
     // A UUID prefix is an identity, not a keyword: 8+ hex chars is past the
     // point where a collision is plausible in a corpus of ~8k sessions.
     const idPrefix = /^[0-9a-f]{8,}$/i.test(term) ? `${term.toLowerCase()}%` : null;
 
-    const params: unknown[] = [patterns, idPrefix, lowered];
+    const params: unknown[] = [patterns, idPrefix, loweredPaths, phrase, loweredWords];
     const where: string[] = [];
     if (filters.projects?.length) {
       params.push(filters.projects);
@@ -1953,14 +2031,21 @@ export class Catalog {
       // and it grows with both tables. As a single scan it is one pass over a
       // few thousand rows.
       `WITH file_hits AS (
-         SELECT DISTINCT session_id FROM session_files WHERE path LIKE ANY($3)
+         SELECT session_id,
+                bool_or(path LIKE ANY($3)) AS strong,
+                bool_or(path LIKE ANY($5)) AS weak
+         FROM session_files
+         WHERE path LIKE ANY($3) OR path LIKE ANY($5)
+         GROUP BY session_id
        )
        SELECT s.id,
               ($2::text IS NOT NULL AND lower(s.id) LIKE $2) AS by_id,
               (s.title ILIKE ANY($1)) AS by_title,
               (s.cwd ILIKE ANY($1)) AS by_cwd,
               (p.slug ILIKE ANY($1)) AS by_project,
-              (fh.session_id IS NOT NULL) AS by_file
+              COALESCE(fh.strong, false) AS by_file,
+              COALESCE(fh.weak, false) AND NOT COALESCE(fh.strong, false) AS by_file_word,
+              (s.title ILIKE $4) AS by_phrase
        FROM sessions s
        JOIN projects p ON p.id = s.project_id
        LEFT JOIN file_hits fh ON fh.session_id = s.id
@@ -1970,7 +2055,18 @@ export class Catalog {
               OR fh.session_id IS NOT NULL
              )
              ${where.length ? `AND ${where.join(' AND ')}` : ''}
-       ORDER BY s.started_at DESC NULLS LAST
+       -- Ordered by MATCH QUALITY first, recency only to break ties.
+       --
+       -- A common token matches thousands of sessions (measured: 1,171 for
+       -- "supervisor pool wedge"), so a plain started_at DESC + LIMIT keeps
+       -- the newest 60 and silently discards the old session whose title is an
+       -- exact match — the one result the metadata leg exists to find. Postgres
+       -- sorts booleans with true first under DESC, so these read in the order
+       -- they are worth: an id is an identity, a whole-phrase title match beats
+       -- a single shared token, and a touched file is evidence of what the
+       -- session did rather than of what it was called.
+       ORDER BY by_id DESC, by_phrase DESC, by_file DESC, by_title DESC,
+                s.started_at DESC NULLS LAST
        LIMIT $${params.length}`,
       params,
     );
@@ -1981,6 +2077,7 @@ export class Catalog {
       byCwd: row.by_cwd === true,
       byProject: row.by_project === true,
       byFile: row.by_file === true,
+      byFileWord: row.by_file_word === true,
     }));
   }
 
