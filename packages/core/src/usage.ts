@@ -32,6 +32,16 @@ const PATTERNS: [pattern: string, cls: RouteClass][] = [
   ['/api/ask', 'query'],
   ['/api/ask/stream', 'query'],
   ['/api/projects/:slug/backlog/review', 'query'],
+  // Session intelligence. All three consume the index (and, for insights, the
+  // LLM), so they belong with search and ask rather than with catalog reads.
+  //
+  // ⚠️ `/api/sessions/search` MUST precede `/api/sessions/:id` below: both are
+  // three segments and this list is scanned in order, so reversing them files
+  // every session search as a cheap read and hides the real cost of the
+  // feature in the monitor. Pinned by test/core/usageRouteClass.test.ts.
+  ['/api/sessions/search', 'query'],
+  ['/api/sessions/:id/insights', 'query'],
+  ['/api/sessions/:id/related', 'query'],
 
   // Mutates durable state. Rare, and worth being able to isolate.
   ['/api/projects/:slug/backlog/verdict', 'write'],

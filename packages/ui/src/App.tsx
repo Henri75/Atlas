@@ -14,6 +14,7 @@ import { SessionsView } from './views/SessionsView';
 import { MonitorView } from './views/MonitorView';
 import { MachinesView } from './views/MachinesView';
 import { TokenGate } from './components/TokenGate';
+import type { SessionTab } from './components/SessionRefActions';
 import {
   dismissBootSplash,
   useInstallPrompt,
@@ -40,7 +41,11 @@ import {
  */
 const SINGLE_PROJECT_VIEWS: Record<string, string> = {
   components: 'Components browses one project — pick one below',
-  sessions: 'Sessions browses one project — pick one below',
+  // Sessions is deliberately absent. It used to require one project, which made
+  // "find the session about X" impossible whenever you could not remember which
+  // project X lived in — and that is the normal case. Find searches every
+  // project and treats the scope as a filter; only its Browse mode needs one,
+  // and it asks for itself.
 };
 
 export default function App() {
@@ -68,6 +73,13 @@ export default function App() {
   });
 
   const [openSessionId, setOpenSessionId] = useState('');
+  /**
+   * Which face of a session is showing. Lives here, beside `openSessionId`,
+   * because opening a session FROM a search hit or a timeline row has to be
+   * able to say which tab it means — "insights for that one" is a different
+   * request from "replay that one", and both start outside this view.
+   */
+  const [sessionTab, setSessionTab] = useState<SessionTab>('conversation');
   const [offline, setOffline] = useState(false);
   const [toast, setToast] = useState('');
   const searchRef = useRef<HTMLTextAreaElement | null>(null);
@@ -140,8 +152,9 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [openSessionId]);
 
-  const openSession = (id: string) => {
+  const openSession = (id: string, tab: SessionTab = 'conversation') => {
     setOpenSessionId(id);
+    setSessionTab(tab);
     if (id) setView('sessions');
   };
 
@@ -241,9 +254,13 @@ export default function App() {
             <SessionsView
               project={scope.project}
               projects={projects}
+              scopeProjects={scope.projects}
               onProject={(slug) => scope.set([slug])}
               openSessionId={openSessionId}
               onOpenSession={openSession}
+              tab={sessionTab}
+              onTab={setSessionTab}
+              inputRef={searchRef}
             />
           )}
         </div>

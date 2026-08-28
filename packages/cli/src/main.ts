@@ -585,10 +585,22 @@ program
     if (isJson()) console.log(JSON.stringify(results, null, 2));
   });
 
-program
+/**
+ * `sessions` is a command GROUP, with `list` as its default action.
+ *
+ * That shape (mirroring `machines` above) is what lets `atlas sessions
+ * deepcast` keep working unchanged while `find`, `insights` and `related` are
+ * added beside it. The alternative — subcommands on `session <id>` — cannot
+ * work: commander cannot tell a subcommand name from the id argument.
+ */
+const sessionsCmd = program
   .command('sessions')
+  .description('find, summarise and relate Claude Code sessions — see subcommands');
+
+sessionsCmd
+  .command('list', { isDefault: true })
   .argument('<project>')
-  .description('recent Claude Code sessions for a project')
+  .description('recent sessions for one project, newest first')
   .action(async (project) => {
     const r = await get(`/api/projects/${project}/sessions`);
     out(r, () => {
@@ -596,6 +608,155 @@ program
         console.log(
           `${bold(s.id.slice(0, 8))} ${dim(date(s.started_at))} ${String(s.prompt_count).padStart(3)} prompts  ${(s.title ?? '').slice(0, 80)}`,
         );
+      }
+    });
+  });
+
+sessionsCmd
+  .command('find')
+  .argument('<query...>')
+  .option('-p, --project <slug>', 'restrict to one project (repeatable via commas)')
+  .option('--since <date>', 'ISO date floor')
+  .option('--until <date>', 'ISO date ceiling')
+  .option('-n, --limit <n>', 'sessions to return', '15')
+  .option('--no-threads', 'do not fold contiguous runs into one row')
+  .description('find a session by what you remember — words, a file, or an id')
+  .action(async (words: string[], o) => {
+    const r = await get(
+      `/api/sessions/search${qs({
+        q: words.join(' '),
+        projects: o.project,
+        since: o.since,
+        until: o.until,
+        limit: o.limit,
+        thread: o.threads === false ? 'false' : undefined,
+      })}`,
+    );
+    out(r, () => {
+      if (r.interpreted?.since) {
+        console.log(dim(`read a date from the query — narrowed to ${r.interpreted.since.slice(0, 10)}`));
+      }
+      for (const s of r.sessions) {
+        const thread = s.thread ? yellow(` +${s.thread.size - 1} in thread`) : '';
+        console.log(
+          `${bold(s.sessionId.slice(0, 8))} ${dim(date(s.startedAt))} ${cyan(s.projectSlug)}${thread}`,
+        );
+        console.log(`  ${s.title.slice(0, 100)}`);
+        console.log(
+          dim(
+            `  ${s.entryCount} msg · ${s.actionCount} actions · ${s.fileCount} files` +
+              (s.why.length ? ` · ${s.why.map((w: any) => w.detail).join(' · ')}` : ''),
+          ),
+        );
+      }
+      if (!r.sessions.length) console.log(dim('no session matches that'));
+      console.log(dim(`\n${r.sessions.length} session(s) · ${r.tookMs} ms`));
+    });
+  });
+
+sessionsCmd
+  .command('insights')
+  .argument('<id>')
+  .option('--sections <list>', 'comma-separated sections (default: all)')
+  .option('--no-llm', 'recorded facts only — no model call')
+  .option('--refresh', 'regenerate instead of serving the cached report')
+  .description('what a session did, decided and left open')
+  .action(async (id: string, o) => {
+    const r = await get(
+      `/api/sessions/${id}/insights${qs({
+        sections: o.sections,
+        llm: o.llm === false ? 'false' : undefined,
+        refresh: o.refresh ? '1' : undefined,
+      })}`,
+    );
+    out(r, () => {
+      const f = r.facts;
+      console.log(`${bold(f.overview.title)}  ${dim(f.overview.projectSlug)}`);
+      console.log(
+        dim(
+          `${date(f.overview.startedAt)} · ${f.overview.entryCount} msg · ` +
+            `${f.overview.actionCount} actions · ${f.overview.fileCount} files`,
+        ),
+      );
+      // Provenance first: a reader must never have to guess which half of a
+      // report a model wrote.
+      if (r.llm.status === 'unavailable') {
+        console.log(yellow(`AI layer unavailable (${r.llm.reason}) — recorded facts only`));
+      } else if (r.llm.status === 'off') {
+        console.log(dim('recorded facts only — AI layer off'));
+      } else {
+        console.log(dim(`AI layer by ${r.llm.model ?? 'the configured model'}${r.cached ? ' (cached)' : ''}`));
+      }
+      console.log(hr());
+
+      const n = r.narrative;
+      if (n?.headline) console.log(`${cyan('AI')} ${bold(n.headline)}`);
+      for (const line of n?.summary ?? []) console.log(`   ${line}`);
+      const section = (title: string, lines: string[]) => {
+        if (!lines.length) return;
+        console.log(`\n${bold(title)}`);
+        for (const l of lines) console.log(`  ${l}`);
+      };
+      section('You asked', (f.goals ?? []).map((g: any) => g.text.replace(/\s+/g, ' ').slice(0, 160)));
+      if (f.did) {
+        section('Did', [
+          f.did.commands.map((c: any) => `${c.name}×${c.count}`).join(' ') || dim('no commands'),
+          ...f.did.files.slice(0, 12).map((x: any) => x.path),
+        ]);
+      }
+      section('Insights', (f.highlights ?? []).map((h: any) => h.text.replace(/\s+/g, ' ').slice(0, 200)));
+      section('Decisions', (n?.decisions ?? []).map((d: any) => `${d.text}${d.why ? ` — ${d.why}` : ''}`));
+      section('Problems', (n?.problems ?? []).map((p: any) => `${p.text}${p.resolution ? ` → ${p.resolution}` : ''}`));
+      section('Left open', [
+        ...(n?.followups ?? []).map((x: any) => x.text),
+        ...(f.followupMarkers ?? []).map((m: any) => dim(`[${m.marker}] ${m.sentence.slice(0, 140)}`)),
+      ]);
+      section('Backlog touched', (f.backlog ?? []).map((b: any) => `L${b.line} ${b.text.slice(0, 140)}`));
+      section(
+        'Recorded trail',
+        (f.trail ?? []).map(
+          (t: any) => `${t.sourceType.padEnd(14)} ${t.title.slice(0, 90)}` +
+            (t.sharedFiles?.length ? dim(` (${t.sharedFiles.length} shared files)`) : ''),
+        ),
+      );
+    });
+  });
+
+sessionsCmd
+  .command('related')
+  .argument('<id>')
+  .option('-d, --direction <dir>', 'before | after | both', 'both')
+  .option('--no-cross-project', 'stay inside the anchor session\'s project')
+  .option('--no-context', 'skip commits and log entries touching the same files')
+  .option('-n, --limit <n>', 'sessions to return', '12')
+  .description('what else worked on this, before and after')
+  .action(async (id: string, o) => {
+    const r = await get(
+      `/api/sessions/${id}/related${qs({
+        direction: o.direction === 'both' ? undefined : o.direction,
+        crossProject: o.crossProject === false ? 'false' : undefined,
+        context: o.context === false ? 'false' : undefined,
+        limit: o.limit,
+      })}`,
+    );
+    out(r, () => {
+      console.log(`${bold(r.anchor.title.slice(0, 100))}  ${dim(r.anchor.projectSlug)}`);
+      // The basis is never omitted: a list built from timestamps alone looks
+      // exactly like one built from shared files.
+      console.log(dim(`basis: ${r.basis.join(', ') || 'none'}`));
+      if (r.note) console.log(yellow(r.note));
+      console.log(hr());
+      for (const s of r.related) {
+        console.log(
+          `${bold(s.sessionId.slice(0, 8))} ${dim(date(s.startedAt))} ` +
+            `${s.direction === 'before' ? cyan('before') : s.direction === 'after' ? green('after ') : dim('during')} ` +
+            `${s.projectSlug !== r.anchor.projectSlug ? cyan(s.projectSlug) + ' ' : ''}${s.title.slice(0, 80)}`,
+        );
+        console.log(dim(`  ${s.why.map((w: any) => w.detail).join(' · ')}`));
+      }
+      if (!r.related.length) console.log(dim('nothing else worked on this'));
+      for (const e of r.contextEvents ?? []) {
+        console.log(dim(`  ${e.sourceType.padEnd(14)} ${e.title.slice(0, 80)} (${e.sharedFiles.length} shared)`));
       }
     });
   });

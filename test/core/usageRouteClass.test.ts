@@ -86,3 +86,24 @@ describe('routeClass', () => {
     expect(new Set(ROUTE_CLASSES)).toEqual(produced);
   });
 });
+
+/**
+ * `usage.ts` scans PATTERNS in order and both of these are three segments, so
+ * `/api/sessions/search` must appear BEFORE `/api/sessions/:id`. Reversed, every
+ * session search is filed as a cheap read and the monitor under-reports what the
+ * feature actually costs — a silent, self-consistent lie.
+ */
+describe('session intelligence route classes', () => {
+  it('classifies session search as a query, not as a session read', () => {
+    expect(routeClass('/api/sessions/search')).toBe('query');
+  });
+
+  it('classifies the insight and related routes as queries', () => {
+    expect(routeClass('/api/sessions/abc-123/insights')).toBe('query');
+    expect(routeClass('/api/sessions/abc-123/related')).toBe('query');
+  });
+
+  it('leaves the plain session read alone', () => {
+    expect(routeClass('/api/sessions/abc-123')).toBe('read');
+  });
+});

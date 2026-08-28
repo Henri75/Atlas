@@ -111,6 +111,11 @@ IF you are about to write "presumably", "likely because", "this was probably",
    "the rewrite must have", or "I could not verify" about anything historical -> CALL
 IF a design looks arbitrary and you are about to call it an accident -> CALL
    (it may have been deliberate, with the rationale on record)
+IF the user refers to a past session ("the session where we...", "last time we
+   worked on X", a pasted session id) -> CALL atlas_session_search
+IF you are about to change something a previous session built or fixed -> CALL
+   atlas_session_related on that session first: it names what came before AND
+   what came after, which is where a later revert or follow-up fix would be
 
 DO NOT route to Atlas: "what changed", "when", "which commit", "where is this defined".
 Git, grep and the live DB answer those better — authoritative, instant, no service
@@ -304,6 +309,68 @@ export const TOOLS: ToolDef[] = [
     },
     request: (a) => ({
       path: `/api/sessions/${encodeURIComponent(a.session_id)}${qs({ limit: a.limit ?? 50, offset: a.offset, max_body: a.max_body ?? 1500 })}`,
+    }),
+  },
+  {
+    name: 'atlas_session_search',
+    description:
+      'Find a Claude Code SESSION by what you remember about it — a phrase from the conversation, a file it touched, a project name, or a session id (8+ hex characters is an exact hit). Ranks whole conversations rather than individual messages, and every result carries a `why` array naming what matched, so you can pick the right one without a further call. Prefer this over atlas_search when the question is "which session was that" rather than "what was said about X". Results are weighted by substance: the corpus median session is 3 messages long, so a bare keyword match would otherwise bury the session that did the work.',
+    schema: {
+      query: z.string().describe('What you remember: words, a file path, a project, or a session id'),
+      project: z.string().optional().describe('Comma-separated project slugs; omit to search every project'),
+      machine: z.string().optional().describe('Machine name filter (first ingested from)'),
+      since: z.string().optional().describe('ISO date floor. An explicit date inside `query` is also honoured and reported back as `interpreted`.'),
+      until: z.string().optional().describe('ISO date ceiling'),
+      limit: z.number().int().min(1).max(50).optional().describe('Sessions to return (default 15)'),
+      threads: z
+        .boolean()
+        .optional()
+        .describe(
+          'Fold contiguous runs of the same work into one row (default true). Claude Code splits long work across resumed sessions; without this you get five near-identical results for one afternoon.',
+        ),
+    },
+    request: (a) => ({
+      path: `/api/sessions/search${qs({ q: a.query, projects: a.project, machine: a.machine, since: a.since, until: a.until, limit: a.limit ?? 15, thread: a.threads === false ? 'false' : undefined })}`,
+    }),
+  },
+  {
+    name: 'atlas_session_insights',
+    description:
+      'A structured report on ONE session: what was asked, what was done (files edited, commands run, agents used), the insights and plans it recorded, what it decided, what broke, and — most usefully — what it left OPEN. Cheaper and far more readable than paging the whole transcript with atlas_session. `facts` is derived from the index and is always trustworthy; `narrative` is written by a mid-size LLM from that evidence and can be wrong — the `llm.status` field says which you got. Set llm:false for the deterministic layer alone (no model call, no cost). Reports are cached, so asking twice is free.',
+    schema: {
+      session_id: z.string(),
+      sections: z
+        .string()
+        .optional()
+        .describe(
+          'Comma-separated subset of: overview, goals, did, highlights, decisions, problems, followups, backlog, trail. Default: all. Narrowing saves tokens on both sides.',
+        ),
+      llm: z
+        .boolean()
+        .optional()
+        .describe('Include the LLM narrative layer (default true). false = recorded facts only, no model call.'),
+      refresh: z.boolean().optional().describe('Regenerate instead of serving the cached report'),
+    },
+    request: (a) => ({
+      path: `/api/sessions/${encodeURIComponent(a.session_id)}/insights${qs({ sections: a.sections, llm: a.llm === false ? 'false' : undefined, refresh: a.refresh ? '1' : undefined })}`,
+    }),
+  },
+  {
+    name: 'atlas_session_related',
+    description:
+      'Sessions BEFORE and AFTER this one that worked on the same thing — the history of a piece of work rather than of a conversation. Use it before changing something a past session touched: it surfaces the earlier attempt and whatever followed. Scored from three independent signals (shared files, subject similarity, timing) and every result reports which ones fired, in `basis` and per-result `why`. READ `basis`: if it is `["temporal"]` the results are merely things that happened nearby, NOT related work, and the response says so. `contextEvents` additionally lists commits and kdb log entries that touched the same files — work on a thing is often recorded there rather than in another session.',
+    schema: {
+      session_id: z.string(),
+      direction: z.enum(['before', 'after', 'both']).optional().describe('Default both'),
+      cross_project: z
+        .boolean()
+        .optional()
+        .describe('Allow neighbours from other projects (default true) — a fix often spans repos'),
+      context: z.boolean().optional().describe('Include commits/kdb entries touching the same files (default true)'),
+      limit: z.number().int().min(1).max(50).optional(),
+    },
+    request: (a) => ({
+      path: `/api/sessions/${encodeURIComponent(a.session_id)}/related${qs({ direction: a.direction === 'both' ? undefined : a.direction, crossProject: a.cross_project === false ? 'false' : undefined, context: a.context === false ? 'false' : undefined, limit: a.limit })}`,
     }),
   },
   {

@@ -3,6 +3,7 @@
 # REST API
 
 ## Revision History
+- 2026-08-28 22:30 UTC — **Session intelligence**: three routes over Claude Code sessions. `GET /api/sessions/search` ranks whole SESSIONS (not messages) by fusing a metadata leg (id prefix, title, folder, project, normalised file index) with the hybrid content index, weighted by a substance prior — the corpus median session is 3 messages, so relevance alone buries the sessions that did the work; every result carries a `why` array naming what matched. `GET /api/sessions/:id/insights` returns a customisable report: a deterministic `facts` layer (goals, action rollup, distilled prose, follow-up markers, backlog overlap, and the commits/kdb entries recorded in the same window) plus an optional LLM `narrative` (decisions, problems, distilled follow-ups), cached, with `llm.status` always stating which you got. `GET /api/sessions/:id/related` finds sessions before and after that worked on the same thing, scored from file / semantic / temporal legs and always reporting its `basis`. ⚠️ `/api/sessions/search` is registered BEFORE `/api/sessions/:id` — same segment count, so the order is what stops "search" being read as a session id. See `docs/adr/20260828-session-intelligence.md`.
 - 2026-08-19 22:01 UTC — Multi-machine: auth is no longer "none" — bearer-token auth (`ATLAS_TOKEN`) is required on every route (`/api/health` and `/api/instance` excepted) once `ATLAS_BIND` leaves loopback. Localhost-only, no-`ATLAS_BIND` installs are unaffected. See `docs/multi-machine.md#lan-access-setup`.
 - 2026-07-30 00:40 UTC — **Gateway headers are the source of truth for the served model.** The buffered ask path (`/api/ask`, which MCP uses) read `model` from the response *body*, which echoes the requested name — so every model substitution was recorded as the model we asked for. It now reads `x-g2p-reply-model` like the streaming path always did, via a shared `readGatewayMeta`, and also records `x-g2p-reply-attempts` and `x-request-id` in new nullable `usage_reply.attempts` / `request_id` columns. Substitution is judged in one place (`isSubstitution`) on the bare model name, so a vendor prefix (`google/x` vs `x`) is not reported as a swap. Verified live: the same route recorded `gemini-3-flash-preview` before and `google/gemini-3-flash-preview` after.
 - 2026-07-30 00:25 UTC — **Monitor filters, insights, cursor paging**: `/api/admin/usage/calls` gains `hideNoise`, returns `facets` (counts by client and by tool over the filtered set) plus `nextCursor`, and pages by keyset `cursorAt`+`cursorId` rather than `offset` — the log grows while you read it, so an offset page is measured from a top that has moved. New `GET /api/admin/usage/insights?days=N`: outcome rates per mode (searches returning nothing, asks with no sources, aborted, degraded/failed), a log-scaled latency histogram, which models actually answered, weekday spread, most-repeated questions.
@@ -241,6 +242,55 @@ counts; the model, TTFT and attempts still report.
 
 nginx must not buffer this route (`proxy_buffering off` plus the
 `x-accel-buffering: no` response header), or the whole answer arrives at once.
+
+## Sessions
+
+Three routes answer the three questions people ask of a transcript archive.
+All are `query`-class in the usage monitor: they consume the index, and
+insights additionally consumes the LLM.
+
+### `GET /api/sessions/search`
+
+`q` (required) · `projects` (comma-separated; `project` also accepted) ·
+`machine` · `since` · `until` · `limit` (default 20) · `pool` (retrieval
+breadth) · `thread=false` (do not fold contiguous runs).
+
+Ranks whole sessions. Pasting a session id (8+ hex characters) is an exact
+hit rather than a semantic guess. An explicit date written into `q` is lifted
+into the window and echoed back as `interpreted`, so a narrowed result set
+never looks like an empty index.
+
+Each session carries `why` (what matched, and how much), `excerpts` (the best
+matching messages, prose preferred over the action trail), `substance` (0–1),
+and `thread` when the card stands for a run of resumed sessions.
+
+### `GET /api/sessions/:id/insights`
+
+`sections` (comma-separated subset of `overview, goals, did, highlights,
+decisions, problems, followups, backlog, trail`; default all) · `llm=false`
+(recorded facts only, no model call) · `refresh=1`.
+
+`facts` is derived from the index and always present. `narrative` is one LLM
+call over that evidence and may be absent; `llm.status` is `off`, `ok`, or
+`unavailable` with a reason. A failed model call is never cached. Reports are
+cached under a key folding in the sections, the model, the extraction scheme,
+the prompt version and the session's own size — so a session that grew, a
+changed prompt or a switched model all miss by construction.
+
+### `GET /api/sessions/:id/related`
+
+`direction=before|after` · `crossProject=false` · `context=false` ·
+`limit`.
+
+Scored from three legs — shared normalised files (IDF-weighted cosine),
+subject similarity, and timing — renormalised over the legs actually
+available, because 72% of sessions record no files at all. **Read `basis`**:
+`["temporal"]` means the results are merely things that happened nearby, and
+the response says so in `note`. `contextEvents` lists commits and kdb entries
+that touched the same files, because work on a thing is often recorded there
+rather than in another session.
+
+Unknown session ids 404 on all three, never an empty-looking 200.
 
 ## Source deep links
 

@@ -3,6 +3,7 @@
 # MCP Server
 
 ## Revision History
+- 2026-08-28 22:30 UTC — Three session tools: `atlas_session_search` (find a conversation by what you remember), `atlas_session_insights` (what it did, decided and LEFT OPEN — far cheaper than paging `atlas_session`, and `llm:false` gives the factual layer at no model cost), `atlas_session_related` (what came before and after; READ its `basis` — `["temporal"]` is proximity, not relatedness). Server instructions gained matching triggers.
 - 2026-07-29 20:25 UTC — **Backlog triage tools**: `atlas_backlog` (derived status view), `atlas_backlog_evidence` (per-item evidence bundle; the agent judges — it can read the code, Atlas cannot), `atlas_backlog_verdict` (record the judgment; returns the exact marker line to append via the project's blessed helper). Server instructions teach the triage flow. Thirteen tools now.
 - 2026-07-19 04:15 UTC — `atlas adoption --compare <date>` diffs two windows (plus `--until` for bounded ranges), reporting fire-rate movement with the sample size behind it and caveats when the sample can't support a conclusion.
 - 2026-07-19 03:35 UTC — Added **`atlas adoption`**: measures whether agents actually call Assessor/Atlas at the moments the instructions say they should, by reading Claude Code transcripts rather than asking the agent. See *Measuring adoption* below.

@@ -15,6 +15,8 @@ import {
 import { api } from '../api/endpoints';
 import type { ScopeHandle } from '../hooks/useScope';
 import { Empty, Eyebrow, Highlight, PickProject, Spinner, Stamp } from '../components/atoms';
+import { SessionRefActions, type SessionTab } from './sessions/SessionPieces';
+import { SessionFinder, SessionInsightsPanel, SessionRelatedPanel } from './sessions/SessionPanels';
 import { FilterInput } from '../components/FilterInput';
 import { Markdown } from '../components/MarkdownNative';
 import { colors, fonts, tint } from '../theme';
@@ -45,10 +47,13 @@ export function SessionsScreen({
   projects: ProjectRow[];
   /** Browse-this-one affordance from the empty state. */
   onProject: (slug: string) => void;
-  /** Pushes the session detail onto this tab's native stack. */
-  onOpenSession: (id: string) => void;
+  /** Pushes the session detail onto this tab's native stack, on a given tab. */
+  onOpenSession: (id: string, tab?: SessionTab) => void;
 }) {
   const project = scope.project;
+  // Find first, exactly as on the web: browsing needs a project, finding does
+  // not, and not knowing the project is the normal case.
+  const [mode, setMode] = useState<'find' | 'browse'>('find');
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [q, setQ] = useState('');
 
@@ -71,9 +76,45 @@ export function SessionsScreen({
     [sessions, q],
   );
 
+  const modeSwitch = (
+    <View style={{ flexDirection: 'row', gap: 6, marginBottom: 14 }}>
+      {(['find', 'browse'] as const).map((m) => (
+        <Pressable
+          key={m}
+          onPress={() => setMode(m)}
+          style={{
+            borderWidth: 1,
+            borderColor: mode === m ? colors.kdb : colors.line,
+            backgroundColor: mode === m ? tint(colors.kdb, 12) : 'transparent',
+            borderRadius: 6,
+            paddingHorizontal: 12,
+            paddingVertical: 6,
+          }}
+        >
+          <Text style={{ fontFamily: fonts.sansMedium, fontSize: 13, color: mode === m ? colors.kdb : colors.muted }}>
+            {m === 'find' ? 'Find' : 'Browse'}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+
+  if (mode === 'find') {
+    return (
+      <ScrollView
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 40 }}
+        keyboardShouldPersistTaps="handled"
+      >
+        {modeSwitch}
+        <SessionFinder scopeProjects={scope.projects} onOpen={onOpenSession} />
+      </ScrollView>
+    );
+  }
+
   if (!project) {
     return (
-      <ScrollView contentContainerStyle={{ paddingVertical: 12 }}>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12 }}>
+        {modeSwitch}
         <PickProject what="Claude Code sessions" projects={projects} onProject={onProject} />
       </ScrollView>
     );
@@ -81,6 +122,7 @@ export function SessionsScreen({
 
   return (
     <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 40 }}>
+      {modeSwitch}
       <Eyebrow>Sessions — {project}</Eyebrow>
       <FilterInput
         value={q}
@@ -120,6 +162,9 @@ export function SessionsScreen({
               </Text>
               <Stamp iso={s.started_at} />
             </View>
+            {/* Insights and related are reachable from every place a session is
+                named, browse list included. */}
+            <SessionRefActions sessionId={s.id} onOpen={onOpenSession} />
           </Pressable>
         ))}
         {sessions.length === 0 ? <Empty title="No sessions indexed for this project yet." /> : null}
@@ -133,11 +178,20 @@ export function SessionsScreen({
  * Session detail — its own pushed screen (native back gesture).
  * ---------------------------------------------------------------------- */
 
-export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
+export function SessionDetailScreen({
+  sessionId,
+  initialTab = 'conversation',
+  onOpenSession,
+}: {
+  sessionId: string;
+  initialTab?: SessionTab;
+  onOpenSession?: (id: string, tab?: SessionTab) => void;
+}) {
   const [detail, setDetail] = useState<{ session: SessionRow; entries: EntryRecord[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
   const [kinds, setKinds] = useState<Set<EntryKind>>(new Set());
+  const [tab, setTab] = useState<SessionTab>(initialTab);
 
   useEffect(() => {
     let alive = true;
@@ -199,6 +253,43 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
         </Text>
       ) : null}
 
+      {/* Three views of one thing, as on the web. */}
+      <View style={{ flexDirection: 'row', gap: 4, marginTop: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line }}>
+        {(['conversation', 'insights', 'related'] as SessionTab[]).map((t) => (
+          <Pressable
+            key={t}
+            onPress={() => setTab(t)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: tab === t }}
+            style={{
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              borderBottomWidth: 2,
+              borderBottomColor: tab === t ? colors.kdb : 'transparent',
+            }}
+          >
+            <Text style={{ fontSize: 13, color: tab === t ? colors.ink : colors.muted }}>
+              {t === 'conversation' ? 'Conversation' : t === 'insights' ? 'Insights' : 'Related'}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {tab === 'insights' ? (
+        <View style={{ marginTop: 14 }}>
+          <SessionInsightsPanel sessionId={sessionId} />
+        </View>
+      ) : null}
+      {tab === 'related' ? (
+        <View style={{ marginTop: 14 }}>
+          <SessionRelatedPanel
+            sessionId={sessionId}
+            onOpenSession={(id) => onOpenSession?.(id, 'related')}
+          />
+        </View>
+      ) : null}
+
+      {tab !== 'conversation' ? null : (
       <View style={{ marginTop: 18 }}>
         <FilterInput
           value={q}
@@ -235,7 +326,9 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
           </View>
         ) : null}
       </View>
+      )}
 
+      {tab !== 'conversation' ? null : (
       <View style={{ gap: 12 }}>
         {shown.map((e) => {
           const k = kindOf(e);
@@ -269,8 +362,9 @@ export function SessionDetailScreen({ sessionId }: { sessionId: string }) {
           <Empty title="No messages match." hint="Clear the filter or pick another kind." />
         ) : null}
       </View>
+      )}
 
-      {session.files_touched?.length > 0 ? (
+      {tab === 'conversation' && session.files_touched?.length > 0 ? (
         <View style={{ marginTop: 22 }}>
           <Eyebrow>Files touched</Eyebrow>
           <View style={{ gap: 3 }}>

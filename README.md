@@ -91,6 +91,13 @@ unaffected — nothing here activates without a `config/machines.yaml`.
   delete any turn.
 - **Message kinds**: session messages are classified at parse time (`insight`,
   `plan`, `summary`, `action`…) and filterable in search, CLI and MCP.
+- **Session intelligence**: find a *session* by what you remember about it
+  (words, a file, a project, a pasted id) with every result explaining what
+  matched; a customisable report of what one session did, decided and left
+  open — deterministic facts always, an optional LLM layer marked as such; and
+  the sessions before and after that worked on the same thing, on a timeline
+  whose gaps are compressed so a busy afternoon stays legible next to a
+  three-month silence. All four surfaces (web, native, CLI, MCP).
 - **Overview dashboard**: what is indexed, which services are running, what it
   costs on disk — and a callout for vectors orphaned by a model change.
 

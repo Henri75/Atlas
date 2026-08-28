@@ -17,6 +17,7 @@ import {
   Stamp,
   submitOnEnter,
 } from '../components/ui';
+import { SessionRefActions, type SessionTab } from '../components/SessionRefActions';
 import { EntryDrawer } from '../components/EntryDrawer';
 import { Markdown } from '../components/Markdown';
 import { AskComposer, Conversation, useAskConversation } from './AskConversation';
@@ -79,7 +80,7 @@ export function SearchView({
 }: {
   scope: ScopeHandle;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
-  onOpenSession: (id: string) => void;
+  onOpenSession: (id: string, tab?: SessionTab) => void;
 }) {
   const [q, setQ] = useState('');
   const [mode, setMode] = useState<Mode>('search');
@@ -389,16 +390,12 @@ export function SearchView({
                     <span className="font-mono text-[11px] text-muted">{h.component}</span>
                   )}
                   <div className="flex-1" />
+                  {/* Insights and related sessions are reachable from the hit
+                      itself. Noticing a session in a search result and then
+                      having to go find it again to ask anything about it is the
+                      dead end this removes. */}
                   {h.sessionId && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpenSession(h.sessionId!);
-                      }}
-                      className="font-mono text-[10px] text-muted hover:text-ink underline underline-offset-2"
-                    >
-                      open session
-                    </button>
+                    <SessionRefActions sessionId={h.sessionId} onOpen={onOpenSession} compact />
                   )}
                   <StaleBadge hit={h} />
                   <Stamp iso={h.occurredAt} />

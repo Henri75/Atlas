@@ -6,8 +6,11 @@ import type {
   FullEntry,
   MachinesResponse,
   ProjectRow,
+  RelatedResponse,
   SearchResult,
+  SessionInsightResponse,
   SessionRow,
+  SessionSearchResponse,
   Stats,
   TimelineItem,
   UsageCallDetail,
@@ -43,6 +46,13 @@ export const api = {
     transport.get<{ sessions: SessionRow[] }>(`/api/projects/${slug}/sessions`),
   session: (id: string) =>
     transport.get<{ session: SessionRow; entries: EntryRecord[] }>(`/api/sessions/${id}`),
+  /** Session-level search — `search` is a route, not a session id (see the API). */
+  findSessions: (params: Record<string, unknown>) =>
+    transport.get<SessionSearchResponse>(`/api/sessions/search${qs(params)}`),
+  sessionInsights: (id: string, params: Record<string, unknown> = {}) =>
+    transport.get<SessionInsightResponse>(`/api/sessions/${id}/insights${qs(params)}`),
+  sessionRelated: (id: string, params: Record<string, unknown> = {}) =>
+    transport.get<RelatedResponse>(`/api/sessions/${id}/related${qs(params)}`),
   entry: (id: number) => transport.get<FullEntry>(`/api/entries/${id}`),
   stats: () => transport.get<Stats>('/api/stats'),
   dashboard: () => transport.get<Dashboard>('/api/dashboard'),

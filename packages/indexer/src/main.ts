@@ -19,6 +19,7 @@ import {
   loadMachinesFileIfPresent,
   mirrorClaudeDir,
   runDedupMigration,
+  normalizeSessionPaths,
   type CachedAdoption,
 } from '@atlas/core';
 import {
@@ -110,6 +111,38 @@ async function main() {
   const backfilled = await catalog.backfillMachine(resolveSelfName(cfg), (s) => console.log(s));
   if (backfilled > 0) {
     console.log(`[indexer] backfilled machine on ${backfilled} pre-machine row(s)`);
+  }
+
+  /**
+   * Derive the normalised session file index for sessions indexed before it
+   * existed (session intelligence spec §4).
+   *
+   * Cheap and safe to the point of being uninteresting: it reads
+   * `sessions.files_touched`, which is already in Postgres, so no transcript is
+   * re-read and the 11 GB corpus is not touched. ~2,300 of the 8,395 sessions
+   * carry any files at all.
+   *
+   * Gated on the table being EMPTY rather than on a marker: the index is
+   * maintained from here on by `upsertSession`, so the only state that needs
+   * repairing is "never derived at all". Dropping the table is therefore a
+   * complete, supported reset. Best-effort — a derived index must never stop
+   * the indexer from indexing.
+   */
+  try {
+    if (await catalog.sessionFilesEmpty()) {
+      const normCtx = await catalog.pathNormalizationContext();
+      const files = await catalog.backfillSessionFiles(
+        (paths) => normalizeSessionPaths(paths, normCtx),
+        { log: undefined },
+      );
+      if (files.sessions > 0) {
+        console.log(
+          `[indexer] derived session file index: ${files.paths} path(s) across ${files.sessions} session(s)`,
+        );
+      }
+    }
+  } catch (e) {
+    console.warn(`[indexer] session file index skipped (retries next boot): ${(e as Error).message}`);
   }
 
   /**

@@ -14,6 +14,7 @@ import {
   Stamp,
   matches,
 } from '../components/ui';
+import { SessionRefActions, type SessionTab } from '../components/SessionRefActions';
 import { usePersistentState } from '../usePersistentState';
 
 type Layout = 'feed' | 'table';
@@ -32,7 +33,7 @@ export function TimelineView({
 }: {
   scope: ScopeHandle;
   projects: ProjectRow[];
-  onOpenSession: (id: string) => void;
+  onOpenSession: (id: string, tab?: SessionTab) => void;
 }) {
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -105,7 +106,13 @@ export function TimelineView({
       {layout === 'table' ? (
         <TableLayout items={shown} needle={q} onOpen={openIfSession} showProjects={scope.isMulti} />
       ) : (
-        <FeedLayout items={shown} needle={q} onOpen={openIfSession} showProjects={scope.isMulti} />
+        <FeedLayout
+          items={shown}
+          needle={q}
+          onOpen={openIfSession}
+          onOpenSession={onOpenSession}
+          showProjects={scope.isMulti}
+        />
       )}
 
       {loading && <Spinner />}
@@ -132,11 +139,13 @@ function FeedLayout({
   items,
   needle,
   onOpen,
+  onOpenSession,
   showProjects,
 }: {
   items: TimelineItem[];
   needle: string;
   onOpen: (t: TimelineItem) => (() => void) | undefined;
+  onOpenSession: (id: string, tab?: SessionTab) => void;
   showProjects: boolean;
 }) {
   let lastDay = '';
@@ -170,6 +179,14 @@ function FeedLayout({
               <div className="mt-0.5 text-[14px]">
                 <Highlight text={t.title} needle={needle} />
               </div>
+              {/* A timeline row that names a session is a place a session is
+                  mentioned, so it carries the same three actions as everywhere
+                  else. */}
+              {t.sessionId && (
+                <div className="mt-1.5">
+                  <SessionRefActions sessionId={t.sessionId} onOpen={onOpenSession} compact />
+                </div>
+              )}
             </SpineRow>
           </div>
         );

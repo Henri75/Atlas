@@ -8,12 +8,18 @@ const sessionDetailCalls: { opts: unknown }[] = [];
 const componentHistoryCalls: { limit?: number }[] = [];
 const usageRows: unknown[] = [];
 const verdictUpserts: { projectId: number; v: unknown }[] = [];
+const sessionSearchCalls: { q: string; filters: any; opts: any }[] = [];
+const sessionInsightCalls: { id: string; opts: any }[] = [];
+const sessionRelatedCalls: { id: string; opts: any }[] = [];
 beforeEach(() => {
   timelineCalls.length = 0;
   sessionDetailCalls.length = 0;
   componentHistoryCalls.length = 0;
   usageRows.length = 0;
   verdictUpserts.length = 0;
+  sessionSearchCalls.length = 0;
+  sessionInsightCalls.length = 0;
+  sessionRelatedCalls.length = 0;
 });
 
 function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
@@ -129,6 +135,26 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
     } as any,
     search: { search: async () => ({ hits: [], mode: 'hybrid', degraded: false, tookMs: 5 }) } as any,
     ask: { ask: async () => ({ answer: '42 [1]', sources: [], model: 'm', degraded: false }) } as any,
+    sessionSearch: {
+      searchSessions: async (q: string, filters: unknown, o: unknown) => {
+        sessionSearchCalls.push({ q, filters, opts: o });
+        return { sessions: [{ sessionId: 'sess-1', title: 'x' }], mode: 'hybrid', degraded: false, tookMs: 3 };
+      },
+    } as any,
+    sessionInsights: {
+      insights: async (id: string, o: unknown) => {
+        sessionInsightCalls.push({ id, opts: o });
+        return id === 'ghost'
+          ? null
+          : { sessionId: id, sections: ['overview'], facts: { overview: {} }, llm: { status: 'off' }, generatedAt: 'x', cached: false };
+      },
+    } as any,
+    sessionRelated: {
+      related: async (id: string, o: unknown) => {
+        sessionRelatedCalls.push({ id, opts: o });
+        return id === 'ghost' ? null : { anchor: { sessionId: id }, related: [], basis: [], tookMs: 2 };
+      },
+    } as any,
     backlogReview: {
       evidence: async () => [
         {
@@ -1511,5 +1537,95 @@ describe('backlog routes', () => {
     });
     const body = await res.json();
     expect(body.proposedLine).toContain('DROPPED [L3#0f0f0f]: superseded by the retry work');
+  });
+});
+
+describe('session intelligence routes', () => {
+  /**
+   * The ordering trap. `/api/sessions/search` and `/api/sessions/:id` are both
+   * three segments, so Hono serves whichever was registered first. If they are
+   * ever swapped, `search` is read as a session id and this route quietly
+   * becomes a 404 — with nothing in the logs to say why.
+   */
+  it('serves /api/sessions/search as search, not as a session id', async () => {
+    const res = await buildApp(makeDeps()).request('/api/sessions/search?q=qdrant');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.sessions[0].sessionId).toBe('sess-1');
+    expect(sessionSearchCalls[0]!.q).toBe('qdrant');
+    expect(sessionDetailCalls).toHaveLength(0);
+  });
+
+  it('passes scope, machine and date filters through', async () => {
+    await buildApp(makeDeps()).request(
+      '/api/sessions/search?q=x&projects=deepcast,kdb&machine=m1&since=2026-01-01&until=2026-02-01',
+    );
+    expect(sessionSearchCalls[0]!.filters).toEqual({
+      projects: ['deepcast', 'kdb'],
+      machine: 'm1',
+      since: '2026-01-01',
+      until: '2026-02-01',
+    });
+  });
+
+  it('omits absent filters entirely rather than sending empty strings', async () => {
+    await buildApp(makeDeps()).request('/api/sessions/search?q=x');
+    expect(sessionSearchCalls[0]!.filters).toEqual({});
+  });
+
+  it('accepts the singular project alias the rest of the API uses', async () => {
+    await buildApp(makeDeps()).request('/api/sessions/search?q=x&project=deepcast');
+    expect(sessionSearchCalls[0]!.filters.projects).toEqual(['deepcast']);
+  });
+
+  it('threads are on unless explicitly disabled', async () => {
+    await buildApp(makeDeps()).request('/api/sessions/search?q=x');
+    expect(sessionSearchCalls[0]!.opts.thread).toBe(true);
+    await buildApp(makeDeps()).request('/api/sessions/search?q=x&thread=false');
+    expect(sessionSearchCalls[1]!.opts.thread).toBe(false);
+  });
+
+  it('returns an insight report and defaults the LLM on', async () => {
+    const res = await buildApp(makeDeps()).request('/api/sessions/abc/insights');
+    expect(res.status).toBe(200);
+    expect(sessionInsightCalls[0]).toMatchObject({ id: 'abc', opts: { llm: true, refresh: false } });
+  });
+
+  it('honours an explicit section list and llm=false', async () => {
+    await buildApp(makeDeps()).request('/api/sessions/abc/insights?sections=overview,did&llm=false');
+    expect(sessionInsightCalls[0]!.opts).toMatchObject({
+      sections: ['overview', 'did'],
+      llm: false,
+    });
+  });
+
+  it('404s on an unknown session rather than returning an empty report', async () => {
+    const res = await buildApp(makeDeps()).request('/api/sessions/ghost/insights');
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('session not found');
+  });
+
+  it('returns related sessions with context on by default', async () => {
+    const res = await buildApp(makeDeps()).request('/api/sessions/abc/related');
+    expect(res.status).toBe(200);
+    expect(sessionRelatedCalls[0]!.opts).toMatchObject({ context: true, crossProject: true });
+  });
+
+  it('passes a valid direction and ignores an invalid one', async () => {
+    await buildApp(makeDeps()).request('/api/sessions/abc/related?direction=before');
+    expect(sessionRelatedCalls[0]!.opts.direction).toBe('before');
+    await buildApp(makeDeps()).request('/api/sessions/abc/related?direction=sideways');
+    expect(sessionRelatedCalls[1]!.opts.direction).toBeUndefined();
+  });
+
+  it('404s related on an unknown session', async () => {
+    const res = await buildApp(makeDeps()).request('/api/sessions/ghost/related');
+    expect(res.status).toBe(404);
+  });
+
+  it('still serves the plain session detail route', async () => {
+    const res = await buildApp(makeDeps()).request('/api/sessions/abc');
+    expect(res.status).toBe(200);
+    expect(sessionDetailCalls).toHaveLength(1);
   });
 });

@@ -3,6 +3,7 @@
 # CLI — `atlas`
 
 ## Revision History
+- 2026-08-28 22:30 UTC — `sessions` became a command GROUP with `list` as its default action, so `atlas sessions <project>` is unchanged while `find`, `insights` and `related` join it. `atlas session <id>` (replay) is untouched.
 - 2026-07-29 20:25 UTC — New **`atlas backlog [project]`**: derived backlog status (open/resolved/dropped with provenance and lints, plus an unlinked-marker bucket). `--review` runs sequential LLM-judged reviews of open items (`--item N` for one, `--limit N` caps the run and says how many were left out); each confirmed verdict prints the exact `RESOLVED/DROPPED/REOPENED [L<n>#<hash6>]` line to append via the project's blessed kdb helper — the CLI never writes project files.
 - 2026-07-19 04:15 UTC — `atlas adoption --compare <date>` / `--until <date>`: before-vs-after comparison for instruction changes, with small-sample guards.
 - 2026-07-19 03:35 UTC — New `atlas adoption`: measures whether agents call Assessor/Atlas when the documented triggers apply, by reading Claude Code transcripts (usage counts + candidate missed triggers). Read-only and local.
@@ -63,3 +64,31 @@ so you can check it at a glance. Read-only and entirely local.
 
 See [MCP → Measuring adoption](mcp.md#measuring-adoption) for why this reads
 transcripts instead of asking the agent to self-report.
+
+
+## Sessions
+
+`sessions` is a command group; `list` is its default, so the old form still
+works.
+
+```bash
+atlas sessions deepcast                      # unchanged: recent sessions
+atlas sessions find qdrant collection copy   # which session was that?
+atlas sessions find --since 2026-07-01 -p deepcast worker pool wedge
+atlas sessions insights <id>                 # did / decided / left open
+atlas sessions insights <id> --no-llm        # recorded facts only, no model call
+atlas sessions insights <id> --sections goals,did,followups
+atlas sessions related <id>                  # what else worked on this
+atlas sessions related <id> --direction before --no-cross-project
+```
+
+`find` searches every project unless `-p` narrows it — the point is that you
+remember the work, not where it lived. Each result prints why it matched.
+
+`insights` prints the provenance line first: whether the AI layer answered,
+was off, or was unavailable. The factual half is always there.
+
+`related` prints its `basis`. If it says `temporal` alone, the results are
+things that happened nearby, not related work, and the command says so.
+
+All support the global `--json`.

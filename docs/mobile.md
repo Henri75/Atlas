@@ -4,6 +4,12 @@
 
 Revision history:
 
+- 2026-08-28 22:30 UTC — session intelligence: the Sessions tab gains a Find
+  mode (unscoped session search with why-chips and thread badges) and the
+  session detail gains Insights and Related tabs, the latter with a vertical
+  `react-native-svg` timeline laid out by the same shared function the web
+  uses. Following a related session pushes a new screen, so back walks the
+  chain you followed.
 - 2026-08-25 19:00 UTC — created; feature parity with the web UI at the
   multi-machine merge (1325-test baseline), plus native-only capabilities.
 
@@ -38,7 +44,7 @@ it is stored in Keychain/Keystore, and any 401 anywhere raises the token gate.
 | Overview | Overview tab | Stats, fleet cards, services + embedder health incl. fallback/searchDegraded warnings, storage + collections + stale-vector notice, 30-day activity chart, source breakdown with files/bytes, recent runs, reindex CTA |
 | Timeline | Timeline tab | Feed and table layouts (persisted), day rulers, filter with N-of-M, load older, merged multi-project feed with project tags |
 | Components | More → Components | One project at a time (pick-project empty state), filterable list, full markdown history per component |
-| Sessions | Sessions tab | One project at a time, filter by title/id/folder, detail as a pushed native screen: kind filter chips (YOU/PLAN/INSIGHT/SUMMARY/DID/CLAUDE), conversation filter with in-markdown highlight, files touched |
+| Sessions | Sessions tab | **Find** (search every project — cards with why-chips, substance meter, thread badges, excerpts) and **Browse** (one project, filter by title/id/folder). Detail is a pushed native screen with three tabs: Conversation (kind filter chips YOU/PLAN/INSIGHT/SUMMARY/DID/CLAUDE, conversation filter with in-markdown highlight, files touched), **Insights** (section chips, AI-layer toggle, provenance line) and **Related** (vertical SVG timeline + ranked list + context records). Insights and Related are reachable from every place a session is named |
 | Monitor | More → Monitor | All four tabs: Overview (stat tiles, route-class share + filter, daily stacked bars, hour strip, per-tool table with sparklines), Calls (server-faceted filters, hide-noise, errors-only, infinite scroll with cursor + stale-response guard, call detail sheet with reply/tokens/model), Stats (did-it-work rates, search/ask tiles, latency histogram, weekday, models, repeated questions), Adoption (fire-rate cards, candidate misses, compute-now) |
 | Machines | More → Machines | Read-only fleet cards: address/user/roots, enabled, sync state pill, last success/bytes/duration/error |
 | Token gate | full-screen gate | Any 401 swaps the shell for the token prompt (spec §7) |

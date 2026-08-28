@@ -31,6 +31,9 @@ import type {
   RouteClass,
   SearchHit,
   SearchService,
+  SessionInsightsService,
+  SessionRelatedService,
+  SessionSearchService,
   SourceType,
   StorageUsage,
   UsageReply,
@@ -94,6 +97,12 @@ export interface ApiDeps {
   servingEmbedder: () => { name: string; model: string; dim: number } | null;
   /** Evidence gathering + LLM judgment for backlog reviews. */
   backlogReview: BacklogReviewService;
+  /** Session-level retrieval: query -> ranked conversations. */
+  sessionSearch: SessionSearchService;
+  /** One session's report: deterministic facts plus an optional LLM layer. */
+  sessionInsights: SessionInsightsService;
+  /** What else worked on the same thing, before and after. */
+  sessionRelated: SessionRelatedService;
   /** Fuzzy-link floor for legacy DONE:/RESOLVED: markers (config SSoT). */
   backlogMatchThreshold: number;
   /**
@@ -983,6 +992,75 @@ export function buildApp(deps: ApiDeps): Hono<{ Variables: UsageVars }> {
           reasoning: typeof body.note === 'string' ? body.note : undefined,
         });
     return c.json({ ok: true, proposedLine });
+  });
+
+  /**
+   * Session search.
+   *
+   * ⚠️ REGISTERED BEFORE `/api/sessions/:id` AND IT MUST STAY THERE. Both
+   * patterns are three segments, so Hono matches whichever was registered
+   * first: swap them and `search` is read as a session id, the route 404s, and
+   * nothing in the logs says why. `usage.ts`'s ordered PATTERNS list carries
+   * the same hazard and the same ordering. Both are pinned by tests.
+   */
+  app.get('/api/sessions/search', async (c) => {
+    const q = c.req.query('q') ?? '';
+    c.set('usageQuery', q);
+    const projects = (c.req.query('projects') ?? c.req.query('project') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const result = await deps.sessionSearch.searchSessions(
+      q,
+      {
+        ...(projects.length ? { projects } : {}),
+        ...(c.req.query('machine') ? { machine: c.req.query('machine')! } : {}),
+        ...(c.req.query('since') ? { since: c.req.query('since')! } : {}),
+        ...(c.req.query('until') ? { until: c.req.query('until')! } : {}),
+      },
+      {
+        limit: Number(c.req.query('limit')) || undefined,
+        pool: Number(c.req.query('pool')) || undefined,
+        thread: c.req.query('thread') !== 'false',
+      },
+    );
+    c.set('usageReply', { resultCount: result.sessions.length, degraded: result.degraded });
+    return c.json(result);
+  });
+
+  /**
+   * One session's insight report. Generated on demand and cached; `refresh=1`
+   * forces regeneration, `llm=false` returns the deterministic layer alone.
+   */
+  app.get('/api/sessions/:id/insights', async (c) => {
+    const sections = (c.req.query('sections') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const report = await deps.sessionInsights.insights(c.req.param('id'), {
+      ...(sections.length ? { sections } : {}),
+      llm: c.req.query('llm') !== 'false',
+      refresh: c.req.query('refresh') === '1' || c.req.query('refresh') === 'true',
+    });
+    if (!report) return c.json({ error: 'session not found' }, 404);
+    c.set('usageReply', { model: report.llm.model, degraded: report.llm.status === 'unavailable' });
+    return c.json(report);
+  });
+
+  /** Sessions before and after this one that worked on the same thing. */
+  app.get('/api/sessions/:id/related', async (c) => {
+    const direction = c.req.query('direction');
+    const result = await deps.sessionRelated.related(c.req.param('id'), {
+      limit: Number(c.req.query('limit')) || undefined,
+      ...(direction === 'before' || direction === 'after' ? { direction } : {}),
+      crossProject: c.req.query('crossProject') !== 'false',
+      // On by default: "what else touched these files" is most of the value,
+      // and it is a bounded window query, not a second search.
+      context: c.req.query('context') !== 'false',
+    });
+    if (!result) return c.json({ error: 'session not found' }, 404);
+    c.set('usageReply', { resultCount: result.related.length });
+    return c.json(result);
   });
 
   app.get('/api/sessions/:id', async (c) => {

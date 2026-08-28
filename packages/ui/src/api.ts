@@ -8,7 +8,10 @@ import type {
   MachinesResponse,
   ProjectRow,
   SearchResult,
+  RelatedResponse,
+  SessionInsightResponse,
   SessionRow,
+  SessionSearchResponse,
   Stats,
   TimelineItem,
   UsageCallDetail,
@@ -148,6 +151,17 @@ export const api = {
     get<{ entries: any[] }>(`/api/projects/${slug}/components/${encodeURIComponent(name)}`),
   sessions: (slug: string) => get<{ sessions: SessionRow[] }>(`/api/projects/${slug}/sessions`),
   session: (id: string) => get<{ session: SessionRow; entries: any[] }>(`/api/sessions/${id}`),
+  /**
+   * Session-level search. Note the path: `/api/sessions/search` is registered
+   * ahead of `/api/sessions/:id` on the server precisely so this is not read as
+   * a session whose id is the word "search".
+   */
+  findSessions: (params: Record<string, unknown>) =>
+    get<SessionSearchResponse>(`/api/sessions/search${qs(params)}`),
+  sessionInsights: (id: string, params: Record<string, unknown> = {}) =>
+    get<SessionInsightResponse>(`/api/sessions/${id}/insights${qs(params)}`),
+  sessionRelated: (id: string, params: Record<string, unknown> = {}) =>
+    get<RelatedResponse>(`/api/sessions/${id}/related${qs(params)}`),
   /**
    * The full record behind a search snippet. EntryDrawer used to fetch this
    * itself with a bare `fetch` — no auth header, no `atlas:unauthorized` on a

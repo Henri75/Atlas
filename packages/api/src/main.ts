@@ -20,6 +20,9 @@ import {
   parseRedisMemory,
   qdrantCollectionSizes,
   selfMachine,
+  SessionInsightsService,
+  SessionRelatedService,
+  SessionSearchService,
 } from '@atlas/core';
 import type { StorageUsage } from '@atlas/core';
 import type { EmbeddingProvider } from '@atlas/core';
@@ -170,6 +173,12 @@ async function main() {
   }
   const ask = new AskService(search, catalog, cfg.llm, cfg.g2pClientId);
   const backlogReview = new BacklogReviewService(search, cfg.llm, cfg.g2pClientId);
+  const sessionSearch = new SessionSearchService(catalog, search);
+  const sessionRelated = new SessionRelatedService(catalog, search);
+  const sessionInsights = new SessionInsightsService(catalog, cfg.llm, {
+    clientId: cfg.g2pClientId,
+    backlogThreshold: cfg.backlogMatchThreshold,
+  });
 
   const connection = new Redis(cfg.redisUrl, { maxRetriesPerRequest: null });
   const queue = new Queue('kdbscope-scan', { connection });
@@ -206,6 +215,9 @@ async function main() {
     catalog,
     search,
     ask,
+    sessionSearch,
+    sessionRelated,
+    sessionInsights,
     vectorCount: () => vectors.count(),
     // Read live: the indexer may switch collections when the model changes.
     meta: () => ({

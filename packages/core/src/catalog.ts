@@ -8,12 +8,16 @@ import {
   type SearchFilters,
   type SearchHit,
   type SessionMeta,
+  type SessionMetaMatch,
+  type SessionRowFull,
+  type SessionSearchFilters,
   type SourceType,
   type TimelineItem,
 } from './types.js';
 import { contentHash, deterministicUuid } from './ids.js';
 import { resolveProjectAlias } from './discovery.js';
 import { tokenize } from './sparse.js';
+import { normalizeSessionPaths } from './sessionFiles.js';
 import {
   TOP_HITS_KEPT,
   routeClass,
@@ -246,6 +250,40 @@ CREATE TABLE IF NOT EXISTS machine_sync (
   duration_ms INT,
   error TEXT
 );
+
+-- Inverted index over the files a session touched, keyed by the NORMALISED
+-- path (sessionFiles.ts) rather than the absolute one the transcript recorded.
+--
+-- Normalisation is the whole point. sessions.files_touched keeps the raw
+-- path, because that is what was actually written and what the UI shows; but
+-- the most-touched paths in this corpus are /Users/nasta/__CODING NEW/...,
+-- a machine and user that no longer exist here, so raw strings score ZERO
+-- overlap against today's /Users/serge/_CODING/... for the same file of the
+-- same repository. Comparison happens here, on the normalised key, only.
+--
+-- Wholly derived from files_touched: droppable and rebuildable at any time,
+-- and cascaded so it can never outlive its session.
+CREATE TABLE IF NOT EXISTS session_files (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  PRIMARY KEY (session_id, path)
+);
+CREATE INDEX IF NOT EXISTS session_files_path ON session_files (path);
+
+-- Cached session insight reports. Durable working state, like usage_log: it
+-- survives a reindex, and losing it costs only the LLM calls that produced it.
+--
+-- cache_key folds in the requested sections, the model, the extraction scheme,
+-- the prompt version AND the session's current size, so a session that grew,
+-- a changed prompt or a switched model all miss by construction rather than
+-- serving a stale report that looks current.
+CREATE TABLE IF NOT EXISTS session_insights (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  cache_key TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (session_id, cache_key)
+);
 `;
 
 export interface ScanState {
@@ -310,12 +348,40 @@ export function ftsQuery(q: string): string {
  * invisible next to the boot it runs inside, while still costing only ~100
  * statements for a 475k-row catalog.
  */
+/** How long a cached path-normalisation context is trusted (see normalizeFiles). */
+const NORMALIZE_CTX_TTL_MS = 5 * 60_000;
+
 const BACKFILL_BATCH = 5000;
 const BACKFILL_LOG_EVERY = 50_000;
 
 /** Shared by every query that rebuilds an Entry from the catalog. */
 const ENTRY_COLUMNS = `e.id, e.source_type, e.component, e.session_id, e.title, e.body,
               e.occurred_at, e.source_path, e.source_ref, e.meta, e.machine, p.slug`;
+
+/**
+ * Row → SessionRowFull. One place, because search, related and insights all
+ * hydrate sessions and a drift between them would show up as three surfaces
+ * disagreeing about the same session's facts.
+ */
+function toSessionRowFull(row: any): SessionRowFull {
+  return {
+    sessionId: row.id,
+    projectId: row.project_id,
+    projectSlug: row.project_slug,
+    title: row.title ?? undefined,
+    cwd: row.cwd ?? undefined,
+    // NOT NULL DEFAULT '' — '' is the legacy pre-fleet sentinel, normalized to
+    // absent here exactly as rowToEntry does for entries.
+    machine: row.machine || undefined,
+    startedAt: row.started_at?.toISOString(),
+    endedAt: row.ended_at?.toISOString(),
+    promptCount: row.prompt_count ?? 0,
+    actionCount: row.action_count ?? 0,
+    entryCount: row.entry_count ?? 0,
+    filesTouched: (row.files_touched as string[]) ?? [],
+    sourcePath: row.source_path ?? '',
+  };
+}
 
 /** Row → Entry. Kept in one place so re-embedding paths cannot drift apart. */
 function rowToEntry(row: any): Entry & { id: number } {
@@ -345,6 +411,10 @@ function rowToEntry(row: any): Entry & { id: number } {
 
 export class Catalog {
   readonly pool: pg.Pool;
+
+  /** Cached checkout roots/repo names for path normalisation (see normalizeFiles). */
+  private normCtx?: { roots: string[]; repoNames: string[] };
+  private normCtxAt = 0;
 
   constructor(databaseUrl: string) {
     // BIGSERIAL/int8 come back as strings by default; our ids fit safely in a
@@ -1449,6 +1519,35 @@ export class Catalog {
         machine,
       ],
     );
+    // The normalised file index is derived from exactly this data, so it is
+    // maintained here rather than by a separate pass that could fall behind.
+    // Best-effort: a failure to update a derived, rebuildable index must never
+    // fail the scan that recorded the session itself.
+    try {
+      await this.replaceSessionFiles(meta.sessionId, await this.normalizeFiles(meta.filesTouched));
+    } catch {
+      /* rebuildable by backfillSessionFiles on the next boot */
+    }
+  }
+
+  /**
+   * Normalise recorded paths against the catalog's own view of where projects
+   * live, with the context cached briefly.
+   *
+   * The context is two SELECTs over small tables, but `upsertSession` runs once
+   * per session on a full scan; re-reading it 8,000 times would turn a derived
+   * index into a measurable cost. A checkout root does not move mid-scan, and a
+   * stale context for a few minutes costs at worst a slightly blunter fallback
+   * for one session, which the next scan corrects.
+   */
+  async normalizeFiles(paths: string[]): Promise<string[]> {
+    if (!paths?.length) return [];
+    const now = Date.now();
+    if (!this.normCtx || now - this.normCtxAt > NORMALIZE_CTX_TTL_MS) {
+      this.normCtx = await this.pathNormalizationContext();
+      this.normCtxAt = now;
+    }
+    return normalizeSessionPaths(paths, this.normCtx);
   }
 
   /**
@@ -1560,6 +1659,462 @@ export class Catalog {
       this.pool.query('SELECT count(*)::int AS n FROM entries WHERE session_id = $1', [sessionId]),
     ]);
     return { session: s.rows[0], entries: e.rows, totalEntries: total.rows[0].n };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Session intelligence (docs/superpowers/specs/2026-08-28-session-intelligence-design.md)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Replace one session's normalised file index.
+   *
+   * Delete-then-insert inside a transaction rather than an upsert, so a re-scan
+   * that saw FEWER files converges instead of leaving orphans behind — the set
+   * is the fact here, not the individual rows.
+   */
+  async replaceSessionFiles(sessionId: string, paths: string[]): Promise<void> {
+    const unique = [...new Set(paths.filter(Boolean))];
+    // 72% of sessions touch no files at all. A transaction per one of those
+    // would be ~6,000 pointless BEGIN/COMMIT pairs on a full reindex.
+    if (!unique.length) {
+      await this.pool.query('DELETE FROM session_files WHERE session_id = $1', [sessionId]);
+      return;
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM session_files WHERE session_id = $1', [sessionId]);
+      if (unique.length) {
+        await client.query(
+          `INSERT INTO session_files (session_id, path)
+           SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING`,
+          [sessionId, unique],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  async sessionFilesFor(sessionIds: string[]): Promise<Map<string, string[]>> {
+    const out = new Map<string, string[]>();
+    if (!sessionIds.length) return out;
+    const r = await this.pool.query(
+      'SELECT session_id, path FROM session_files WHERE session_id = ANY($1)',
+      [sessionIds],
+    );
+    for (const row of r.rows) {
+      const list = out.get(row.session_id) ?? [];
+      list.push(row.path);
+      out.set(row.session_id, list);
+    }
+    return out;
+  }
+
+  /**
+   * How many sessions touched each of these paths, plus the size of the
+   * file-bearing corpus the frequencies are relative to.
+   *
+   * Measured, never assumed: `Makefile` is in 131 sessions here and
+   * `MEMORY.md` in 183, and a hardcoded stop-list would have to be maintained
+   * against a corpus that changes every day.
+   */
+  async fileDocumentFrequency(paths: string[]): Promise<{ df: Map<string, number>; total: number }> {
+    const df = new Map<string, number>();
+    const totalR = await this.pool.query(
+      'SELECT count(DISTINCT session_id)::int AS n FROM session_files',
+    );
+    const total: number = totalR.rows[0]?.n ?? 0;
+    const unique = [...new Set(paths.filter(Boolean))];
+    if (!unique.length) return { df, total };
+    const r = await this.pool.query(
+      `SELECT path, count(*)::int AS n FROM session_files WHERE path = ANY($1) GROUP BY path`,
+      [unique],
+    );
+    for (const row of r.rows) df.set(row.path, row.n);
+    return { df, total };
+  }
+
+  /**
+   * Candidate sessions that share at least one of these paths.
+   *
+   * `maxDf` is applied INSIDE the query: a path in hundreds of sessions would
+   * otherwise pull the entire corpus into the candidate set before any scoring
+   * could reject it. Excluded paths still contribute their (small) weight when
+   * a candidate found by another route is scored — this bounds generation, it
+   * does not discard evidence.
+   */
+  async sessionsSharingFiles(
+    paths: string[],
+    opts: { exclude?: string; maxDf?: number; limit?: number } = {},
+  ): Promise<{ sessionId: string; shared: number }[]> {
+    const unique = [...new Set(paths.filter(Boolean))];
+    if (!unique.length) return [];
+    const limit = Math.min(Math.max(opts.limit ?? 150, 1), 500);
+    const r = await this.pool.query(
+      `WITH wanted AS (
+         SELECT path FROM session_files
+         WHERE path = ANY($1)
+         GROUP BY path
+         HAVING $2::int <= 0 OR count(*) <= $2::int
+       )
+       SELECT sf.session_id, count(*)::int AS shared
+       FROM session_files sf JOIN wanted w ON w.path = sf.path
+       WHERE sf.session_id <> COALESCE($3, '')
+       GROUP BY sf.session_id
+       ORDER BY shared DESC
+       LIMIT $4`,
+      [unique, opts.maxDf ?? 0, opts.exclude ?? null, limit],
+    );
+    return r.rows.map((row) => ({ sessionId: row.session_id, shared: row.shared }));
+  }
+
+  /**
+   * Everything needed to normalise a recorded path: every known checkout root
+   * (self machine and remote locations alike) and the repository directory
+   * names those roots end in.
+   *
+   * The names matter more than the roots. A session recorded on a machine Atlas
+   * has never mounted has no matching root at all, and the repo directory name
+   * is the only thing left that identifies the checkout.
+   */
+  async pathNormalizationContext(): Promise<{ roots: string[]; repoNames: string[] }> {
+    const r = await this.pool.query(
+      `SELECT root_path FROM projects WHERE root_path <> ''
+       UNION
+       SELECT root_path FROM project_locations WHERE root_path <> ''`,
+    );
+    const roots = r.rows.map((row) => String(row.root_path).replace(/\/+$/, '')).filter(Boolean);
+    const repoNames = [...new Set(roots.map((p) => p.split('/').filter(Boolean).pop() ?? ''))].filter(
+      Boolean,
+    );
+    return { roots, repoNames };
+  }
+
+  /**
+   * Rebuild `session_files` from `sessions.files_touched`.
+   *
+   * Reads nothing from disk: the paths are already in Postgres, so this is a
+   * pure re-derivation — the 11 GB transcript corpus is not touched. Idempotent
+   * and batched, so an interrupted boot simply resumes.
+   */
+  async backfillSessionFiles(
+    normalize: (paths: string[]) => string[],
+    opts: { batch?: number; log?: (msg: string) => void } = {},
+  ): Promise<{ sessions: number; paths: number }> {
+    const batch = opts.batch ?? 500;
+    let cursor = '';
+    let sessions = 0;
+    let paths = 0;
+    for (;;) {
+      const r = await this.pool.query(
+        `SELECT id, files_touched FROM sessions
+         WHERE id > $1 AND jsonb_array_length(files_touched) > 0
+         ORDER BY id LIMIT $2`,
+        [cursor, batch],
+      );
+      if (!r.rows.length) break;
+      // One statement pair per BATCH, not per session. Per-session
+      // transactions meant ~2,300 round-trip-bound BEGIN/COMMIT cycles running
+      // against the same Postgres the API is serving from, which is a
+      // measurable load spike during exactly the boot where the index is also
+      // being read for the first time.
+      const ids: string[] = [];
+      const pairIds: string[] = [];
+      const pairPaths: string[] = [];
+      for (const row of r.rows) {
+        ids.push(row.id);
+        const seen = new Set<string>();
+        for (const p of normalize((row.files_touched as string[]) ?? [])) {
+          if (!p || seen.has(p)) continue;
+          seen.add(p);
+          pairIds.push(row.id);
+          pairPaths.push(p);
+        }
+        sessions++;
+      }
+      paths += pairIds.length;
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM session_files WHERE session_id = ANY($1)', [ids]);
+        if (pairIds.length) {
+          await client.query(
+            `INSERT INTO session_files (session_id, path)
+             SELECT * FROM unnest($1::text[], $2::text[]) ON CONFLICT DO NOTHING`,
+            [pairIds, pairPaths],
+          );
+        }
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally {
+        client.release();
+      }
+      cursor = r.rows[r.rows.length - 1]!.id;
+      opts.log?.(`[indexer] session_files: ${sessions} session(s), ${paths} path(s)`);
+      if (r.rows.length < batch) break;
+    }
+    return { sessions, paths };
+  }
+
+  /** True once the file index has been derived at least once. */
+  async sessionFilesEmpty(): Promise<boolean> {
+    const r = await this.pool.query('SELECT 1 FROM session_files LIMIT 1');
+    return r.rowCount === 0;
+  }
+
+  /**
+   * Full session rows by id, with the project slug and the real entry count.
+   *
+   * `prompt_count` is NOT the entry count and the two must not be conflated:
+   * the parser counts only string-content user messages, so a heavy session can
+   * report 2 prompts and hold 900 entries. Substance is computed from the
+   * entry count, which is why it is joined here rather than inferred.
+   */
+  async sessionRows(ids: string[]): Promise<SessionRowFull[]> {
+    if (!ids.length) return [];
+    const r = await this.pool.query(
+      `SELECT s.id, s.title, s.cwd, s.started_at, s.ended_at, s.prompt_count, s.action_count,
+              s.files_touched, s.source_path, s.machine, s.project_id, p.slug AS project_slug,
+              COALESCE(c.n, 0)::int AS entry_count
+       FROM sessions s
+       JOIN projects p ON p.id = s.project_id
+       LEFT JOIN LATERAL (
+         SELECT count(*)::int AS n FROM entries e WHERE e.session_id = s.id
+       ) c ON true
+       WHERE s.id = ANY($1)`,
+      [ids],
+    );
+    return r.rows.map(toSessionRowFull);
+  }
+
+  /**
+   * The metadata leg of session search: everything findable without the vector
+   * index — id prefix, title, folder, project, and the normalised file index.
+   *
+   * Deliberately separate from the content leg, and deliberately ADDITIVE to
+   * it: a session whose title names the thing you are looking for must surface
+   * even when no individual message matched it well, and pasting a session id
+   * must be an instant exact hit rather than a semantic guess.
+   *
+   * Returns which fields matched, never a score — weighting is the ranking
+   * layer's job and belongs in one place.
+   */
+  async searchSessionsMeta(
+    q: string,
+    tokens: string[],
+    filters: SessionSearchFilters = {},
+    limit = 60,
+  ): Promise<SessionMetaMatch[]> {
+    const term = (q ?? '').trim();
+    if (!term) return [];
+    // LIKE metacharacters in a user string are literal text here, not syntax.
+    const esc = (s: string) => `%${s.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+    // The whole phrase AND each significant token. Phrase-only would match
+    // almost nothing (a session title is rarely the sentence you typed);
+    // token-only would lose the exactness of a quoted path or a full title.
+    const patterns = [...new Set([esc(term), ...tokens.filter((t) => t.length >= 3).map(esc)])];
+    const lowered = patterns.map((p) => p.toLowerCase());
+    // A UUID prefix is an identity, not a keyword: 8+ hex chars is past the
+    // point where a collision is plausible in a corpus of ~8k sessions.
+    const idPrefix = /^[0-9a-f]{8,}$/i.test(term) ? `${term.toLowerCase()}%` : null;
+
+    const params: unknown[] = [patterns, idPrefix, lowered];
+    const where: string[] = [];
+    if (filters.projects?.length) {
+      params.push(filters.projects);
+      where.push(`p.slug = ANY($${params.length})`);
+    }
+    if (filters.machine) {
+      params.push(filters.machine);
+      where.push(`s.machine = $${params.length}`);
+    }
+    if (filters.since) {
+      params.push(filters.since);
+      where.push(`s.started_at >= $${params.length}`);
+    }
+    if (filters.until) {
+      params.push(filters.until);
+      where.push(`s.started_at <= $${params.length}`);
+    }
+    params.push(Math.min(Math.max(limit, 1), 200));
+
+    const r = await this.pool.query(
+      // The file match is resolved ONCE, in a CTE, and joined — never as a
+      // correlated EXISTS per session row. A leading-wildcard LIKE cannot use
+      // an index, so the correlated form re-scans session_files for every one
+      // of the 8,395 sessions: measured at 3.8 s on a half-populated table,
+      // and it grows with both tables. As a single scan it is one pass over a
+      // few thousand rows.
+      `WITH file_hits AS (
+         SELECT DISTINCT session_id FROM session_files WHERE path LIKE ANY($3)
+       )
+       SELECT s.id,
+              ($2::text IS NOT NULL AND lower(s.id) LIKE $2) AS by_id,
+              (s.title ILIKE ANY($1)) AS by_title,
+              (s.cwd ILIKE ANY($1)) AS by_cwd,
+              (p.slug ILIKE ANY($1)) AS by_project,
+              (fh.session_id IS NOT NULL) AS by_file
+       FROM sessions s
+       JOIN projects p ON p.id = s.project_id
+       LEFT JOIN file_hits fh ON fh.session_id = s.id
+       WHERE (
+              ($2::text IS NOT NULL AND lower(s.id) LIKE $2)
+              OR s.title ILIKE ANY($1) OR s.cwd ILIKE ANY($1) OR p.slug ILIKE ANY($1)
+              OR fh.session_id IS NOT NULL
+             )
+             ${where.length ? `AND ${where.join(' AND ')}` : ''}
+       ORDER BY s.started_at DESC NULLS LAST
+       LIMIT $${params.length}`,
+      params,
+    );
+    return r.rows.map((row) => ({
+      sessionId: row.id,
+      byId: row.by_id === true,
+      byTitle: row.by_title === true,
+      byCwd: row.by_cwd === true,
+      byProject: row.by_project === true,
+      byFile: row.by_file === true,
+    }));
+  }
+
+  /**
+   * Session entries of particular kinds, oldest first.
+   *
+   * The kind filter is what makes an insights report affordable: `insight`,
+   * `summary` and `plan` total 9,075 entries across the whole 363,842-entry
+   * session corpus, and they are precisely the distilled prose worth reading.
+   */
+  async sessionEntriesByKind(
+    sessionId: string,
+    kinds: string[],
+    limit = 40,
+  ): Promise<{ id: number; title: string; body: string; occurredAt?: string; kind?: string }[]> {
+    const r = await this.pool.query(
+      `SELECT id, title, body, occurred_at, meta->>'kind' AS kind
+       FROM entries
+       WHERE session_id = $1 AND (COALESCE(meta->>'kind', 'response') = ANY($2))
+       ORDER BY occurred_at ASC NULLS LAST, id ASC
+       LIMIT $3`,
+      [sessionId, kinds, Math.min(Math.max(limit, 1), 500)],
+    );
+    return r.rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      body: row.body,
+      occurredAt: row.occurred_at?.toISOString(),
+      kind: row.kind ?? undefined,
+    }));
+  }
+
+  /** Per-kind entry counts for one session — the shape of the conversation. */
+  async sessionKindCounts(sessionId: string): Promise<Record<string, number>> {
+    const r = await this.pool.query(
+      `SELECT COALESCE(meta->>'kind', 'response') AS kind, count(*)::int AS n
+       FROM entries WHERE session_id = $1 GROUP BY 1`,
+      [sessionId],
+    );
+    return Object.fromEntries(r.rows.map((row) => [row.kind, row.n]));
+  }
+
+  /**
+   * Sessions of the same project whose start falls inside a window — the
+   * temporal candidate leg, and the only leg available for an anchor with no
+   * files and too little text to embed.
+   */
+  async sessionsInWindow(
+    projectId: number,
+    from: string,
+    to: string,
+    opts: { exclude?: string; limit?: number } = {},
+  ): Promise<string[]> {
+    const r = await this.pool.query(
+      `SELECT id FROM sessions
+       WHERE project_id = $1 AND started_at >= $2 AND started_at <= $3 AND id <> COALESCE($4, '')
+       ORDER BY started_at DESC LIMIT $5`,
+      [projectId, from, to, opts.exclude ?? null, Math.min(Math.max(opts.limit ?? 150, 1), 500)],
+    );
+    return r.rows.map((row) => row.id);
+  }
+
+  /**
+   * Non-session entries recorded inside a time window — the commits and kdb
+   * lines written while (or just after) a session ran.
+   *
+   * This is the cross-source join that makes an insights report more than a
+   * transcript summary: what a session *did* is in the transcript, but what it
+   * was *recorded as having done* is in the changelog and the git history.
+   * Served by the existing `entries_project_time` index.
+   */
+  async entriesInWindow(
+    projectId: number,
+    from: string,
+    to: string,
+    sources: SourceType[],
+    limit = 60,
+  ): Promise<
+    { id: number; sourceType: SourceType; title: string; body: string; occurredAt?: string; sourceRef?: string; meta?: any }[]
+  > {
+    const r = await this.pool.query(
+      `SELECT id, source_type, title, body, occurred_at, source_ref, meta
+       FROM entries
+       WHERE project_id = $1 AND occurred_at >= $2 AND occurred_at <= $3
+         AND source_type = ANY($4)
+       ORDER BY occurred_at ASC
+       LIMIT $5`,
+      [projectId, from, to, sources, Math.min(Math.max(limit, 1), 300)],
+    );
+    return r.rows.map((row) => ({
+      id: row.id,
+      sourceType: row.source_type,
+      title: row.title,
+      body: row.body,
+      occurredAt: row.occurred_at?.toISOString(),
+      sourceRef: row.source_ref ?? undefined,
+      meta: row.meta ?? undefined,
+    }));
+  }
+
+  async getSessionInsights(sessionId: string, cacheKey: string): Promise<{ payload: any; generatedAt: string } | null> {
+    const r = await this.pool.query(
+      'SELECT payload, generated_at FROM session_insights WHERE session_id = $1 AND cache_key = $2',
+      [sessionId, cacheKey],
+    );
+    const row = r.rows[0];
+    return row ? { payload: row.payload, generatedAt: row.generated_at.toISOString() } : null;
+  }
+
+  /**
+   * Store a report, keeping at most a handful per session.
+   *
+   * Different section selections legitimately produce different cached reports,
+   * so this is not a 1:1 cache — but an unbounded one would grow a row per
+   * distinct section combination ever requested. Trimming to the most recent
+   * few keeps it bounded without ever making the common case (the default
+   * section set) miss.
+   */
+  async putSessionInsights(sessionId: string, cacheKey: string, payload: unknown, keep = 6): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO session_insights (session_id, cache_key, payload, generated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (session_id, cache_key)
+       DO UPDATE SET payload = EXCLUDED.payload, generated_at = now()`,
+      [sessionId, cacheKey, JSON.stringify(payload)],
+    );
+    await this.pool.query(
+      `DELETE FROM session_insights
+       WHERE session_id = $1 AND cache_key NOT IN (
+         SELECT cache_key FROM session_insights WHERE session_id = $1
+         ORDER BY generated_at DESC LIMIT $2
+       )`,
+      [sessionId, keep],
+    );
   }
 
   /**
@@ -1778,6 +2333,7 @@ export class Catalog {
       sourceRef: row.source_ref ?? undefined,
       // `||`, not `??` — machine is NOT NULL DEFAULT '' (rowToEntry's convention).
       machine: row.machine || undefined,
+      ...(row.meta?.kind ? { kind: row.meta.kind as SearchHit['kind'] } : {}),
       // Same decoration contract as the vector path (SearchService.finalize).
       ...(row.meta?.docStatus === 'archived' ? { docStatus: 'archived' as const } : {}),
     }));

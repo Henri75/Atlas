@@ -18,3 +18,5 @@ export * from './scope.js';
 export * from './markdownRepair.js';
 export * from './exportText.js';
 export * from './askTurns.js';
+export * from './sessionView.js';
+export * from './sessionTimeline.js';

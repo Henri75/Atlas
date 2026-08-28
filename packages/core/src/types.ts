@@ -124,6 +124,104 @@ export const ALL_ENTRY_KINDS: EntryKind[] = [
   'response',
 ];
 
+/**
+ * A session row with everything ranking and reporting need, joined once.
+ *
+ * `entryCount` is joined rather than taken from `promptCount`: the parser
+ * counts only string-content user messages, so a session can honestly report
+ * 2 prompts while holding 900 entries. Substance is computed from the entry
+ * count, and conflating the two would systematically mis-rank heavy sessions.
+ */
+export interface SessionRowFull {
+  sessionId: string;
+  projectId: number;
+  projectSlug: string;
+  title?: string;
+  cwd?: string;
+  machine?: string;
+  startedAt?: string;
+  endedAt?: string;
+  promptCount: number;
+  actionCount: number;
+  entryCount: number;
+  /** Raw absolute paths, as the transcript recorded them (display only). */
+  filesTouched: string[];
+  sourcePath: string;
+}
+
+export interface SessionSearchFilters {
+  projects?: string[];
+  machine?: string;
+  since?: string;
+  until?: string;
+}
+
+/** Which metadata fields a session matched on — weighting happens elsewhere. */
+export interface SessionMetaMatch {
+  sessionId: string;
+  byId: boolean;
+  byTitle: boolean;
+  byCwd: boolean;
+  byProject: boolean;
+  byFile: boolean;
+}
+
+/**
+ * Why a session is in a result set.
+ *
+ * Present on every card and every related session, and not decoration: it is
+ * what lets a reader identify the right session without spending an LLM call,
+ * and the only thing that makes the ranking auditable when it is wrong.
+ */
+export interface MatchReason {
+  kind: 'id' | 'title' | 'file' | 'message' | 'project' | 'cwd' | 'semantic' | 'time';
+  detail: string;
+  weight: number;
+}
+
+export interface SessionExcerpt {
+  entryId: number;
+  kind: EntryKind;
+  occurredAt?: string;
+  text: string;
+}
+
+export interface SessionCard {
+  sessionId: string;
+  projectSlug: string;
+  machine?: string;
+  title: string;
+  cwd?: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  promptCount: number;
+  actionCount: number;
+  entryCount: number;
+  fileCount: number;
+  filesTouched: string[];
+  /** How much work this session represents, 0-1 (sessionRanking.ts). */
+  substance: number;
+  score: number;
+  why: MatchReason[];
+  excerpts: SessionExcerpt[];
+  /** Set when this card stands for a run of contiguous sessions. */
+  thread?: { size: number; memberIds: string[] };
+  /** Only when LLM enrichment was requested AND succeeded. */
+  ai?: { headline: string; gist: string };
+}
+
+export interface SessionSearchResult {
+  sessions: SessionCard[];
+  /** 'hybrid' | 'sparse-only' | 'fts' | 'metadata-only'. */
+  mode: string;
+  degraded: boolean;
+  tookMs: number;
+  /** Date phrases lifted out of the query, so the user sees what was applied. */
+  interpreted?: { since?: string; until?: string; phrase?: string };
+  llm?: { status: 'off' | 'ok' | 'unavailable'; reason?: string };
+}
+
 export interface SearchFilters {
   /** Single project. Kept for back-compat (CLI, MCP); prefer `projects`. */
   project?: string;
@@ -161,6 +259,13 @@ export interface SearchHit {
   sourceType: SourceType;
   component?: string;
   sessionId?: string;
+  /**
+   * How a session message was classified at parse time. Carried on the hit so
+   * consumers that aggregate hits (session search) can weight an `insight`
+   * above an `action` without a second round-trip to the catalog. Absent for
+   * every source type other than `claude_session`.
+   */
+  kind?: EntryKind;
   title: string;
   snippet: string;
   occurredAt?: string;

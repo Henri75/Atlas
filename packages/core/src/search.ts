@@ -71,7 +71,23 @@ export class SearchService {
     }
   }
 
-  async search(q: string, filters: SearchFilters = {}, limit = 20): Promise<SearchResult> {
+  /**
+   * `maxFetch` raises the over-fetch window past its default ceiling.
+   *
+   * Entry search wants a small window: it over-fetches 2x so downranked
+   * archived docs can fall out instead of pushing better hits out, and 100 is
+   * plenty for that. Session search has a different shape — it groups hits BY
+   * SESSION, so a 100-hit window can easily be three long conversations and
+   * nothing else, and the fourth relevant session is invisible no matter how
+   * well it matched. Callers that aggregate ask for a wider pool explicitly;
+   * the default is untouched, so no existing caller moves.
+   */
+  async search(
+    q: string,
+    filters: SearchFilters = {},
+    limit = 20,
+    opts: { maxFetch?: number } = {},
+  ): Promise<SearchResult> {
     const t0 = Date.now();
     await this.syncCollection(t0);
     // Widen the scope to the project's older locations before anything filters
@@ -105,7 +121,7 @@ export class SearchService {
 
     // Over-fetch so downranked archived docs can fall out of the window
     // instead of pushing better hits out of it.
-    const fetchLimit = Math.min(limit * 2, 100);
+    const fetchLimit = Math.max(Math.min(limit * 2, 100), Math.min(opts.maxFetch ?? 0, 500));
     try {
       const raw = await this.vectors.query({ dense, sparse, filters, limit: fetchLimit });
       const hydrated = await this.hydrate(raw);
@@ -205,6 +221,7 @@ export class SearchService {
         sourceRef: row.source_ref ?? undefined,
         // `||`, not `??` — machine is NOT NULL DEFAULT '' (rowToEntry's convention).
         machine: row.machine || undefined,
+        ...(row.meta?.kind ? { kind: row.meta.kind as SearchHit['kind'] } : {}),
         ...(row.meta?.docStatus === 'archived' ? { docStatus: 'archived' as const } : {}),
       });
     }

@@ -1724,3 +1724,33 @@ Reference: docs/adr/20260819-multi-machine-one-active-instance.md; docs/superpow
 
 **Status:**
 - Completed
+---
+### [2026-08-28 22:35 UTC] Session intelligence — search, insights, related
+
+**Objective:**
+- Make the 8,395 indexed Claude Code sessions findable, summarisable and traceable: find a session by what you remember, get a customisable report of what it did/decided/left open, and see what else worked on the same thing before and after — on web/PWA, the native app, MCP and the CLI.
+
+**Summary of Work:**
+- Five new core modules: sessionFiles (path normalisation + IDF/cosine), sessionRanking (substance, kind weights, decayed aggregation, recency tilt), sessionSearch, sessionRelated, sessionInsights (facts + LLM layer + cache + single-flight).
+- Two derived tables: session_files (normalised inverted index, maintained by upsertSession, backfilled from sessions.files_touched with no transcript re-read) and session_insights (report cache).
+- Three API routes, three MCP tools, an `atlas sessions` command group (list/find/insights/related) with `list` as default so `atlas sessions <project>` is unchanged.
+- @atlas/shared gained sessionView (wording, section registry, colours) and sessionTimeline (pure layout), consumed identically by web and native.
+- SearchHit now carries `kind`, so aggregation can weight an insight above an action without a second round trip.
+
+**Key Decisions & Rationale:**
+- Substance is a ranking PRIOR (0.55 + 0.45s), never a filter: the corpus median session is 3 messages and 1.6 minutes, so relevance alone buries real work — but the ninety-second session that holds the answer must stay findable.
+- File comparison happens only on NORMALISED repo-relative keys. The corpus's most-touched paths are under /Users/nasta/__CODING NEW/, a user and machine that no longer exist here; raw string equality scores ZERO against today's paths for the same file of the same repo.
+- Relatedness renormalises over AVAILABLE legs. 72% of sessions record no files, and a fixed denominator would bury them for missing data rather than for being unrelated. The response always reports its `basis`, and a timestamps-only list says so in words.
+- Insights are two layers with the split as the contract: the deterministic half is complete alone and free; the LLM half is marked AI everywhere and degrades to the facts. Cache key folds in sections, model, extraction scheme, PROMPT_VERSION and the session's own size.
+- Sessions is no longer gated on picking one project — that gate is what made "find the session about X" impossible.
+
+**Code/Files Modified:**
+- packages/core/src/{sessionFiles,sessionRanking,sessionSearch,sessionRelated,sessionInsights,catalog,search,types,usage}.ts; packages/api/src/{app,main}.ts; packages/mcp/src/tools.ts; packages/cli/src/main.ts; packages/indexer/src/main.ts; packages/shared/src/{sessionView,sessionTimeline}.ts; packages/ui/src/views/sessions/*, components/SessionRefActions.tsx, views/{SessionsView,SearchView,TimelineView}.tsx, App.tsx, api.ts; mobile/src/screens/sessions/*, screens/SessionsScreen.tsx, navigation/RootNavigator.tsx, api/endpoints.ts; docs/adr/20260828-session-intelligence.md; docs/{api,cli,mcp,mobile}.md; README.md.
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** measuring the corpus BEFORE designing. Every ranking constant traces to a measured fact rather than to intuition, and three of them (substance prior, path normalisation, leg renormalisation) exist only because the measurement contradicted the obvious design. 1517 tests, all typechecks green; verified live against the real 8,395-session index.
+- **What Failed:** (1) A correlated EXISTS over session_files re-scanned that table once per session row — 3.8 s for one metadata query on a HALF-populated table, growing with both tables; resolving the file match once in a CTE and joining it took the same query to 247 ms. (2) commandName reported the top command of a 303-action session as `DeepCast;` 145 times: it split only on `&&` and skipped the word `cd` but not `cd`'s path argument, so the histogram named a directory instead of a tool. (3) Context events were computed only on the populated path, so "no related session, but here are the commits that touched the same files" — the most useful answer that feature gives — was suppressed exactly when it applied. (4) log1p gap compression alone still gave three sessions in one afternoon only 4.9% of an axis spanning three months, narrower than the nodes drawn on it; a MIN_STEP floor per adjacent pair was needed on top.
+- **Measured, not assumed:** end-to-end session-search latency is UNCORRELATED with the retrieval pool size (3.6 s at pool 80 vs 1.6 s at pool 250 for the same query). The cost is cold vector reads, consistent with this deployment's known rescore-bound profile — so the pool is sized for evidence, not for speed, and that reasoning is recorded in the constant's own comment.
+
+**Status:**
+- Completed

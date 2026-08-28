@@ -21,6 +21,9 @@ describe('MCP tool registry', () => {
       'atlas_reindex',
       'atlas_search',
       'atlas_session',
+    'atlas_session_insights',
+    'atlas_session_related',
+    'atlas_session_search',
       'atlas_status',
       'atlas_timeline',
     ]);

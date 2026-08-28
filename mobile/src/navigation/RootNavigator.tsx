@@ -23,6 +23,7 @@ import { SearchAskScreen } from '../screens/SearchAskScreen';
 import { DashboardScreen } from '../screens/DashboardScreen';
 import { TimelineScreen } from '../screens/TimelineScreen';
 import { SessionsScreen, SessionDetailScreen } from '../screens/SessionsScreen';
+import type { SessionTab } from '../screens/sessions/SessionPieces';
 import { ComponentsScreen } from '../screens/ComponentsScreen';
 import { MonitorScreen } from '../screens/monitor/MonitorScreen';
 import { MachinesScreen } from '../screens/MachinesScreen';
@@ -130,17 +131,32 @@ function SessionsStack({ scope, projects }: { scope: ScopeHandle; projects: Proj
             scope={scope}
             projects={projects}
             onProject={(slug) => scope.set([slug])}
-            onOpenSession={(id) => navigation.navigate('sessionDetail' as never, { id } as never)}
+            onOpenSession={(id, tab) =>
+              navigation.navigate('sessionDetail' as never, { id, tab } as never)
+            }
           />
         )}
       </Stack.Screen>
       <Stack.Screen name="sessionDetail">
         {({ navigation, route }) => {
-          const params = route.params as { id?: string } | undefined;
+          const params = route.params as { id?: string; tab?: SessionTab } | undefined;
           return (
             <View style={{ flex: 1 }}>
               <BackRow label="back to sessions" onPress={() => navigation.goBack()} />
-              {params?.id ? <SessionDetailScreen sessionId={params.id} /> : null}
+              {params?.id ? (
+                <SessionDetailScreen
+                  // Keyed by id AND tab so following a related session PUSHES a
+                  // fresh screen rather than re-rendering the one behind it with
+                  // new props — the back gesture then walks the chain you
+                  // actually followed.
+                  key={`${params.id}:${params.tab ?? 'conversation'}`}
+                  sessionId={params.id}
+                  initialTab={params.tab ?? 'conversation'}
+                  onOpenSession={(id, tab) =>
+                    navigation.push('sessionDetail' as never, { id, tab } as never)
+                  }
+                />
+              ) : null}
             </View>
           );
         }}
