@@ -1754,3 +1754,28 @@ Reference: docs/adr/20260819-multi-machine-one-active-instance.md; docs/superpow
 
 **Status:**
 - Completed
+---
+### [2026-08-28 23:05 UTC] Session intelligence — live-verification corrections
+
+**Objective:**
+- Verify the shipped feature against the real index rather than against its tests, and fix what only real data could show.
+
+**Summary of Work:**
+- Related-session scoring changed from a weighted mean over "available" legs to a soft OR (1 - product of (1 - w*leg)).
+- Split the substance floor: 0.55 when the user searched for a session, 0.25 when one is merely proposed as related.
+- entriesInWindow no longer selects `body`; neither caller read it, and a git commit's body is its whole changed-file list.
+
+**Key Decisions & Rationale:**
+- A weighted mean treats a missing leg and a weak leg differently in the wrong direction. Measured live: a 3-message session with no files ranked ABOVE a 502-message session sharing two files, because the heavy one's weak file score was averaged in while the trivial one had no file term to dilute. Under a soft OR every leg can only add evidence, so being measurable can never cost a candidate rank.
+- Search and related ask different questions of the same substance number. You can search for a ninety-second session on purpose; a ninety-second session is rarely the WORK on something you did not ask about.
+
+**Code/Files Modified:**
+- packages/core/src/{sessionRelated,sessionRanking,catalog}.ts; test/core/{sessionRelated,sessionRanking}.test.ts; packages/ui/src/App.tsx (session URL state); test/ui/app.test.tsx; docs/adr/20260828-session-intelligence.md.
+
+**Outcomes & Lessons Learned:**
+- **What Worked:** looking at the actual ranked output. Both defects were invisible to the test suite because the tests asserted the behaviour I had designed, not the behaviour the corpus produces. After the fix the 502-message file-sharing session ranks first and the 3-message security review falls from 1st to 4th and then out of the top three.
+- **What Failed:** a first attempt at session URL state wrote `view` into the address bar alongside `session`/`tab`. That made a leftover `?view=` beat the user's saved start-view preference on every ordinary reload — the setting appeared to stop working. Only the session and its tab get an address now; the view stays a preference, and the existing start-view test pins it.
+- **Measured:** related sessions 19 s cold / 1.7 s warm before, 8.8 s cold / 0.55 s warm after; the metadata leg of session search 3.8 s before the CTE, 247 ms after.
+
+**Status:**
+- Completed

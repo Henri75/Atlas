@@ -1,7 +1,12 @@
 import type { Catalog } from './catalog.js';
 import type { SearchService } from './search.js';
 import { fileIdf, fileSimilarity, isStopFile, sharedFiles } from './sessionFiles.js';
-import { aggregateMatchScores, kindWeight, substancePrior } from './sessionRanking.js';
+import {
+  RELATED_SUBSTANCE_FLOOR,
+  aggregateMatchScores,
+  kindWeight,
+  substancePrior,
+} from './sessionRanking.js';
 import { cardFacts, substanceOf } from './sessionSearch.js';
 import type { MatchReason, SessionCard, SessionRowFull, SourceType } from './types.js';
 
@@ -258,7 +263,10 @@ export class SessionRelatedService {
 
       out.push({
         ...cardFacts(row, substance),
-        score: base * substancePrior(substance),
+        // A lower floor than search uses: nobody asked for this session, so a
+        // trivial one proposed as "related work" is a false positive the reader
+        // has to rule out by hand.
+        score: base * substancePrior(substance, RELATED_SUBSTANCE_FLOOR),
         why: relatedWhy(legs, shared, deltaMs),
         excerpts: [],
         direction: directionOf(anchorRow, row),

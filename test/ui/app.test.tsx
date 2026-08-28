@@ -112,6 +112,10 @@ describe('App shell', () => {
     stubOk();
     render(<App />);
     await waitFor(() => expect(screen.getByText('Services')).toBeTruthy());
+    // Session URL state writes `session`/`tab` and MUST NOT write `view`.
+    // A first attempt did, and the leftover `?view=` then beat this very
+    // preference on the next ordinary reload — the setting looked broken.
+    expect(window.location.search).not.toContain('view=');
   });
 
   /**
@@ -190,3 +194,4 @@ describe('App shell', () => {
     expect(screen.queryByText(/Cannot reach the API/)).toBeNull();
   });
 });
+

@@ -2059,10 +2059,14 @@ export class Catalog {
     sources: SourceType[],
     limit = 60,
   ): Promise<
-    { id: number; sourceType: SourceType; title: string; body: string; occurredAt?: string; sourceRef?: string; meta?: any }[]
+    { id: number; sourceType: SourceType; title: string; occurredAt?: string; sourceRef?: string; meta?: any }[]
   > {
     const r = await this.pool.query(
-      `SELECT id, source_type, title, body, occurred_at, source_ref, meta
+      // Deliberately WITHOUT `body`. Both callers (the insights trail and the
+      // related-sessions context layer) need only the title and `meta.files`,
+      // and a git_commit's body is its entire changed-file list — 200 of them
+      // is a large payload fetched, transferred and then thrown away.
+      `SELECT id, source_type, title, occurred_at, source_ref, meta
        FROM entries
        WHERE project_id = $1 AND occurred_at >= $2 AND occurred_at <= $3
          AND source_type = ANY($4)
@@ -2074,7 +2078,6 @@ export class Catalog {
       id: row.id,
       sourceType: row.source_type,
       title: row.title,
-      body: row.body,
       occurredAt: row.occurred_at?.toISOString(),
       sourceRef: row.source_ref ?? undefined,
       meta: row.meta ?? undefined,

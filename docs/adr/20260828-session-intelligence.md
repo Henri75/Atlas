@@ -48,12 +48,25 @@ Accepted
   from the table, not assumed: high-frequency paths (`Makefile` 131 sessions,
   `MEMORY.md` 183) are excluded from candidate GENERATION but still contribute
   their small weight to SCORING — bounding fan-out without discarding evidence.
-- **Relatedness renormalises over available legs.** File, semantic and
-  temporal each contribute only when the anchor could use them at all. A fixed
-  denominator would systematically bury the 72% of sessions with no files,
-  punishing them for missing data rather than for being unrelated. The response
-  always reports its `basis`; a list built from timestamps alone says so in
-  words, because it otherwise looks identical to one built from shared files.
+- **Relatedness combines its legs as a soft OR, not as a weighted mean.**
+  `1 - Π(1 - w·leg)`. Each leg is evidence FOR relatedness and none is evidence
+  against, so a leg with nothing to say contributes nothing rather than
+  averaging a signal down. The first implementation used a weighted mean over
+  "available" legs and was wrong in a way only real data showed: a 3-message
+  session with no files outranked a 502-message session sharing two files,
+  because the heavy session's weak-but-real file score was averaged IN while
+  the trivial one had no file term to dilute it — having evidence made it score
+  worse than having none. The response always reports its `basis`; a list built
+  from timestamps alone says so in words, because it otherwise looks identical
+  to one built from shared files.
+- **The substance floor is different for search and for related** (0.55 vs
+  0.25). In search the user's own words are the primary evidence, and a tiny
+  session can be exactly the right answer, so it must stay findable. In
+  "what else worked on this" nobody asked for the session: a three-message
+  session is rarely the WORK on anything, and proposing it beside real ones is
+  a false positive the reader has to rule out by hand. Measured: a 3-message
+  security review outranked two substantial file-sharing sessions on subject
+  similarity alone until the two floors were separated.
 - **Insights are two layers, and the split is the contract.** A deterministic
   facts layer (goals, action rollup, distilled prose, follow-up markers,
   backlog overlap, and the commits/kdb entries recorded in the same window) is
@@ -87,6 +100,10 @@ Accepted
   80 vs 1.6 s at pool 250 for the same query) and is dominated by cold vector
   reads, consistent with the rescore-bound profile already recorded for this
   Qdrant deployment. The pool is therefore sized for EVIDENCE, not speed.
+  Measured on the live index after two fixes (resolving the file match once in
+  a CTE instead of a correlated EXISTS per session row, and not fetching a
+  `body` column neither caller reads): session search 0.5–3 s warm; related
+  sessions 8.8 s on a first, novel probe and ~0.55 s warm.
 
 ## Alternatives considered
 - **Rank sessions by their best message alone.** Rejected: a session that

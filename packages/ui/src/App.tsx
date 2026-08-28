@@ -67,19 +67,79 @@ export default function App() {
     // A manifest shortcut launches /?view=<key>. It is a deliberate act for
     // this launch only, so it outranks the persisted preference — but it is
     // also outside the type system, hence isView rather than a cast.
-    const requested = new URLSearchParams(window.location.search).get('view');
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get('view');
     if (isView(requested)) return requested;
+    // A shared link naming a session lands on the sessions view even when the
+    // link's author never included `view` — the session IS the destination.
+    if (params.get('session')) return 'sessions';
     return isView(startView) ? startView : 'search';
   });
 
-  const [openSessionId, setOpenSessionId] = useState('');
+  const [openSessionId, setOpenSessionId] = useState(
+    () => new URLSearchParams(window.location.search).get('session') ?? '',
+  );
   /**
    * Which face of a session is showing. Lives here, beside `openSessionId`,
    * because opening a session FROM a search hit or a timeline row has to be
    * able to say which tab it means — "insights for that one" is a different
    * request from "replay that one", and both start outside this view.
    */
-  const [sessionTab, setSessionTab] = useState<SessionTab>('conversation');
+  const [sessionTab, setSessionTab] = useState<SessionTab>(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    return t === 'insights' || t === 'related' ? t : 'conversation';
+  });
+
+  /**
+   * Keep the address bar describing what is on screen.
+   *
+   * An insight report is something you send to someone ("look at what this
+   * session left open"), and without this it has no address at all — the only
+   * way to reach it is to search for the session again. The session open/close
+   * transition PUSHES so the browser's back button leaves a report the way you
+   * expect; view and tab changes REPLACE, because a tab is a way of looking at
+   * the thing you are already on, not somewhere new.
+   */
+  const lastUrlSession = useRef(openSessionId);
+  useEffect(() => {
+    // ONLY the session and its tab are written. `view` is deliberately left
+    // alone: it is a persisted preference, and an app that wrote its own view
+    // into the address bar would make that preference lose to the URL on every
+    // ordinary reload — the start-view setting would appear to stop working.
+    // `?view=` therefore keeps meaning what it always meant: a deliberate
+    // manifest shortcut for one launch.
+    const params = new URLSearchParams(window.location.search);
+    if (openSessionId) {
+      params.set('session', openSessionId);
+      if (sessionTab === 'conversation') params.delete('tab');
+      else params.set('tab', sessionTab);
+    } else {
+      params.delete('session');
+      params.delete('tab');
+    }
+    const query = params.toString();
+    const url = `${window.location.pathname}${query ? `?${query}` : ''}`;
+    if (url === `${window.location.pathname}${window.location.search}`) return;
+    const opened = openSessionId !== lastUrlSession.current;
+    lastUrlSession.current = openSessionId;
+    window.history[opened ? 'pushState' : 'replaceState'](null, '', url);
+  }, [openSessionId, sessionTab]);
+
+  // Back/forward restores what the URL describes rather than stranding the
+  // reader on a page the address bar no longer matches.
+  useEffect(() => {
+    const onPop = () => {
+      const p = new URLSearchParams(window.location.search);
+      const sid = p.get('session') ?? '';
+      if (sid) setView('sessions');
+      lastUrlSession.current = sid;
+      setOpenSessionId(sid);
+      const t = p.get('tab');
+      setSessionTab(t === 'insights' || t === 'related' ? t : 'conversation');
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   const [offline, setOffline] = useState(false);
   const [toast, setToast] = useState('');
   const searchRef = useRef<HTMLTextAreaElement | null>(null);

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  RELATED_SUBSTANCE_FLOOR,
+  SEARCH_SUBSTANCE_FLOOR,
   aggregateMatchScores,
   kindWeight,
   recencyTilt,
@@ -77,13 +79,28 @@ describe('substanceScore', () => {
 
 describe('substancePrior', () => {
   it('never zeroes a genuine match', () => {
-    expect(substancePrior(0)).toBe(0.55);
+    expect(substancePrior(0)).toBe(SEARCH_SUBSTANCE_FLOOR);
     expect(substancePrior(1)).toBe(1);
   });
 
   it('clamps out-of-range input', () => {
-    expect(substancePrior(-3)).toBe(0.55);
+    expect(substancePrior(-3)).toBe(SEARCH_SUBSTANCE_FLOOR);
     expect(substancePrior(9)).toBe(1);
+  });
+
+  /**
+   * Search and related ask different questions of the same number. A tiny
+   * session can be exactly what you searched for; it is rarely the WORK on
+   * something you did not ask about.
+   */
+  it('is far less forgiving when a session was proposed rather than requested', () => {
+    expect(RELATED_SUBSTANCE_FLOOR).toBeLessThan(SEARCH_SUBSTANCE_FLOOR);
+    const trivial = substanceScore({ entryCount: 3, actionCount: 0 });
+    expect(substancePrior(trivial, RELATED_SUBSTANCE_FLOOR)).toBeLessThan(
+      substancePrior(trivial) / 1.5,
+    );
+    // A heavy session is unaffected either way — the floor only moves the tail.
+    expect(substancePrior(1, RELATED_SUBSTANCE_FLOOR)).toBe(1);
   });
 });
 

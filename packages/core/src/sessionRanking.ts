@@ -97,15 +97,32 @@ export function substanceScore(i: SubstanceInput): number {
 }
 
 /**
- * Substance as a ranking multiplier, in [0.55, 1].
+ * Floor of the substance multiplier when the USER asked for the session.
  *
- * Deliberately a floor of 0.55 and not 0: a two-message session that genuinely
- * contains the answer must still be findable. This suppresses the flood, it
- * does not censor it — the difference matters because the thing you are looking
- * for is sometimes exactly the ninety-second session where you pasted an error.
+ * Deliberately not 0: a two-message session that genuinely contains what you
+ * searched for must still be findable. This suppresses the flood, it does not
+ * censor it — the thing you are looking for is sometimes exactly the
+ * ninety-second session where you pasted an error.
  */
-export function substancePrior(substance: number): number {
-  return 0.55 + 0.45 * Math.min(Math.max(substance, 0), 1);
+export const SEARCH_SUBSTANCE_FLOOR = 0.55;
+
+/**
+ * Floor when nobody asked for the session — it was PROPOSED as related.
+ *
+ * Much lower, and the asymmetry is the point. In search the user's own words
+ * are the primary evidence and a tiny session can be exactly the right answer.
+ * In "what else worked on this", a three-message session is rarely the WORK on
+ * anything; proposing it alongside real sessions is a false positive the reader
+ * has to rule out by hand. Measured on the live index: a 3-message security
+ * review scored above two substantial file-sharing sessions purely on subject
+ * similarity until this floor was separated out.
+ */
+export const RELATED_SUBSTANCE_FLOOR = 0.25;
+
+/** Substance as a ranking multiplier, in [floor, 1]. */
+export function substancePrior(substance: number, floor = SEARCH_SUBSTANCE_FLOOR): number {
+  const f = Math.min(Math.max(floor, 0), 1);
+  return f + (1 - f) * Math.min(Math.max(substance, 0), 1);
 }
 
 /**
